@@ -107,6 +107,8 @@ func (s *Service) loadCommonUXTranslations() {
 		"downloader.video_unsupported":       "This source does not support video selection.",
 		"downloader.no_previous":             "There is no previous downloader step.",
 		"downloader.cancel_unconfirmed":      "Cancellation could not be confirmed. Please try again.",
+		"downloader.delivery_failed":         "⚠️ <b>Download retained, but Telegram delivery failed.</b>\nReopen the downloader to retry. The retained asset remains safely stored.",
+		"downloader.delivered":               "✅ <b>Download delivered to Telegram.</b>",
 	})
 
 	s.AddTranslations(LocaleIndonesian, map[string]string{
@@ -215,5 +217,7 @@ func (s *Service) loadCommonUXTranslations() {
 		"downloader.video_unsupported":       "Sumber ini tidak mendukung pemilihan video.",
 		"downloader.no_previous":             "Tidak ada langkah pengunduh sebelumnya.",
 		"downloader.cancel_unconfirmed":      "Pembatalan tidak dapat dikonfirmasi. Silakan coba lagi.",
+		"downloader.delivery_failed":         "⚠️ <b>Unduhan tersimpan, tetapi pengiriman ke Telegram gagal.</b>\nBuka kembali pengunduh untuk mencoba lagi. Aset tetap tersimpan dengan aman.",
+		"downloader.delivered":               "✅ <b>Unduhan berhasil dikirim ke Telegram.</b>",
 	})
 }

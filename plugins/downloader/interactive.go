@@ -17,6 +17,7 @@ import (
 	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/download"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -84,6 +85,7 @@ type interactiveState struct {
 	MaxHeight   int                  `json:"h,omitempty"`
 	QualityMask uint16               `json:"q,omitempty"`
 	TaskRoot    string               `json:"t,omitempty"`
+	Locale      string               `json:"l,omitempty"`
 }
 
 type downloadPreparation struct {
@@ -92,6 +94,21 @@ type downloadPreparation struct {
 
 type probePreparation struct {
 	State interactiveState
+}
+
+func optionalDownloaderLocale(locales []string) string {
+	if len(locales) == 0 {
+		return localization.DefaultLocale
+	}
+	return localization.CanonicalLocale(locales[0])
+}
+
+func downloaderTR(locale, key string, args ...any) string {
+	return localization.Translate(localization.CanonicalLocale(locale), key, args...)
+}
+
+func (p *Plugin) resolveInteractiveLocale(ctx context.Context, userID, chatID int64) string {
+	return localization.ResolveLocale(ctx, p.settings, userID, chatID)
 }
 
 func (p *Plugin) Description() string {
@@ -284,16 +301,18 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 func (*Plugin) HandleAssistantInput(*orchestration.Context, string) error { return nil }
 
 func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID string) error {
+	binding := ctx.Session().Binding
+	fallbackLocale := p.resolveInteractiveLocale(ctx.Context(), binding.ActorID, binding.ChatID)
 	state, err := decodeInteractiveState(ctx.State())
 	if err != nil {
 		ctx.Cancel()
-		return ctx.Answer("Downloader session is invalid. Reopen it.", true)
+		return ctx.Answer(downloaderTR(fallbackLocale, "downloader.session_invalid"), true)
 	}
 
 	switch actionID {
 	case actionAudio:
 		if state.Provider != "extractor" || state.Phase != phaseChoose {
-			return ctx.Answer("This source does not support audio selection.", true)
+			return ctx.Answer(downloaderTR(state.Locale, "downloader.audio_unsupported"), true)
 		}
 		state.Phase = phaseAudioFormat
 		state.Mode = download.MediaModeAudio
@@ -302,28 +321,28 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		if err != nil {
 			return err
 		}
-		return ctx.Transition(encoded, interactiveTTL, audioFormatView(state.URL))
+		return ctx.Transition(encoded, interactiveTTL, audioFormatView(state.URL, state.Locale))
 	case actionVideo:
 		if state.Provider != "extractor" || state.Phase != phaseChoose {
-			return ctx.Answer("This source does not support video selection.", true)
+			return ctx.Answer(downloaderTR(state.Locale, "downloader.video_unsupported"), true)
 		}
 		prepared, ok := ctx.Preparation().(probePreparation)
 		if !ok || prepared.State.URL != state.URL || prepared.State.Provider != state.Provider || prepared.State.Phase != state.Phase {
 			err := fmt.Errorf("%w: downloader probe preparation is stale", core.ErrUnavailable)
-			_ = ctx.Edit(failedView(err))
+			_ = ctx.Edit(failedView(err, state.Locale))
 			ctx.Cancel()
 			return err
 		}
 		p.ensureRegistry()
 		if p.registry == nil {
 			err := fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
-			_ = ctx.Edit(failedView(err))
+			_ = ctx.Edit(failedView(err, state.Locale))
 			ctx.Cancel()
 			return err
 		}
 		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{Timeout: download.DefaultProbeTimeout})
 		if err != nil {
-			_ = ctx.Edit(failedView(err))
+			_ = ctx.Edit(failedView(err, state.Locale))
 			ctx.Cancel()
 			return err
 		}
@@ -335,10 +354,10 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		if err != nil {
 			return err
 		}
-		return ctx.Transition(encoded, interactiveTTL, videoFormatView(state.URL, probe))
+		return ctx.Transition(encoded, interactiveTTL, videoFormatView(state.URL, probe, state.Locale))
 	case actionBack:
 		if state.Provider != "extractor" || (state.Phase != phaseAudioFormat && state.Phase != phaseVideoFormat) {
-			return ctx.Answer("There is no previous downloader step.", true)
+			return ctx.Answer(downloaderTR(state.Locale, "downloader.no_previous"), true)
 		}
 		state.Phase = phaseChoose
 		state.Mode = download.MediaModeDefault
@@ -349,14 +368,14 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		if err != nil {
 			return err
 		}
-		return ctx.Transition(encoded, interactiveTTL, extractorChoiceView(state.URL))
+		return ctx.Transition(encoded, interactiveTTL, extractorChoiceView(state.URL, state.Locale))
 	case actionCancel:
 		if state.Phase == phaseRunning && strings.TrimSpace(state.TaskRoot) != "" {
 			if err := p.cancelInteractivePipeline(state.TaskRoot); err != nil {
-				return ctx.Answer("Cancellation could not be confirmed. Please try again.", true)
+				return ctx.Answer(downloaderTR(state.Locale, "downloader.cancel_unconfirmed"), true)
 			}
 		}
-		return ctx.Terminate(cancelledView())
+		return ctx.Terminate(cancelledView(state.Locale))
 	default:
 		return p.executeInteractiveDownload(ctx, state, actionID)
 	}
@@ -412,14 +431,14 @@ func (p *Plugin) validateFinalAction(state interactiveState, actionID string) er
 
 func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state interactiveState, actionID string) error {
 	if err := p.validateFinalAction(state, actionID); err != nil {
-		_ = ctx.Edit(failedView(err))
+		_ = ctx.Edit(failedView(err, state.Locale))
 		ctx.Cancel()
 		return err
 	}
 	prepared, ok := ctx.Preparation().(downloadPreparation)
 	if !ok || prepared.State.URL != state.URL || prepared.State.Provider != state.Provider || prepared.State.Phase != state.Phase {
 		err := fmt.Errorf("%w: downloader prepared state is stale", core.ErrUnavailable)
-		_ = ctx.Edit(failedView(err))
+		_ = ctx.Edit(failedView(err, state.Locale))
 		ctx.Cancel()
 		return err
 	}
@@ -448,13 +467,13 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 
 	delivery, err := ctx.PrepareMediaDelivery()
 	if err != nil {
-		_ = ctx.Edit(failedView(err))
+		_ = ctx.Edit(failedView(err, state.Locale))
 		ctx.Cancel()
 		return err
 	}
 	progressEdit, err := ctx.PrepareTextEdit()
 	if err != nil {
-		_ = ctx.Edit(failedView(err))
+		_ = ctx.Edit(failedView(err, state.Locale))
 		ctx.Cancel()
 		return err
 	}
@@ -479,12 +498,12 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 	downloadFailure := func(editCtx context.Context) error {
 		return terminalTransition(editCtx, failedEncoded, interactiveTTL, failedRetryView(failedState))
 	}
-	deliveryFailure, err := ctx.PrepareStaticEdit(deliveryFailedView())
+	deliveryFailure, err := ctx.PrepareStaticEdit(deliveryFailedView(state.Locale))
 	if err != nil {
 		ctx.Cancel()
 		return err
 	}
-	delivered, err := ctx.PrepareStaticEdit(deliveredView())
+	delivered, err := ctx.PrepareStaticEdit(deliveredView(state.Locale))
 	if err != nil {
 		ctx.Cancel()
 		return err
@@ -506,7 +525,7 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		cancelSession,
 		targetKind,
 	); err != nil {
-		_ = ctx.Edit(failedView(err))
+		_ = ctx.Edit(failedView(err, state.Locale))
 		ctx.Cancel()
 		return err
 	}
@@ -585,14 +604,15 @@ func (h *interactiveInlineHandler) HandleInlineV2(ctx *inlineservice.InlineConte
 	if isYouTubeSearchQuery(ctx.RawQuery) {
 		return h.handleYouTubeSearch(ctx)
 	}
+	locale := h.plugin.resolveInteractiveLocale(ctx.Ctx, ctx.UserID, 0)
 	rawURL := strings.TrimSpace(strings.Join(ctx.Args, " "))
 	if rawURL == "" {
 		return interactiveInlineResponse([]inlineservice.InlineResult{{
 			ID:          "downloader-help",
 			Type:        inlineservice.ResultArticle,
-			Title:       "Interactive downloader",
-			Description: "Type: dl <https://media-url>",
-			Text:        "<b>Interactive downloader</b>\nType <code>dl &lt;https://media-url&gt;</code> in inline mode.",
+			Title:       downloaderTR(locale, "downloader.inline.title"),
+			Description: downloaderTR(locale, "downloader.inline.description"),
+			Text:        downloaderTR(locale, "downloader.inline.help"),
 		}}), nil
 	}
 	normalized, err := normalizeInteractiveURL(rawURL)
@@ -607,20 +627,20 @@ func (h *interactiveInlineHandler) HandleInlineV2(ctx *inlineservice.InlineConte
 	if provider == nil {
 		return nil, download.ErrNoMatchingProvider
 	}
-	state := interactiveState{URL: normalized, Provider: provider.Name(), Phase: phaseChoose}
+	state := interactiveState{URL: normalized, Provider: provider.Name(), Phase: phaseChoose, Locale: locale}
 	encoded, err := encodeInteractiveState(state)
 	if err != nil {
 		return nil, err
 	}
-	view := directDownloadView(normalized)
+	view := directDownloadView(normalized, locale)
 	if provider.Name() == "extractor" {
-		view = extractorChoiceView(normalized)
+		view = extractorChoiceView(normalized, locale)
 	}
 	return interactiveInlineResponse([]inlineservice.InlineResult{{
 		ID:               "downloader",
 		Type:             inlineservice.ResultArticle,
-		Title:            "Download media",
-		Description:      providerDescription(provider.Name()),
+		Title:            downloaderTR(locale, "downloader.result.title"),
+		Description:      providerDescription(provider.Name(), locale),
 		Text:             view.Text,
 		ActionRows:       view.Rows,
 		InteractionState: encoded,
@@ -674,58 +694,64 @@ func decodeInteractiveState(raw []byte) (interactiveState, error) {
 	if state.Provider != "http" && state.Provider != "extractor" {
 		return interactiveState{}, fmt.Errorf("%w: invalid downloader provider", core.ErrInvalidArgs)
 	}
+	state.Locale = localization.CanonicalLocale(state.Locale)
 	return state, nil
 }
 
-func providerDescription(provider string) string {
+func providerDescription(provider string, locales ...string) string {
+	locale := optionalDownloaderLocale(locales)
 	if provider == "extractor" {
-		return "Choose audio/video and a bounded output format"
+		return downloaderTR(locale, "downloader.provider.extractor")
 	}
-	return "Download this direct HTTP(S) file"
+	return downloaderTR(locale, "downloader.provider.http")
 }
 
-func extractorChoiceView(rawURL string) presentation.View {
+func extractorChoiceView(rawURL string, locales ...string) presentation.View {
+	locale := optionalDownloaderLocale(locales)
 	return presentation.View{
-		Text: "<b>GoUltroid Media Downloader</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
+		Text: "<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.title")) + "</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
 		Rows: []presentation.Row{
-			{{Text: "Audio", ActionID: actionAudio}, {Text: "Video", ActionID: actionVideo}},
-			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
+			{{Text: downloaderTR(locale, "downloader.button.audio"), ActionID: actionAudio}, {Text: downloaderTR(locale, "downloader.button.video"), ActionID: actionVideo}},
+			{{Text: downloaderTR(locale, "ui.cancel"), ActionID: actionCancel}},
 		},
 	}
 }
 
-func directDownloadView(rawURL string) presentation.View {
+func directDownloadView(rawURL string, locales ...string) presentation.View {
+	locale := optionalDownloaderLocale(locales)
 	return presentation.View{
-		Text: "<b>GoUltroid Media Downloader</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
+		Text: "<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.title")) + "</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
 		Rows: []presentation.Row{
-			{{Text: "Dᴏᴡɴʟᴏᴀᴅ Fɪʟᴇ", ActionID: actionDownloadFile}},
-			{{Text: "✖ Cᴀɴᴄᴇʟ", ActionID: actionCancel}},
+			{{Text: downloaderTR(locale, "downloader.button.download_file"), ActionID: actionDownloadFile}},
+			{{Text: downloaderTR(locale, "ui.cancel"), ActionID: actionCancel}},
 		},
 	}
 }
 
-func audioFormatView(rawURL string) presentation.View {
+func audioFormatView(rawURL string, locales ...string) presentation.View {
+	locale := optionalDownloaderLocale(locales)
 	return presentation.View{
-		Text: "<b>Choose audio format</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
+		Text: "<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.choose_audio")) + "</b>\n\n<code>" + core.EscapeHTML(rawURL) + "</code>",
 		Rows: []presentation.Row{
 			{{Text: "MP3", ActionID: actionFormatMP3}, {Text: "M4A", ActionID: actionFormatM4A}, {Text: "Opus", ActionID: actionFormatOpus}},
-			{{Text: "‹ Back", ActionID: actionBack}, {Text: "✖ Cancel", ActionID: actionCancel}},
+			{{Text: downloaderTR(locale, "ui.back"), ActionID: actionBack}, {Text: downloaderTR(locale, "ui.cancel"), ActionID: actionCancel}},
 		},
 	}
 }
 
-func videoFormatView(rawURL string, probe download.ProbeResult) presentation.View {
-	lines := []string{"<b>Choose video quality</b>"}
+func videoFormatView(rawURL string, probe download.ProbeResult, locales ...string) presentation.View {
+	locale := optionalDownloaderLocale(locales)
+	lines := []string{"<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.choose_video")) + "</b>"}
 	if title := strings.TrimSpace(probe.Title); title != "" {
-		lines = append(lines, "", "<b>Title:</b> "+core.EscapeHTML(title))
+		lines = append(lines, "", "<b>"+core.EscapeHTML(downloaderTR(locale, "downloader.field.title"))+":</b> "+core.EscapeHTML(title))
 	}
 	if performer := strings.TrimSpace(probe.Performer); performer != "" {
-		lines = append(lines, "<b>Channel:</b> "+core.EscapeHTML(performer))
+		lines = append(lines, "<b>"+core.EscapeHTML(downloaderTR(locale, "downloader.field.channel"))+":</b> "+core.EscapeHTML(performer))
 	}
 	if probe.DurationSeconds > 0 {
-		lines = append(lines, "<b>Duration:</b> <code>"+formatSearchDuration(probe.DurationSeconds)+"</code>")
+		lines = append(lines, "<b>"+core.EscapeHTML(downloaderTR(locale, "downloader.field.duration"))+":</b> <code>"+formatSearchDuration(probe.DurationSeconds)+"</code>")
 	}
-	lines = append(lines, "", "<code>"+core.EscapeHTML(rawURL)+"</code>", "", "Available MP4 qualities:")
+	lines = append(lines, "", "<code>"+core.EscapeHTML(rawURL)+"</code>", "", downloaderTR(locale, "downloader.available_qualities"))
 
 	rows := make([]presentation.Row, 0, 6)
 	current := presentation.Row{}
@@ -748,11 +774,11 @@ func videoFormatView(rawURL string, probe download.ProbeResult) presentation.Vie
 		rows = append(rows, current)
 	}
 	if len(probe.VideoQualities) > 0 {
-		rows = append(rows, presentation.Row{{Text: "MP4 Auto", ActionID: actionFormatMP4}, {Text: "⭐ Best (native)", ActionID: actionFormatBest}})
+		rows = append(rows, presentation.Row{{Text: "MP4 Auto", ActionID: actionFormatMP4}, {Text: downloaderTR(locale, "downloader.button.best"), ActionID: actionFormatBest}})
 	} else {
-		rows = append(rows, presentation.Row{{Text: "⭐ Best (native)", ActionID: actionFormatBest}})
+		rows = append(rows, presentation.Row{{Text: downloaderTR(locale, "downloader.button.best"), ActionID: actionFormatBest}})
 	}
-	rows = append(rows, presentation.Row{{Text: "‹ Back", ActionID: actionBack}, {Text: "✖ Cancel", ActionID: actionCancel}})
+	rows = append(rows, presentation.Row{{Text: downloaderTR(locale, "ui.back"), ActionID: actionBack}, {Text: downloaderTR(locale, "ui.cancel"), ActionID: actionCancel}})
 	return presentation.View{Text: strings.Join(lines, "\n"), Rows: rows}
 }
 
@@ -834,9 +860,10 @@ func runningView(state interactiveState) presentation.View {
 			label += fmt.Sprintf(" / ≤%dp", state.MaxHeight)
 		}
 	}
+	locale := localization.CanonicalLocale(state.Locale)
 	return presentation.View{
-		Text: "⬇️ <b>Downloading...</b>\n\n<b>Format:</b> <code>" + core.EscapeHTML(label) + "</code>",
-		Rows: []presentation.Row{{{Text: "✖ Cancel", ActionID: actionCancel}}},
+		Text: downloaderTR(locale, "downloader.running") + "\n\n<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.field.format")) + ":</b> <code>" + core.EscapeHTML(label) + "</code>",
+		Rows: []presentation.Row{{{Text: downloaderTR(locale, "ui.cancel"), ActionID: actionCancel}}},
 	}
 }
 
@@ -848,20 +875,21 @@ func failedRetryView(state interactiveState) presentation.View {
 			label += fmt.Sprintf(" / ≤%dp", state.MaxHeight)
 		}
 	}
+	locale := localization.CanonicalLocale(state.Locale)
 	return presentation.View{
-		Text: "❌ <b>Download failed.</b>\n\n<b>Selection:</b> <code>" + core.EscapeHTML(label) + "</code>\nRetry the same selection or close and reopen the downloader.",
+		Text: downloaderTR(locale, "downloader.failed") + "\n\n<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.field.selection")) + ":</b> <code>" + core.EscapeHTML(label) + "</code>\n" + downloaderTR(locale, "downloader.retry_hint"),
 		Rows: []presentation.Row{
-			{{Text: "↻ Retry", ActionID: actionRetry}, {Text: "✖ Close", ActionID: actionCancel}},
+			{{Text: downloaderTR(locale, "ui.retry"), ActionID: actionRetry}, {Text: downloaderTR(locale, "ui.close"), ActionID: actionCancel}},
 		},
 	}
 }
 
-func failedView(err error) presentation.View {
-	return presentation.View{Text: "❌ <b>Error downloading media.</b>\nReopen the downloader and try again."}
+func failedView(err error, locales ...string) presentation.View {
+	return presentation.View{Text: downloaderTR(optionalDownloaderLocale(locales), "downloader.error")}
 }
 
-func cancelledView() presentation.View {
-	return presentation.View{Text: "✖ <b>Download cancelled.</b>"}
+func cancelledView(locales ...string) presentation.View {
+	return presentation.View{Text: downloaderTR(optionalDownloaderLocale(locales), "downloader.cancelled")}
 }
 
 var _ assistantinteraction.FeatureDriver = (*Plugin)(nil)

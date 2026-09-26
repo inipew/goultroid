@@ -13,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
+	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/download"
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -253,12 +254,20 @@ func isDeliveryLifecycleCancellation(err error) bool {
 		errors.Is(err, tasks.ErrScopeClosed)
 }
 
-func deliveryFailedView() presentation.View {
-	return presentation.View{Text: "⚠️ <b>Download retained, but Telegram delivery failed.</b>\nReopen the downloader to retry. The retained asset remains safely stored."}
+func deliveryFailedView(locales ...string) presentation.View {
+	locale := localization.DefaultLocale
+	if len(locales) > 0 {
+		locale = localization.CanonicalLocale(locales[0])
+	}
+	return presentation.View{Text: localization.Translate(locale, "downloader.delivery_failed")}
 }
 
-func deliveredView() presentation.View {
-	return presentation.View{Text: "✅ <b>Download delivered to Telegram.</b>"}
+func deliveredView(locales ...string) presentation.View {
+	locale := localization.DefaultLocale
+	if len(locales) > 0 {
+		locale = localization.CanonicalLocale(locales[0])
+	}
+	return presentation.View{Text: localization.Translate(locale, "downloader.delivered")}
 }
 
 func interactivePipelineTaskID(root, stage string) tasks.TaskID {
