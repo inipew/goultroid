@@ -32,6 +32,15 @@ func (e *Engine) settleTerminal(rec *taskRecord) {
 		_ = e.delivery.enqueueReserved(rec.spec.OnComplete, rec.result)
 		rec.callbackReserved = false
 	}
+	detachedBytes := terminalDetachedSpecBytes(rec.spec)
+	if detachedBytes > rec.retainedBytes {
+		detachedBytes = rec.retainedBytes
+	}
+	rec.retainedBytes -= detachedBytes
+	e.retainedBytes -= detachedBytes
+	if e.retainedBytes < 0 {
+		e.retainedBytes = 0
+	}
 	// Terminal records retain only diagnostic identity and bounded results.
 	// Execution closures may capture arbitrarily large object graphs and must
 	// not remain reachable for the terminal retention window.

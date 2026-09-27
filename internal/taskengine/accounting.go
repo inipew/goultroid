@@ -26,7 +26,7 @@ import (
 
 const (
 	// taskOverheadBytes is the fixed retained charge per admitted record
-	// (spec metadata, scope/occurrence copies, ticket, timestamps).
+	// (record, ticket, timestamps, and fixed WorkSpec headers).
 	taskOverheadBytes int64 = 512
 	// jobRefBytes charges the fixed-size durable occurrence reference.
 	jobRefBytes int64 = 128
@@ -44,31 +44,35 @@ const (
 	DefaultDeliveryConcurrency = 4
 )
 
+func jobMetadataBytes(ref *tasks.OccurrenceRef) int64 {
+	if ref == nil {
+		return 0
+	}
+	return jobRefBytes + int64(len(ref.JobID)+len(ref.OccurrenceID)+len(ref.AttemptID))
+}
+
+func resourceMetadataBytes(resources []tasks.ResourceRequirement) int64 {
+	bytes := int64(len(resources)) * resourceRequirementBytes
+	for _, requirement := range resources {
+		bytes += int64(len(requirement.Name))
+	}
+	return bytes
+}
+
 // workSpecMetadataBytes charges variable-size metadata and copied backing
 // storage that remains reachable from an admitted WorkSpec. Input is accounted
 // separately by payloadSize.
 func workSpecMetadataBytes(spec tasks.WorkSpec) int64 {
-	bytes := int64(
-		len(spec.ID) +
-			len(spec.Scope.Owner) +
-			len(spec.QuotaOwner) +
-			len(spec.Pool) +
-			len(spec.Class) +
-			len(spec.OrderingKey) +
-			len(spec.HandlerRef),
-	)
-	if spec.Job != nil {
-		bytes += jobRefBytes + int64(
-			len(spec.Job.JobID)+
-				len(spec.Job.OccurrenceID)+
-				len(spec.Job.AttemptID),
-		)
-	}
-	bytes += int64(len(spec.Resources)) * resourceRequirementBytes
-	for _, requirement := range spec.Resources {
-		bytes += int64(len(requirement.Name))
-	}
-	return bytes
+	return int64(len(spec.ID)+len(spec.Scope.Owner)+len(spec.QuotaOwner)+len(spec.Pool)+len(spec.Class)+len(spec.OrderingKey)+len(spec.HandlerRef)) +
+		jobMetadataBytes(spec.Job) + resourceMetadataBytes(spec.Resources)
+}
+
+// terminalDetachedSpecBytes returns the retained charge that becomes unreachable
+// when settleTerminal strips execution-only WorkSpec ownership.
+func terminalDetachedSpecBytes(spec tasks.WorkSpec) int64 {
+	inputBytes, _ := payloadSize(spec.Input)
+	return inputBytes + int64(len(spec.OrderingKey)+len(spec.HandlerRef)) +
+		jobMetadataBytes(spec.Job) + resourceMetadataBytes(spec.Resources)
 }
 
 // freezeWorkSpecMetadata gives the engine exact-size string/backing ownership

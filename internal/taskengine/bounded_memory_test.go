@@ -240,6 +240,9 @@ func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
 	if rec.cancelFunc != nil || rec.permit != nil {
 		t.Fatal("terminal record retained execution lifecycle references")
 	}
+	if rec.retainedBytes >= int64(len(payload)) {
+		t.Fatalf("terminal retained charge still includes detached payload: %d", rec.retainedBytes)
+	}
 }
 
 func TestTerminalTTLEvictsWhileEngineIdle(t *testing.T) {
