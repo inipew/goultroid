@@ -2,8 +2,8 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after P2-B acceptance: `0fd0d08314afe0689486aecd7ca5c507475ac3f6` — `test(localization): close common userbot p2-b gaps`
-Purpose: continue refinement from **P2-C** through final **P4 closure** after P2-B unified common userbot UX with the existing EN/ID localization authority.
+Current audited implementation baseline after P2-C acceptance: `89790e517001ee1432a0e91927ac468d36a58a56` — `test(errors): fence indirect diagnostic leaks`
+Purpose: continue refinement from **P2-D** through final **P4 closure** after P2-C closed repo-wide user-facing response/error modernization.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
 
@@ -39,7 +39,7 @@ No CI was inspected. A complete executable checkout was still unavailable from t
 
 See `docs/design/goultroid-refinement-p2b-localization.md`.
 
-**NEXT = P2-C — repo-wide response/error modernization, only after explicit user confirmation.**
+**P2-C is CLOSED. Current NEXT = P2-D — remove dead legacy UI helpers, only after explicit user confirmation.**
 
 ## 2026-09-27 P2-A closure update
 
@@ -1013,42 +1013,26 @@ Stop and wait for explicit user confirmation before P2-C.
 
 ---
 
-# 15. P2-C — repo-wide response/error modernization
+# 15. P2-C — repo-wide response/error modernization — CLOSED
 
-Status: PARTIAL FOUNDATION exists via P0-B; repo-wide migration remains.
+Status: **CLOSED** at code acceptance baseline `89790e517001ee1432a0e91927ac468d36a58a56`.
 
-Search production code for unsafe patterns:
+Canonical safe boundary remains P0-B: `Context.Fail`, `WithUserMessage`, `UserMessage`, plus semantic Status/Progress/Success/Result helpers. P2-C did not create a second sanitizer or response engine.
 
-```text
-ctx.Error(err.Error())
-ctx.Error(fmt.Sprintf(... err ...))
-ctx.Status(err.Error())
-ctx.Reply(fmt.Sprintf(... err ...))
-ctx.EditOrReply(fmt.Sprintf(... err ...))
-html.EscapeString(err.Error())
-```
+Fresh continuation audit closed indirect residuals beyond the original direct-pattern migration:
 
-Escaping is not sanitization.
+- Broadcast no longer exposes capture errors or TaskEngine `Failure.Message`.
+- Filters no longer exposes media capture errors.
+- Clone no longer exposes async state re-check errors.
+- Scheduler no longer renders persisted `LastError` / history `ErrorMsg` to Sudo callers.
+- Architecture fences now pin these residuals closed.
+- `.exec` remains the only intentional raw diagnostic exception and is owner-only/userbot-only, bounded, and escaped.
 
-Prefer semantic/safe boundaries:
+Safe non-presentation uses of `err.Error()` remain allowed for classification, persistence/audit state, logging, and explicit bounded sanitizers such as OCR.
 
-```text
-ctx.Status(...)
-ctx.Progress(...)
-ctx.Success(...)
-ctx.Result(...)
-ctx.Fail(cause, safeMessage)
-```
+See `docs/design/goultroid-refinement-p2c-response-error-modernization.md`.
 
-For owner diagnostics: explicit authorization, size cap, escaping, and redaction.
-
-Migration model:
-
-```text
-existing debt -> temporary exact allowlist
-new debt      -> architecture test failure
-allowlist     -> shrink per migration
-```
+**NEXT = P2-D — remove dead legacy UI helpers.**
 
 ---
 
