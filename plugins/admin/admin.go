@@ -592,7 +592,7 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 		contextual, ok := p.moderator.(interface {
 			WarnWithServiceGuarded(
 				context.Context,
-				core.TelegramServicer,
+				core.AdminServicer,
 				tg.InputPeerClass,
 				tg.InputPeerClass,
 				int64,
@@ -607,9 +607,13 @@ func (p *Plugin) handleWarn(ctx *core.Context) error {
 		if !ok {
 			err = fmt.Errorf("%w: guarded contextual moderation service is unavailable", core.ErrUnavailable)
 		} else {
+			adminSvc := ctx.Telegram.Admin
+			if adminSvc == nil {
+				adminSvc = ctx.Svc
+			}
 			res, err = contextual.WarnWithServiceGuarded(
 				ctx.Ctx,
-				ctx.Svc,
+				adminSvc,
 				ctx.PeerID,
 				targetPeer,
 				chatID,

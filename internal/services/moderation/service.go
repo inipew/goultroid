@@ -61,8 +61,8 @@ type Moderator interface {
 
 type Service struct {
 	repo             WarningRepository
-	svc              core.TelegramServicer
-	svcFunc          func() core.TelegramServicer
+	svc              core.AdminServicer
+	svcFunc          func() core.AdminServicer
 	logger           *zap.Logger
 	defaultThreshold int
 	warningLocks     [warningLockStripes]sync.Mutex
@@ -73,7 +73,7 @@ func (s *Service) warningLock(chatID, userID int64) *sync.Mutex {
 	return &s.warningLocks[mixed%warningLockStripes]
 }
 
-func (s *Service) getService() core.TelegramServicer {
+func (s *Service) getService() core.AdminServicer {
 	if s.svc != nil {
 		return s.svc
 	}
@@ -89,15 +89,17 @@ func NewService(repo WarningRepository, svc any, logger *zap.Logger) *Service {
 	}
 	s := &Service{repo: repo, logger: logger, defaultThreshold: DefaultWarnThreshold}
 	switch v := svc.(type) {
-	case core.TelegramServicer:
+	case core.AdminServicer:
 		s.svc = v
-	case func() core.TelegramServicer:
+	case func() core.AdminServicer:
 		s.svcFunc = v
+	case func() core.TelegramServicer:
+		s.svcFunc = func() core.AdminServicer { return v() }
 	}
 	return s
 }
 
-func (s *Service) SetTelegramService(svc core.TelegramServicer) { s.svc = svc }
+func (s *Service) SetTelegramService(svc core.AdminServicer) { s.svc = svc }
 
 // Warn records a warning and enforces the configured threshold action using
 // the service's default Telegram transport.
@@ -111,7 +113,7 @@ func (s *Service) Warn(ctx context.Context, peer tg.InputPeerClass, user tg.Inpu
 // userbot transport.
 func (s *Service) WarnWithService(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc core.AdminServicer,
 	peer tg.InputPeerClass,
 	user tg.InputPeerClass,
 	chatID, userID int64,
@@ -140,7 +142,7 @@ func (s *Service) WarnWithService(
 // closing the role-change window between handler preflight and AddWarning.
 func (s *Service) WarnWithServiceGuarded(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc core.AdminServicer,
 	peer tg.InputPeerClass,
 	user tg.InputPeerClass,
 	chatID, userID int64,
@@ -167,7 +169,7 @@ func (s *Service) WarnWithServiceGuarded(
 
 func (s *Service) warnWithService(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc core.AdminServicer,
 	peer tg.InputPeerClass,
 	user tg.InputPeerClass,
 	chatID, userID int64,
@@ -193,7 +195,7 @@ func (s *Service) warnWithService(
 
 func (s *Service) warnWithServiceGuarded(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc core.AdminServicer,
 	peer tg.InputPeerClass,
 	user tg.InputPeerClass,
 	chatID, userID int64,

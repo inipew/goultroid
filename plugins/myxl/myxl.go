@@ -780,8 +780,12 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 		return err
 	}
 
-	if qrErr == nil && p.files != nil && p.tasks != nil && ctx.Svc != nil && ctx.PeerID != nil {
-		if err := p.sendQRPhoto(ctx.Ctx, ctx.Svc, ctx.PeerID, qrPayload, pending.PackageName, pending.Price); err != nil {
+	mediaSvc := telegramMediaSender(ctx.Telegram.Media)
+	if mediaSvc == nil {
+		mediaSvc = ctx.Svc
+	}
+	if qrErr == nil && p.files != nil && p.tasks != nil && mediaSvc != nil && ctx.PeerID != nil {
+		if err := p.sendQRPhoto(ctx.Ctx, mediaSvc, ctx.PeerID, qrPayload, pending.PackageName, pending.Price); err != nil {
 			_ = ctx.Reply("⚠️ Detail QRIS tersedia, tetapi gambar QR gagal dikirim. Gunakan string QRIS di pesan sebelumnya.")
 		}
 	}
@@ -888,7 +892,11 @@ func (p *Plugin) getFiles() *filesystem.Scope {
 	return p.files
 }
 
-func (p *Plugin) sendQRPhoto(ctx context.Context, svc core.TelegramServicer, peer tg.InputPeerClass, qrCode, pkgName string, price int64) error {
+type telegramMediaSender interface {
+	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
+}
+
+func (p *Plugin) sendQRPhoto(ctx context.Context, svc telegramMediaSender, peer tg.InputPeerClass, qrCode, pkgName string, price int64) error {
 	if svc == nil || peer == nil || strings.TrimSpace(qrCode) == "" {
 		return nil
 	}

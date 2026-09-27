@@ -1,7 +1,9 @@
 package interaction
 
 import (
-	"github.com/inipew/goultroid/internal/core"
+	"context"
+
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/feature"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
@@ -12,14 +14,20 @@ import (
 // metadata in the feature catalog; the Assistant owns identity/permission data.
 type Admitter func(featureID string, kind feature.InteractionKind, interactionID string, actorID int64, target presentation.Target) error
 
+// MediaSender is the feature-driver transport boundary for Assistant-owned
+// media side effects. Download and unrelated Telegram operations are excluded.
+type MediaSender interface {
+	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
+}
+
 // DriverRuntime is the transport-bound runtime supplied to feature drivers while
 // one Assistant generation is running. It deliberately exposes only the canonical Assistant interaction
 // orchestration surface, read-only catalog, admission callback, and Telegram
-// service needed for feature-owned media side effects.
+// media sender needed for feature-owned media side effects.
 type DriverRuntime struct {
 	Engine  *orchestration.Engine
 	Catalog feature.Catalog
-	Service core.TelegramServicer
+	Service MediaSender
 	Admit   Admitter
 }
 

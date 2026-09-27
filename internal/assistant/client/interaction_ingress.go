@@ -313,19 +313,6 @@ func (s *interactionPresentationServicer) EditMessageMarkup(ctx context.Context,
 	return s.interaction.Edit(ctx, target, text, markup)
 }
 
-func (s *interactionPresentationServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
-	if s == nil || s.interaction == nil {
-		return ErrInteractionUnavailable
-	}
-	for _, msgID := range msgIDs {
-		target := assistantinteraction.NewMessageTarget(peer, msgID, extractChatIDFromInputPeer(peer), 0)
-		if err := s.interaction.Delete(ctx, target); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *interactionPresentationServicer) SendMessageContext(
 	ctx context.Context,
 	peer tg.InputPeerClass,

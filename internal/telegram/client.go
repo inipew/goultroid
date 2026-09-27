@@ -209,10 +209,11 @@ func (c *Client) API() *tg.Client {
 
 // Service returns the TelegramServicer instance.
 func (c *Client) Service() core.TelegramServicer {
-	if c != nil && c.dispatcher != nil {
-		return c.dispatcher.Service()
+	if c == nil || c.dispatcher == nil {
+		return nil
 	}
-	return nil
+	svc, _ := c.dispatcher.Service().(core.TelegramServicer)
+	return svc
 }
 
 // Dispatcher returns the underlying Dispatcher instance.
