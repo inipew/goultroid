@@ -4,11 +4,10 @@ import (
 	"errors"
 
 	assistantclient "github.com/inipew/goultroid/internal/assistant/client"
-	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/presentation/selfinline"
 )
 
-type selfInlineServiceProvider interface{ Service() core.TelegramServicer }
+type selfInlineServiceProvider interface{ SelfInlineTransport() selfinline.Transport }
 
 type selfInlineAssistantIdentity interface {
 	InlineUsername() (string, error)
@@ -18,10 +17,7 @@ func newSelfInlineRenderer(client selfInlineServiceProvider, assistantClient sel
 	if client == nil || assistantClient == nil {
 		return nil
 	}
-	transport := selfinline.CurrentTransport(func() selfinline.Transport {
-		current, _ := client.Service().(selfinline.Transport)
-		return current
-	})
+	transport := selfinline.CurrentTransport(client.SelfInlineTransport)
 	if transport == nil {
 		return nil
 	}

@@ -315,13 +315,13 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
 					return nil
 				}
-				return tgRuntime.dispatcher.Service()
+				return tgRuntime.dispatcher.AdminService()
 			},
 			MediaService: func() core.MediaServicer {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
 					return nil
 				}
-				return tgRuntime.dispatcher.Service()
+				return tgRuntime.dispatcher.MediaService()
 			},
 			ContextualMessageService: func() core.ContextualMessageServicer {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
@@ -339,7 +339,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
 					return nil
 				}
-				return tgRuntime.dispatcher.Service()
+				return tgRuntime.dispatcher.OriginTracker()
 			},
 			Resolver: tgRuntime.dispatcher.Resolver(),
 		},

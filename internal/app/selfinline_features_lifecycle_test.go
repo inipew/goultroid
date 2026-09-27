@@ -7,15 +7,16 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/presentation/selfinline"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/plugins/calculator"
 )
 
 type p0SelfInlineServiceProvider struct {
-	service core.TelegramServicer
+	service selfinline.Transport
 }
 
-func (p *p0SelfInlineServiceProvider) Service() core.TelegramServicer {
+func (p *p0SelfInlineServiceProvider) SelfInlineTransport() selfinline.Transport {
 	if p == nil {
 		return nil
 	}

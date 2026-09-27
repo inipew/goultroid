@@ -5,6 +5,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	presentationselfinline "github.com/inipew/goultroid/internal/presentation/selfinline"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 )
@@ -26,6 +27,7 @@ type dispatcherCapabilities struct {
 	contextualMessages core.ContextualMessageServicer
 	contextualMedia    core.ContextualMediaServicer
 	presentation       presentationtelegram.BridgeService
+	selfInline         presentationselfinline.Transport
 }
 
 func dispatcherCapabilitiesFrom(service DispatcherService) dispatcherCapabilities {
@@ -46,6 +48,9 @@ func dispatcherCapabilitiesFrom(service DispatcherService) dispatcherCapabilitie
 	}
 	if presentation, ok := service.(presentationtelegram.BridgeService); ok {
 		caps.presentation = presentation
+	}
+	if selfInline, ok := service.(presentationselfinline.Transport); ok {
+		caps.selfInline = selfInline
 	}
 	return caps
 }
@@ -80,4 +85,5 @@ var (
 	_ callbackQueryAnswerer     = (*Service)(nil)
 	_ botOriginTracker          = (*Service)(nil)
 	_ peerAwareBotOriginTracker = (*Service)(nil)
+	_ presentationselfinline.Transport = (*Service)(nil)
 )

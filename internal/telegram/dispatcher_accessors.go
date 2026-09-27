@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/inipew/goultroid/internal/core"
+	presentationselfinline "github.com/inipew/goultroid/internal/presentation/selfinline"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/services/inline"
 )
@@ -177,6 +178,12 @@ func (d *Dispatcher) PresentationService() presentationtelegram.BridgeService {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.services.presentation
+}
+
+func (d *Dispatcher) SelfInlineTransport() presentationselfinline.Transport {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.selfInline
 }
 
 func (d *Dispatcher) getCallbackAnswerer() callbackQueryAnswerer {

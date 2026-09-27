@@ -21,6 +21,7 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	presentationselfinline "github.com/inipew/goultroid/internal/presentation/selfinline"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"go.uber.org/zap"
 )
@@ -228,6 +229,15 @@ func (c *Client) PresentationService() presentationtelegram.BridgeService {
 		return nil
 	}
 	return c.dispatcher.PresentationService()
+}
+
+// SelfInlineTransport returns the production userbot transport required by
+// self-inline rendering without depending on the legacy aggregate service.
+func (c *Client) SelfInlineTransport() presentationselfinline.Transport {
+	if c == nil || c.dispatcher == nil {
+		return nil
+	}
+	return c.dispatcher.SelfInlineTransport()
 }
 
 // Dispatcher returns the underlying Dispatcher instance.
