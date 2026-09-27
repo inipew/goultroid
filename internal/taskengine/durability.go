@@ -3,6 +3,7 @@ package taskengine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/inipew/goultroid/internal/tasks"
@@ -189,22 +190,25 @@ func (e *Engine) beginCommit(rec *taskRecord) {
 	// durability lane. No completion-callback worker and no detached goroutine
 	// is consumed by this path.
 	if e.durability != nil && e.durability.enqueue(func() {
-		commitCtx, cancel := context.WithTimeout(context.Background(), directCommitTimeout)
-		defer cancel()
-		ackErr := commitOp(commitCtx)
-		select {
-		case <-rootCtx.Done():
-			return
-		default:
-		}
-		e.sendInternal(engineRequest{op: opCommitAck, taskID: rec.spec.ID, commitSeq: rec.commitSeq, ackErr: ackErr})
+		var ackErr error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					ackErr = fmt.Errorf("durability direct commit panic: %v", recovered)
+				}
+			}()
+			commitCtx, cancel := context.WithTimeout(context.Background(), directCommitTimeout)
+			defer cancel()
+			ackErr = commitOp(commitCtx)
+		}()
+		ack(ackErr)
 	}) {
 		return
 	}
 
 	// Fail closed when even the bounded durability lane is saturated. This is
 	// explicit RecoveryRequired state, never an unbounded rescue goroutine.
-	e.applyCommitAck(rec.spec.ID, rec.commitSeq, errors.New("durability commit lane saturated"))
+	e.applyCommitAck(taskID, commitSeq, errors.New("durability commit lane saturated"))
 }
 
 // applyCommitAck resolves a CommitPending record. Success preserves the

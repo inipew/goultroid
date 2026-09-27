@@ -245,6 +245,7 @@ func (e *Engine) forceCancelInFlight(rec *taskRecord) {
 	if rec.permit != nil {
 		rec.permit.release()
 	}
+	e.releaseResources(rec.spec)
 	e.adm.OnTaskTerminal(rec.spec)
 
 	now := time.Now().UTC()
