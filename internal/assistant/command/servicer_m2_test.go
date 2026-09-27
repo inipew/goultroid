@@ -58,60 +58,52 @@ func TestM2AssistantDeleteMessagePropagatesTransportError(t *testing.T) {
 	}
 }
 
-func TestM2AssistantUnsupportedCapabilitiesFailClosed(t *testing.T) {
+func TestM2AssistantCapabilitiesReflectActualSupport(t *testing.T) {
 	svc := &assistantServicerAdapter{}
+	caps := assistantTelegramCapabilities(svc)
 
-	checks := []struct {
-		name string
-		call func() error
-	}{
-		{
-			name: "react",
-			call: func() error {
-				return svc.React(context.Background(), &tg.InputPeerSelf{}, 1, "👍")
-			},
-		},
-		{
-			name: "forward",
-			call: func() error {
-				return svc.ForwardMessages(context.Background(), &tg.InputPeerSelf{}, &tg.InputPeerSelf{}, []int{1})
-			},
-		},
-		{
-			name: "download",
-			call: func() error {
-				return svc.DownloadFile(context.Background(), nil, "ignored")
-			},
-		},
-		{
-			name: "block",
-			call: func() error {
-				return svc.BlockUser(context.Background(), &tg.InputPeerSelf{})
-			},
-		},
-		{
-			name: "profile",
-			call: func() error {
-				return svc.UpdateProfile(context.Background(), nil, nil, nil)
-			},
-		},
+	if caps.MessageActions == nil {
+		t.Fatal("assistant message actions capability is nil")
+	}
+	if caps.Admin == nil {
+		t.Fatal("assistant admin capability is nil")
+	}
+	if caps.MediaSend == nil {
+		t.Fatal("assistant media-send capability is nil")
+	}
+	if caps.FullChat == nil {
+		t.Fatal("assistant full-chat capability is nil")
+	}
+	if caps.ContextualMessages == nil || caps.ContextualMedia == nil {
+		t.Fatal("assistant contextual delivery capabilities are nil")
 	}
 
-	for _, tc := range checks {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.call(); !errors.Is(err, core.ErrUnsupported) {
-				t.Fatalf("error = %v, want ErrUnsupported", err)
-			}
-		})
+	if caps.Messages != nil {
+		t.Fatal("assistant unexpectedly advertises full MessageServicer")
+	}
+	if caps.Reactions != nil {
+		t.Fatal("assistant unexpectedly advertises reaction capability")
+	}
+	if caps.Forwarding != nil {
+		t.Fatal("assistant unexpectedly advertises forwarding capability")
+	}
+	if caps.Media != nil || caps.MediaDownload != nil {
+		t.Fatal("assistant unexpectedly advertises media-download capability")
+	}
+	if caps.Peers != nil || caps.Profile != nil {
+		t.Fatal("assistant unexpectedly advertises broad peer/profile capability")
 	}
 
-	if _, err := svc.GetFullUser(context.Background(), nil); !errors.Is(err, core.ErrUnsupported) {
-		t.Fatalf("GetFullUser error = %v, want ErrUnsupported", err)
+	if _, ok := any(svc).(core.CommandTelegramServicer); ok {
+		t.Fatal("assistant adapter unexpectedly satisfies CommandTelegramServicer")
 	}
-	if _, err := svc.GetDialogs(context.Background(), 1); !errors.Is(err, core.ErrUnsupported) {
-		t.Fatalf("GetDialogs error = %v, want ErrUnsupported", err)
+	if _, ok := any(svc).(core.MessageServicer); ok {
+		t.Fatal("assistant adapter unexpectedly satisfies full MessageServicer")
 	}
-	if _, err := svc.GetContacts(context.Background()); !errors.Is(err, core.ErrUnsupported) {
-		t.Fatalf("GetContacts error = %v, want ErrUnsupported", err)
+	if _, ok := any(svc).(core.MediaServicer); ok {
+		t.Fatal("assistant adapter unexpectedly satisfies full MediaServicer")
+	}
+	if _, ok := any(svc).(core.PeerServicer); ok {
+		t.Fatal("assistant adapter unexpectedly satisfies full PeerServicer")
 	}
 }

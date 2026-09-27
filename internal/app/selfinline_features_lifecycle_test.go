@@ -14,12 +14,14 @@ import (
 
 type p0SelfInlineServiceProvider struct {
 	service selfinline.Transport
+	calls   int
 }
 
 func (p *p0SelfInlineServiceProvider) SelfInlineTransport() selfinline.Transport {
 	if p == nil {
 		return nil
 	}
+	p.calls++
 	return p.service
 }
 

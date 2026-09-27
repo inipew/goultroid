@@ -149,13 +149,13 @@ func (p *PeerFacade) ResolveUsername(username string) (*tg.ContactsResolvedPeer,
 
 func (p *PeerFacade) GetFullChat() (*tg.MessagesChatFull, error) {
 	c := p.ctx
-	if c == nil || c.peerServicer() == nil {
+	if c == nil || c.fullChatServicer() == nil {
 		return nil, errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
 		return nil, errors.New("peer is nil")
 	}
-	return c.peerServicer().GetFullChat(c.Ctx, c.PeerID)
+	return c.fullChatServicer().GetFullChat(c.Ctx, c.PeerID)
 }
 
 func (p *PeerFacade) BlockUser(peer tg.InputPeerClass) error {

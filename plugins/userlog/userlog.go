@@ -554,7 +554,7 @@ func (p *Plugin) handleSetLog(ctx *core.Context) error {
 	}
 
 	// Verification: send a test verification message to ensure we have permission to write.
-	messageSvc := ctx.MessageService()
+	messageSvc := ctx.MessageActionService()
 	if messageSvc == nil {
 		return ctx.Error("<b>Verification failed:</b> Telegram message service is unavailable.")
 	}

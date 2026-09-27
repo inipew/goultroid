@@ -69,7 +69,10 @@ type assistantServicerAdapter struct {
 }
 
 var (
-	_ core.CommandTelegramServicer    = (*assistantServicerAdapter)(nil)
+	_ core.MessageActionServicer      = (*assistantServicerAdapter)(nil)
+	_ core.AdminServicer              = (*assistantServicerAdapter)(nil)
+	_ core.MediaSendServicer          = (*assistantServicerAdapter)(nil)
+	_ core.FullChatServicer           = (*assistantServicerAdapter)(nil)
 	_ core.ContextualMessageServicer  = (*assistantServicerAdapter)(nil)
 	_ core.ContextualMediaServicer    = (*assistantServicerAdapter)(nil)
 )
@@ -187,54 +190,6 @@ func (a *assistantServicerAdapter) GetFullChat(ctx context.Context, peer tg.Inpu
 	return a.groupQuery.GetFullChat(ctx, peer)
 }
 
-func (*assistantServicerAdapter) React(context.Context, tg.InputPeerClass, int, string) error {
-	return core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) ForwardMessages(context.Context, tg.InputPeerClass, tg.InputPeerClass, []int) error {
-	return core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) DownloadFile(context.Context, tg.InputFileLocationClass, string) error {
-	return core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) GetFullUser(context.Context, tg.InputUserClass) (*tg.UsersUserFull, error) {
-	return nil, core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) ResolveUsername(context.Context, string) (*tg.ContactsResolvedPeer, error) {
-	return nil, core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) BlockUser(context.Context, tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) UnblockUser(context.Context, tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) UpdateProfile(context.Context, *string, *string, *string) error {
-	return core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) UploadProfilePhoto(context.Context, string) error {
-	return core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) DeleteProfilePhotos(context.Context, int) (int, error) {
-	return 0, core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) GetDialogs(context.Context, int) ([]*core.Chat, error) {
-	return nil, core.ErrUnsupported
-}
-
-func (*assistantServicerAdapter) GetContacts(context.Context) ([]*core.User, error) {
-	return nil, core.ErrUnsupported
-}
-
 func (a *assistantServicerAdapter) executeGroupMutation(
 	ctx context.Context,
 	request GroupMutationRequest,
@@ -248,20 +203,34 @@ func (a *assistantServicerAdapter) executeGroupMutation(
 	return a.groupMutation.Execute(ctx, a.mutationContext, request)
 }
 
+func assistantTelegramCapabilities(adapter *assistantServicerAdapter) core.TelegramCapabilities {
+	if adapter == nil {
+		return core.TelegramCapabilities{}
+	}
+	return core.TelegramCapabilities{
+		MessageActions:     adapter,
+		Admin:              adapter,
+		MediaSend:          adapter,
+		FullChat:           adapter,
+		ContextualMessages: adapter,
+		ContextualMedia:    adapter,
+	}
+}
+
 func admitGroupMutationExecution(c *core.Context) {
 	if c == nil {
 		return
 	}
 	adapter, ok := c.Telegram.Admin.(*assistantServicerAdapter)
 	if !ok || adapter == nil {
-		adapter, ok = c.Telegram.Messages.(*assistantServicerAdapter)
+		adapter, ok = c.Telegram.MessageActions.(*assistantServicerAdapter)
 	}
 	if !ok || adapter == nil {
 		return
 	}
 	admitted := *adapter
 	admitted.mutationAdmitted = true
-	c.Telegram = core.TelegramCapabilitiesFrom(&admitted)
+	c.Telegram = assistantTelegramCapabilities(&admitted)
 }
 
 func (a *assistantServicerAdapter) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {

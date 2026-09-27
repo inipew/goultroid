@@ -304,45 +304,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			EventBus:    coreDeps.eventBus,
 			Metrics:     coreDeps.metrics,
 		},
-		TelegramRuntime: module.TelegramRuntime{
-			MessageService: func() core.MessageServicer {
-				if tgRuntime == nil || tgRuntime.dispatcher == nil {
-					return nil
-				}
-				return tgRuntime.dispatcher.MessageService()
-			},
-			AdminService: func() core.AdminServicer {
-				if tgRuntime == nil || tgRuntime.dispatcher == nil {
-					return nil
-				}
-				return tgRuntime.dispatcher.AdminService()
-			},
-			MediaService: func() core.MediaServicer {
-				if tgRuntime == nil || tgRuntime.dispatcher == nil {
-					return nil
-				}
-				return tgRuntime.dispatcher.MediaService()
-			},
-			ContextualMessageService: func() core.ContextualMessageServicer {
-				if tgRuntime == nil || tgRuntime.dispatcher == nil {
-					return nil
-				}
-				return tgRuntime.dispatcher.ContextualMessageService()
-			},
-			ContextualMediaService: func() core.ContextualMediaServicer {
-				if tgRuntime == nil || tgRuntime.dispatcher == nil {
-					return nil
-				}
-				return tgRuntime.dispatcher.ContextualMediaService()
-			},
-			OriginTracker: func() module.BotOriginTracker {
-				if tgRuntime == nil || tgRuntime.dispatcher == nil {
-					return nil
-				}
-				return tgRuntime.dispatcher.OriginTracker()
-			},
-			Resolver: tgRuntime.dispatcher.Resolver(),
-		},
+		TelegramRuntime: newModuleTelegramRuntime(tgRuntime.dispatcher),
 		ServiceRuntime: module.ServiceRuntime{
 			Storage:          domServices.storage,
 			DownloadRegistry: domServices.downloadRegistry,

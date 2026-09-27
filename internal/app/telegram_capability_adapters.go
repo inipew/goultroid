@@ -5,10 +5,49 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/module"
+	"github.com/inipew/goultroid/internal/telegram"
 )
 
 type appOriginTracker interface {
 	IsBotSent(int) bool
+}
+
+type moduleTelegramCapabilityProvider interface {
+	MessageService() core.MessageServicer
+	AdminService() core.AdminServicer
+	MediaService() core.MediaServicer
+	ContextualMessageService() core.ContextualMessageServicer
+	ContextualMediaService() core.ContextualMediaServicer
+	OriginTracker() telegram.OriginTracker
+	Resolver() core.PeerResolver
+}
+
+func newModuleTelegramRuntime(provider moduleTelegramCapabilityProvider) module.TelegramRuntime {
+	if provider == nil {
+		return module.TelegramRuntime{}
+	}
+	return module.TelegramRuntime{
+		MessageService: func() core.MessageServicer {
+			return provider.MessageService()
+		},
+		AdminService: func() core.AdminServicer {
+			return provider.AdminService()
+		},
+		MediaService: func() core.MediaServicer {
+			return provider.MediaService()
+		},
+		ContextualMessageService: func() core.ContextualMessageServicer {
+			return provider.ContextualMessageService()
+		},
+		ContextualMediaService: func() core.ContextualMediaServicer {
+			return provider.ContextualMediaService()
+		},
+		OriginTracker: func() module.BotOriginTracker {
+			return provider.OriginTracker()
+		},
+		Resolver: provider.Resolver(),
+	}
 }
 
 type pmPermitTelegramAdapter struct {

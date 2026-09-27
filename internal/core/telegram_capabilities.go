@@ -24,6 +24,27 @@ type MessageServicer interface {
 	PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error)
 }
 
+type MessageActionServicer interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	SendMessageWithMarkup(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass) (*tg.Message, error)
+	EditMessage(context.Context, tg.InputPeerClass, int, string) error
+	EditMessageMarkup(context.Context, tg.InputPeerClass, int, string, tg.ReplyMarkupClass) error
+	EditMessageMarkupOnly(context.Context, tg.InputPeerClass, int, tg.ReplyMarkupClass) error
+	DeleteMessage(context.Context, tg.InputPeerClass, []int) error
+	GetMessage(context.Context, tg.InputPeerClass, int) (*tg.Message, error)
+	PinMessage(context.Context, tg.InputPeerClass, int, bool) error
+	UnpinMessage(context.Context, tg.InputPeerClass, int) error
+	PurgeMessages(context.Context, tg.InputPeerClass, int, int, int) (int, error)
+}
+
+type MessageReactionServicer interface {
+	React(context.Context, tg.InputPeerClass, int, string) error
+}
+
+type MessageForwardServicer interface {
+	ForwardMessages(context.Context, tg.InputPeerClass, tg.InputPeerClass, []int) error
+}
+
 // AdminServicer is the command-context boundary for moderation and chat-admin
 // mutations.
 type AdminServicer interface {
@@ -44,6 +65,14 @@ type MediaServicer interface {
 	SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error)
 }
 
+type MediaSendServicer interface {
+	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
+}
+
+type MediaDownloadServicer interface {
+	DownloadFile(context.Context, tg.InputFileLocationClass, string) error
+}
+
 // PeerServicer is the command-context boundary for peer lookup and peer-level
 // user state.
 type PeerServicer interface {
@@ -52,6 +81,10 @@ type PeerServicer interface {
 	GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error)
 	BlockUser(ctx context.Context, peer tg.InputPeerClass) error
 	UnblockUser(ctx context.Context, peer tg.InputPeerClass) error
+}
+
+type FullChatServicer interface {
+	GetFullChat(context.Context, tg.InputPeerClass) (*tg.MessagesChatFull, error)
 }
 
 // ProfileServicer is the boundary for self-profile, dialog, and contact

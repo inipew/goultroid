@@ -5,9 +5,15 @@ package core
 // Production may bind the same concrete transport to multiple fields.
 type TelegramCapabilities struct {
 	Messages           MessageServicer
+	MessageActions     MessageActionServicer
+	Reactions          MessageReactionServicer
+	Forwarding         MessageForwardServicer
 	Admin              AdminServicer
 	Media              MediaServicer
+	MediaSend          MediaSendServicer
+	MediaDownload      MediaDownloadServicer
 	Peers              PeerServicer
+	FullChat           FullChatServicer
 	Profile            ProfileServicer
 	ContextualMessages ContextualMessageServicer
 	ContextualMedia    ContextualMediaServicer
@@ -22,11 +28,17 @@ func TelegramCapabilitiesFrom(service CommandTelegramServicer) TelegramCapabilit
 		return TelegramCapabilities{}
 	}
 	caps := TelegramCapabilities{
-		Messages: service,
-		Admin:    service,
-		Media:    service,
-		Peers:    service,
-		Profile:  service,
+		Messages:       service,
+		MessageActions: service,
+		Reactions:      service,
+		Forwarding:     service,
+		Admin:          service,
+		Media:          service,
+		MediaSend:      service,
+		MediaDownload:  service,
+		Peers:          service,
+		FullChat:       service,
+		Profile:        service,
 	}
 	if contextual, ok := service.(ContextualMessageServicer); ok {
 		caps.ContextualMessages = contextual
@@ -35,6 +47,51 @@ func TelegramCapabilitiesFrom(service CommandTelegramServicer) TelegramCapabilit
 		caps.ContextualMedia = contextual
 	}
 	return caps
+}
+
+func (c *Context) messageActionServicer() MessageActionServicer {
+	if c == nil {
+		return nil
+	}
+	if c.Telegram.MessageActions != nil {
+		return c.Telegram.MessageActions
+	}
+	if c.Telegram.Messages != nil {
+		return c.Telegram.Messages
+	}
+	return c.Svc
+}
+
+func (c *Context) reactionServicer() MessageReactionServicer {
+	if c == nil {
+		return nil
+	}
+	if c.Telegram.Reactions != nil {
+		return c.Telegram.Reactions
+	}
+	if c.Telegram.Messages != nil {
+		return c.Telegram.Messages
+	}
+	if c.Svc != nil {
+		return c.Svc
+	}
+	return nil
+}
+
+func (c *Context) forwardServicer() MessageForwardServicer {
+	if c == nil {
+		return nil
+	}
+	if c.Telegram.Forwarding != nil {
+		return c.Telegram.Forwarding
+	}
+	if c.Telegram.Messages != nil {
+		return c.Telegram.Messages
+	}
+	if c.Svc != nil {
+		return c.Svc
+	}
+	return nil
 }
 
 func (c *Context) messageServicer() MessageServicer {
@@ -57,12 +114,51 @@ func (c *Context) adminServicer() AdminServicer {
 	return c.Svc
 }
 
+func (c *Context) mediaSendServicer() MediaSendServicer {
+	if c == nil {
+		return nil
+	}
+	if c.Telegram.MediaSend != nil {
+		return c.Telegram.MediaSend
+	}
+	if c.Telegram.Media != nil {
+		return c.Telegram.Media
+	}
+	return c.Svc
+}
+
+func (c *Context) mediaDownloadServicer() MediaDownloadServicer {
+	if c == nil {
+		return nil
+	}
+	if c.Telegram.MediaDownload != nil {
+		return c.Telegram.MediaDownload
+	}
+	if c.Telegram.Media != nil {
+		return c.Telegram.Media
+	}
+	return c.Svc
+}
+
 func (c *Context) mediaServicer() MediaServicer {
 	if c == nil {
 		return nil
 	}
 	if c.Telegram.Media != nil {
 		return c.Telegram.Media
+	}
+	return c.Svc
+}
+
+func (c *Context) fullChatServicer() FullChatServicer {
+	if c == nil {
+		return nil
+	}
+	if c.Telegram.FullChat != nil {
+		return c.Telegram.FullChat
+	}
+	if c.Telegram.Peers != nil {
+		return c.Telegram.Peers
 	}
 	return c.Svc
 }
@@ -124,6 +220,12 @@ func (c *Context) MessageService() MessageServicer {
 	return c.messageServicer()
 }
 
+// MessageActionService returns the send/edit/delete/get/pin/purge capability
+// without implying reaction or forwarding support.
+func (c *Context) MessageActionService() MessageActionServicer {
+	return c.messageActionServicer()
+}
+
 // AdminService returns the moderation/admin capability available to this
 // Context.
 func (c *Context) AdminService() AdminServicer {
@@ -135,10 +237,26 @@ func (c *Context) MediaService() MediaServicer {
 	return c.mediaServicer()
 }
 
+// MediaSendService returns media delivery without implying download support.
+func (c *Context) MediaSendService() MediaSendServicer {
+	return c.mediaSendServicer()
+}
+
+// MediaDownloadService returns media download without implying send support.
+func (c *Context) MediaDownloadService() MediaDownloadServicer {
+	return c.mediaDownloadServicer()
+}
+
 // PeerService returns the peer lookup/state capability available to this
 // Context.
 func (c *Context) PeerService() PeerServicer {
 	return c.peerServicer()
+}
+
+// FullChatService returns the chat lookup capability without implying user
+// lookup or block/unblock support.
+func (c *Context) FullChatService() FullChatServicer {
+	return c.fullChatServicer()
 }
 
 // ProfileService returns the self-profile/dialog/contact capability available

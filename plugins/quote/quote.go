@@ -280,10 +280,10 @@ func (p *Plugin) resolveAuthorInfo(ctx *core.Context, reply *core.Message) autho
 }
 
 func (p *Plugin) resolveReplyPreview(ctx *core.Context, replyToID int) *ReplyPreview {
-	if ctx == nil || ctx.MessageService() == nil || replyToID == 0 {
+	if ctx == nil || ctx.MessageActionService() == nil || replyToID == 0 {
 		return &ReplyPreview{Text: "Deleted message"}
 	}
-	msg, err := ctx.MessageService().GetMessage(ctx.Ctx, ctx.PeerID, replyToID)
+	msg, err := ctx.MessageActionService().GetMessage(ctx.Ctx, ctx.PeerID, replyToID)
 	if err != nil || msg == nil {
 		return &ReplyPreview{Text: "Deleted message"}
 	}

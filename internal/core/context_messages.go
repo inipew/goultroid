@@ -37,9 +37,9 @@ func sendContextualMessage(c *Context, text string, markup tg.ReplyMarkupClass) 
 		return nil, fmt.Errorf("%w: telegram transport cannot preserve forum topic %d", ErrUnavailable, send.TopicID)
 	}
 	if markup != nil {
-		return c.messageServicer().SendMessageWithMarkup(c.Ctx, c.PeerID, text, markup)
+		return c.messageActionServicer().SendMessageWithMarkup(c.Ctx, c.PeerID, text, markup)
 	}
-	return c.messageServicer().SendMessage(c.Ctx, c.PeerID, text)
+	return c.messageActionServicer().SendMessage(c.Ctx, c.PeerID, text)
 }
 
 func (m *MessagesFacade) scheduleDelete(peer tg.InputPeerClass, msgID int, delay time.Duration) error {
@@ -47,13 +47,13 @@ func (m *MessagesFacade) scheduleDelete(peer tg.InputPeerClass, msgID int, delay
 	if delay <= 0 || msgID <= 0 {
 		return nil
 	}
-	if c == nil || c.messageServicer() == nil || peer == nil {
+	if c == nil || c.messageActionServicer() == nil || peer == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.DelayedActions == nil {
 		return fmt.Errorf("%w: delayed action scheduler is unavailable", ErrUnavailable)
 	}
-	svc := c.messageServicer()
+	svc := c.messageActionServicer()
 	return c.DelayedActions.Schedule(c.Ctx, delay, delayedDeleteRetainedBytes, func(actionCtx context.Context) error {
 		return svc.DeleteMessage(actionCtx, peer, []int{msgID})
 	})
@@ -62,7 +62,7 @@ func (m *MessagesFacade) scheduleDelete(peer tg.InputPeerClass, msgID int, delay
 // Reply sends a response message to the same chat and records LastResponseID.
 func (m *MessagesFacade) Reply(text string) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -80,7 +80,7 @@ func (m *MessagesFacade) Reply(text string) error {
 
 func (m *MessagesFacade) ReplyAndDelete(text string) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -94,14 +94,14 @@ func (m *MessagesFacade) ReplyAndDelete(text string) error {
 		c.LastResponseID = sent.ID
 	}
 	if c.Message != nil && c.Message.ID > 0 {
-		_ = c.messageServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+		_ = c.messageActionServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
 	}
 	return nil
 }
 
 func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duration) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -115,7 +115,7 @@ func (m *MessagesFacade) ReplyAndDeleteWithDelay(text string, delay time.Duratio
 		c.LastResponseID = sent.ID
 	}
 	if c.Message != nil && c.Message.ID > 0 {
-		_ = c.messageServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+		_ = c.messageActionServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
 	}
 	if delay > 0 && sent != nil && sent.ID > 0 {
 		if err := m.scheduleDelete(c.PeerID, sent.ID, delay); err != nil {
@@ -200,7 +200,7 @@ func (m *MessagesFacade) EditOrReplyWithDelay(text string, delay time.Duration) 
 		if err := m.Reply(text); err != nil {
 			return err
 		}
-		if delay > 0 && c.LastResponseID > 0 && c.messageServicer() != nil && c.PeerID != nil {
+		if delay > 0 && c.LastResponseID > 0 && c.messageActionServicer() != nil && c.PeerID != nil {
 			return m.scheduleDelete(c.PeerID, c.LastResponseID, delay)
 		}
 		return nil
@@ -210,7 +210,7 @@ func (m *MessagesFacade) EditOrReplyWithDelay(text string, delay time.Duration) 
 
 func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -228,7 +228,7 @@ func (m *MessagesFacade) ReplyMarkup(text string, markup tg.ReplyMarkupClass) er
 
 func (m *MessagesFacade) EditMarkup(text string, markup tg.ReplyMarkupClass) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -241,12 +241,12 @@ func (m *MessagesFacade) EditMarkup(text string, markup tg.ReplyMarkupClass) err
 	if msgID == 0 {
 		return errors.New("no message to edit")
 	}
-	return c.messageServicer().EditMessageMarkup(c.Ctx, c.PeerID, msgID, text, markup)
+	return c.messageActionServicer().EditMessageMarkup(c.Ctx, c.PeerID, msgID, text, markup)
 }
 
 func (m *MessagesFacade) Delete() error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -255,12 +255,12 @@ func (m *MessagesFacade) Delete() error {
 	if c.Message == nil || c.Message.ID == 0 {
 		return errors.New("no message to delete")
 	}
-	return c.messageServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
+	return c.messageActionServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.Message.ID})
 }
 
 func (m *MessagesFacade) DeleteResponse() error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -269,13 +269,17 @@ func (m *MessagesFacade) DeleteResponse() error {
 	if c.LastResponseID == 0 {
 		return errors.New("no response message to delete")
 	}
-	return c.messageServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.LastResponseID})
+	return c.messageActionServicer().DeleteMessage(c.Ctx, c.PeerID, []int{c.LastResponseID})
 }
 
 func (m *MessagesFacade) React(emoji string) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil {
 		return errors.New("telegram service not initialized")
+	}
+	svc := c.reactionServicer()
+	if svc == nil {
+		return errors.New("telegram reaction service not initialized")
 	}
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
@@ -283,12 +287,12 @@ func (m *MessagesFacade) React(emoji string) error {
 	if c.Message == nil || c.Message.ID == 0 {
 		return errors.New("no message to react to")
 	}
-	return c.messageServicer().React(c.Ctx, c.PeerID, c.Message.ID, emoji)
+	return svc.React(c.Ctx, c.PeerID, c.Message.ID, emoji)
 }
 
 func (m *MessagesFacade) Pin(silent bool) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -298,12 +302,12 @@ func (m *MessagesFacade) Pin(silent bool) error {
 	if targetID == 0 {
 		return errors.New("no message to pin")
 	}
-	return c.messageServicer().PinMessage(c.Ctx, c.PeerID, targetID, silent)
+	return c.messageActionServicer().PinMessage(c.Ctx, c.PeerID, targetID, silent)
 }
 
 func (m *MessagesFacade) Unpin() error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -313,13 +317,17 @@ func (m *MessagesFacade) Unpin() error {
 	if targetID == 0 {
 		return errors.New("no message to unpin")
 	}
-	return c.messageServicer().UnpinMessage(c.Ctx, c.PeerID, targetID)
+	return c.messageActionServicer().UnpinMessage(c.Ctx, c.PeerID, targetID)
 }
 
 func (m *MessagesFacade) Forward(toPeer tg.InputPeerClass) error {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil {
 		return errors.New("telegram service not initialized")
+	}
+	svc := c.forwardServicer()
+	if svc == nil {
+		return errors.New("telegram forward service not initialized")
 	}
 	if c.PeerID == nil {
 		return errors.New("peer is nil")
@@ -331,7 +339,7 @@ func (m *MessagesFacade) Forward(toPeer tg.InputPeerClass) error {
 	if targetID == 0 {
 		return errors.New("no message to forward")
 	}
-	return c.messageServicer().ForwardMessages(c.Ctx, c.PeerID, toPeer, []int{targetID})
+	return svc.ForwardMessages(c.Ctx, c.PeerID, toPeer, []int{targetID})
 }
 
 func (m *MessagesFacade) ForwardToSelf() error {
@@ -340,7 +348,7 @@ func (m *MessagesFacade) ForwardToSelf() error {
 
 func (m *MessagesFacade) Purge() (int, error) {
 	c := m.ctx
-	if c == nil || c.messageServicer() == nil {
+	if c == nil || c.messageActionServicer() == nil {
 		return 0, errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -369,7 +377,7 @@ func (m *MessagesFacade) Purge() (int, error) {
 			return 0, fmt.Errorf("%w: purge range crosses forum topics", ErrInvalidArgs)
 		}
 	}
-	purger, ok := c.messageServicer().(interface {
+	purger, ok := c.messageActionServicer().(interface {
 		PurgeMessagesSafe(context.Context, tg.InputPeerClass, int, int, int) (int, error)
 	})
 	if !ok {

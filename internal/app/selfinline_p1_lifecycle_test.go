@@ -71,6 +71,9 @@ func TestP1SelfInlineUsesCurrentTelegramServiceAcrossReconnect(t *testing.T) {
 	if second.queryCalls != 1 || second.sendCalls != 2 {
 		t.Fatalf("current service query/send=%d/%d, want 1/2", second.queryCalls, second.sendCalls)
 	}
+	if provider.calls < 4 {
+		t.Fatalf("self-inline transport provider calls=%d, want at least 4 lazy resolutions", provider.calls)
+	}
 }
 
 func TestP1SelfInlineRejectsStaleAssistantIdentityAcrossRestart(t *testing.T) {

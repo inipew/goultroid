@@ -656,7 +656,7 @@ func (r *Router) dispatch(
 			Principal:      principal,
 			GroupRoles:     r.groupRoles,
 			Resolver:       r.peerResolver,
-			Telegram:       core.TelegramCapabilitiesFrom(assistantSvc),
+			Telegram:       assistantTelegramCapabilities(assistantSvc),
 			DelayedActions: r.delayedActions,
 		}
 		core.AttachGroupStateStore(coreCtx, r.groupState)

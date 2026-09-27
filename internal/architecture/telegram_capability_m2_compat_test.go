@@ -154,3 +154,33 @@ func TestM2AssistantCommandTransportDoesNotEmbedTelegramMock(t *testing.T) {
 		t.Fatal("Assistant command transport embeds MockTelegramServicer")
 	}
 }
+
+
+func TestM2AssistantCommandTransportAdvertisesOnlySupportedCapabilities(t *testing.T) {
+	root := repositoryRoot(t)
+	path := filepath.Join(root, "internal", "assistant", "command", "servicer.go")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	for _, forbidden := range []string{
+		"_ core.CommandTelegramServicer",
+		"func (*assistantServicerAdapter) React(",
+		"func (*assistantServicerAdapter) ForwardMessages(",
+		"func (*assistantServicerAdapter) DownloadFile(",
+		"func (*assistantServicerAdapter) GetFullUser(",
+		"func (*assistantServicerAdapter) ResolveUsername(",
+		"func (*assistantServicerAdapter) BlockUser(",
+		"func (*assistantServicerAdapter) UpdateProfile(",
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Fatalf("Assistant command transport still advertises unsupported capability %q", forbidden)
+		}
+	}
+	if !strings.Contains(source, "_ core.MessageActionServicer") ||
+		!strings.Contains(source, "_ core.MediaSendServicer") ||
+		!strings.Contains(source, "_ core.FullChatServicer") {
+		t.Fatal("Assistant command transport is missing supported narrow capability assertions")
+	}
+}
