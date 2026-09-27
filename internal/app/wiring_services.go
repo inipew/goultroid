@@ -106,7 +106,12 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	mediaService := mediaSvc.NewService(processRunner, appStorage, mediaGuard, mediaregistry.New(core.db))
 
 	pmpermitRepo := pmpermitPlugin.NewSQLiteRepository(core.db)
-	pmpermitService := pmpermitSvc.NewService(pmpermitRepo, tg.client.Service, cfg.OwnerID, core.perms, logger)
+	pmpermitService := pmpermitSvc.NewService(pmpermitRepo, func() pmpermitSvc.TelegramService {
+		if tg == nil || tg.dispatcher == nil {
+			return nil
+		}
+		return tg.dispatcher.Service()
+	}, cfg.OwnerID, core.perms, logger)
 	pmpermitService.SetEventBus(core.eventBus)
 
 	// P6-C activates relay only when an Assistant bot exists. The service itself
@@ -117,12 +122,22 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		pmrelayService.SetEnabled(true)
 	}
 
-	broadcastService := broadcastSvc.NewService(tg.client.Service, logger)
+	broadcastService := broadcastSvc.NewService(func() broadcastSvc.Sender {
+		if tg == nil || tg.dispatcher == nil {
+			return nil
+		}
+		return tg.dispatcher.Service()
+	}, logger)
 	if core.taskEngine != nil {
 		broadcastService.SetTasks(core.taskEngine)
 	}
 	userlogRepo := userlogSvc.NewSQLiteRepository(core.db)
-	userlogService := userlogSvc.NewService(userlogRepo, tg.client.Service, logger)
+	userlogService := userlogSvc.NewService(userlogRepo, func() userlogSvc.Sender {
+		if tg == nil || tg.dispatcher == nil {
+			return nil
+		}
+		return tg.dispatcher.Service()
+	}, logger)
 
 	addonGate := addon.NewCapabilityGate()
 	addonRepo := addon.NewSQLiteRepository(core.db)

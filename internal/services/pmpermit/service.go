@@ -47,10 +47,18 @@ type PMActor struct {
 	Verified bool
 }
 
+type TelegramService interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	DeleteMessage(context.Context, tg.InputPeerClass, []int) error
+	BlockUser(context.Context, tg.InputPeerClass) error
+	UnblockUser(context.Context, tg.InputPeerClass) error
+	IsBotSent(int) bool
+}
+
 type Service struct {
 	repo          Repository
-	svc           core.TelegramServicer
-	svcFunc       func() core.TelegramServicer
+	svc           TelegramService
+	svcFunc       func() TelegramService
 	ownerID       int64
 	perms         *core.Permissions
 	logger        *zap.Logger
@@ -90,17 +98,19 @@ func NewService(repo Repository, svc any, ownerID int64, perms *core.Permissions
 		delivery:     savedresponse.NewResponseDelivery(savedresponse.NewService(nil)),
 	}
 	switch v := svc.(type) {
-	case core.TelegramServicer:
+	case TelegramService:
 		s.svc = v
-	case func() core.TelegramServicer:
+	case func() TelegramService:
 		s.svcFunc = v
+	case func() core.TelegramServicer:
+		s.svcFunc = func() TelegramService { return v() }
 	}
 	return s
 }
 
 func (s *Service) sendTemplate(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc TelegramService,
 	peer tg.InputPeerClass,
 	response savedresponse.Response,
 	compiled *savedresponse.CompiledTemplate,
@@ -179,7 +189,7 @@ func (s *Service) IsSudoID(userID int64) bool {
 	}
 	return false
 }
-func (s *Service) getService() core.TelegramServicer {
+func (s *Service) getService() TelegramService {
 	if s.svc != nil {
 		return s.svc
 	}

@@ -73,11 +73,16 @@ type ServiceStats struct {
 	LastError           string         `json:"last_error,omitempty"`
 }
 
+// Sender is the UserLog consumer-owned Telegram delivery boundary.
+type Sender interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+}
+
 // Service manages event logging to a private log group or channel.
 type Service struct {
 	repo    Repository
-	svc     core.TelegramServicer
-	svcFunc func() core.TelegramServicer
+	svc     Sender
+	svcFunc func() Sender
 	logger  *zap.Logger
 
 	mu         sync.RWMutex
@@ -102,15 +107,17 @@ func NewService(repo Repository, svc any, logger *zap.Logger) *Service {
 		logger: logger,
 	}
 	switch v := svc.(type) {
-	case core.TelegramServicer:
+	case Sender:
 		s.svc = v
-	case func() core.TelegramServicer:
+	case func() Sender:
 		s.svcFunc = v
+	case func() core.TelegramServicer:
+		s.svcFunc = func() Sender { return v() }
 	}
 	return s
 }
 
-func (s *Service) getService() core.TelegramServicer {
+func (s *Service) getService() Sender {
 	if s.svc != nil {
 		return s.svc
 	}
