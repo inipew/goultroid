@@ -20,14 +20,27 @@ type MediaSender interface {
 	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
 }
 
+// MessageSender is the feature-driver transport boundary for Assistant-owned
+// message delivery with optional reply markup.
+type MessageSender interface {
+	SendMessageWithMarkup(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass) (*tg.Message, error)
+}
+
+// DriverService is the complete Telegram surface exposed to Assistant feature
+// drivers. It remains deliberately narrower than core Telegram services.
+type DriverService interface {
+	MediaSender
+	MessageSender
+}
+
 // DriverRuntime is the transport-bound runtime supplied to feature drivers while
 // one Assistant generation is running. It deliberately exposes only the canonical Assistant interaction
 // orchestration surface, read-only catalog, admission callback, and Telegram
-// media sender needed for feature-owned media side effects.
+// delivery operations needed for feature-owned side effects.
 type DriverRuntime struct {
 	Engine  *orchestration.Engine
 	Catalog feature.Catalog
-	Service MediaSender
+	Service DriverService
 	Admit   Admitter
 }
 
