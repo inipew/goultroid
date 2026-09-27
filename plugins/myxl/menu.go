@@ -98,11 +98,12 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 		card.AddField("Pulsa", "ℹ️ Data tidak tersedia")
 	}
 
+	rawSections := make([]string, 0, 3)
 	switch {
 	case snapshot.QuotaErr != nil:
-		card.WithRaw("⚠️ <b>Kuota:</b> gagal dimuat. Data pulsa yang berhasil tetap ditampilkan.")
+		rawSections = append(rawSections, "⚠️ <b>Kuota:</b> gagal dimuat. Data pulsa yang berhasil tetap ditampilkan.")
 	case snapshot.Quota == nil || len(snapshot.Quota.Quotas) == 0:
-		card.WithRaw("<i>Tidak ada paket kuota aktif yang terdeteksi.</i>")
+		rawSections = append(rawSections, "<i>Tidak ada paket kuota aktif yang terdeteksi.</i>")
 	default:
 		var qb strings.Builder
 		qb.WriteString("📦 <b>Ringkasan Kuota:</b>\n")
@@ -122,22 +123,29 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 			}
 		}
 		if count > 0 {
-			card.WithRaw(qb.String())
+			rawSections = append(rawSections, strings.TrimSpace(qb.String()))
 		} else {
-			card.WithRaw("<i>Kuota berhasil dimuat, tetapi tidak ada benefit data yang dapat diringkas.</i>")
+			rawSections = append(rawSections, "<i>Kuota berhasil dimuat, tetapi tidak ada benefit data yang dapat diringkas.</i>")
 		}
 	}
 
 	var pendingQR *PendingQRIS
 	if m.plugin != nil && m.plugin.repo != nil {
-		pendingQR, _ = m.plugin.repo.GetPendingQRIS(ctx, acc.MSISDN)
+		var pendingErr error
+		pendingQR, pendingErr = m.plugin.repo.GetPendingQRIS(ctx, acc.MSISDN)
+		if pendingErr != nil {
+			rawSections = append(rawSections, "⚠️ <b>Status QRIS:</b> tagihan tersimpan gagal dimuat.")
+		}
 	}
 	if pendingQR != nil {
 		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
 		if rem > 0 {
-			card.WithRaw(fmt.Sprintf("⏳ <b>QRIS Menunggu Pembayaran:</b>\n• <b>Paket:</b> %s\n• <b>Nominal:</b> Rp %s\n• <b>Sisa Waktu:</b> %s (s/d %s)\n",
+			rawSections = append(rawSections, fmt.Sprintf("⏳ <b>QRIS Menunggu Pembayaran:</b>\n• <b>Paket:</b> %s\n• <b>Nominal:</b> Rp %s\n• <b>Sisa Waktu:</b> %s (s/d %s)",
 				html.EscapeString(pendingQR.PackageName), formatRupiah(pendingQR.Price), FormatRemainingDuration(rem), FormatWIBClock(pendingQR.ExpiresAt)))
 		}
+	}
+	if len(rawSections) > 0 {
+		card.WithRaw(strings.Join(rawSections, "\n\n"))
 	}
 
 	if snapshot.partial() {

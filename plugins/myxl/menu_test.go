@@ -372,6 +372,9 @@ func TestMenuManager_PendingQRISScreen(t *testing.T) {
 	if !strings.Contains(dash.Body, "QRIS Menunggu Pembayaran") {
 		t.Errorf("expected QRIS banner on dashboard")
 	}
+	if !strings.Contains(dash.Body, "Akrab") {
+		t.Errorf("pending QRIS banner must not overwrite successful quota summary: %s", dash.Body)
+	}
 
 	// 4. Test expired pending QRIS (> 5 minutes old)
 	expiredPending := &PendingQRIS{
