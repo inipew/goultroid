@@ -116,7 +116,7 @@ func TestP0SelfInlineWiringSurvivesTelegramServiceBecomingReadyAfterConstruction
 	provider := &p0SelfInlineServiceProvider{}
 	assistantIdentity := &p0AssistantIdentity{username: "assistant_bot"}
 	wireSelfInlineRenderers(manager, provider, assistantIdentity, gate)
-	if provider.Service() != nil {
+	if provider.SelfInlineTransport() != nil {
 		t.Fatal("precondition failed: Telegram service should not exist during construction")
 	}
 

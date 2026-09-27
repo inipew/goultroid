@@ -208,7 +208,9 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 		router:   app.router,
 		executor: core.NewCommandExecutor(zap.NewNop(), core.NewCooldownTracker(), 30*time.Second),
 		perms:    perms,
-		service:  func() core.TelegramServicer { return tgSvc },
+		service: func() core.TelegramCapabilities {
+			return core.TelegramCapabilitiesFrom(tgSvc)
+		},
 		tasks:    client,
 	}
 
@@ -386,7 +388,9 @@ func TestCommandResourceTaskEngineGate_HandlerRunsStrictlyInsideTaskEngine(t *te
 		router:   testRouter,
 		executor: core.NewCommandExecutor(zap.NewNop(), core.NewCooldownTracker(), 30*time.Second),
 		perms:    perms,
-		service:  func() core.TelegramServicer { return tgSvc },
+		service: func() core.TelegramCapabilities {
+			return core.TelegramCapabilitiesFrom(tgSvc)
+		},
 		tasks:    client,
 	}
 
