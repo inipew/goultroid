@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1 CLOSED; M2 NEXT**
+Status: **IN PROGRESS — M1/M2 CLOSED; M3 NEXT**
 
 Audit baseline:
 
@@ -497,6 +497,37 @@ Gate:
 - no new code needs the 38-method interface.
 
 ### M2 — Migrate Context and Telegram callers
+
+Status: **CLOSED**
+
+Implementation commits:
+
+- `570dc4bb996ea60a42b6c9e654ea3aad58c4de34` — `refactor(core): route context through telegram capabilities`
+- `f3e141c7d265de37b43f29c58e8d08d6e0093ea3` — `refactor(telegram): narrow dispatcher inline and presentation ports`
+- `c23948e691df644620e196a6a3f3574b8199f185` — `refactor(assistant): remove broad telegram fallback servicer`
+- `054343d1a15e9a0c1b5539e46359263dce9be11d` — `refactor(core): migrate command contexts off broad telegram service`
+- `cd6e96a1e2b8e0e8e466d5d7b13c2e32eeb04581` — `test(architecture): fence telegram capability migration`
+
+Closed behavior/boundary work:
+
+- `core.Context` now owns `TelegramCapabilities`; production userbot, Assistant, and scheduled-command paths populate that container instead of `Svc`.
+- Core message/admin/media/peer/profile facades resolve their own capability and contextual message/media extensions independently.
+- `Context.Svc` is no longer typed as the 38-method `TelegramServicer`; it is a deprecated `CommandTelegramServicer` compatibility fallback for direct legacy/test construction only.
+- `CommandExecutor.ExecuteExecution` accepts `CommandTelegramServicer` and constructs a capability-backed Context.
+- Dispatcher composition uses `DispatcherService`, while command/callback/inline/origin paths receive typed narrow getters.
+- Inline engine public execution methods now accept `inline.TelegramAnswerer`.
+- Presentation Telegram bridge now stores `BridgeService`; contextual media remains an independent optional capability.
+- Assistant inline query service no longer implements unrelated Telegram operations.
+- The 38-method `unsupportedTelegramServicer` mega-stub was deleted. Message callback, inline callback, presentation, and audience transports now implement only their consumer contracts.
+- Broadcast request delivery was narrowed to `broadcast.Sender` (text + media) so Assistant audience broadcast no longer needs a fake full Telegram service.
+- Assistant canonical command Context uses the capability container, including mutation-admission rebinding.
+- Architecture tests fence the migrated production surfaces against reintroducing `core.TelegramServicer`, broad `Context.Svc`, or `unsupportedTelegramServicer`.
+
+Compatibility intentionally retained:
+
+- the legacy `core.TelegramServicer` type still exists for older composition/test factories;
+- `core.Context.Svc` remains as a deprecated, narrower command-only fallback so direct legacy Context literals are not broken in this phase;
+- compatibility assertions/adapters may mention the legacy aggregate, but migrated production execution surfaces may not depend on it.
 
 Tasks:
 
