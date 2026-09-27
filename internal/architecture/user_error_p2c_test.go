@@ -77,6 +77,13 @@ func TestP2CKnownRawErrorHotspotsStayClosed(t *testing.T) {
 		"plugins/filters/filters.go": {
 			"Could not capture replied response: %v",
 		},
+		"plugins/clone/clone.go": {
+			"Failed to re-check clone state: %v",
+		},
+		"plugins/scheduler/scheduler.go": {
+			"html.EscapeString(j.LastError)",
+			"html.EscapeString(snippet)",
+		},
 	}
 	for rel, forbidden := range checks {
 		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
