@@ -155,7 +155,9 @@ func (p *Plugin) preparePurchaseIntent(ctx context.Context, intent purchaseInten
 
 // resolvePurchaseIntent performs the fresh authority check immediately before a
 // purchase can be reserved. A changed canonical price invalidates the user's
-// previous consent and requires a new preview.
+// previous consent and requires a new preview. The stable lookup code remains
+// the package identity; the current response option code is refreshed as the
+// settlement authority on every resolve.
 func (p *Plugin) resolvePurchaseIntent(ctx context.Context, intent purchaseIntentState) (resolvedPurchase, error) {
 	normalized, err := normalizePurchaseIntent(intent)
 	if err != nil {
@@ -203,16 +205,11 @@ func purchaseLookupOptionCode(intent purchaseIntentState) string {
 	return strings.TrimSpace(intent.OptionCode)
 }
 
-func resolvePurchaseCanonicalCode(intent purchaseIntentState, echoed string) (string, error) {
-	canonical := strings.TrimSpace(echoed)
-	if canonical == "" {
-		canonical = strings.TrimSpace(intent.OptionCode)
+func freshPurchaseCanonicalCode(intent purchaseIntentState, echoed string) string {
+	if canonical := strings.TrimSpace(echoed); canonical != "" {
+		return canonical
 	}
-	if lookup := strings.TrimSpace(intent.LookupOptionCode); lookup != "" &&
-		!strings.EqualFold(canonical, strings.TrimSpace(intent.OptionCode)) {
-		return "", fmt.Errorf("%w: option code changed", ErrPurchaseIntentInvalid)
-	}
-	return canonical, nil
+	return strings.TrimSpace(intent.OptionCode)
 }
 
 func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseIntentState) (resolvedPurchase, error) {
@@ -238,10 +235,7 @@ func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseInte
 	if details == nil || details.PackageOption == nil {
 		return resolvedPurchase{}, fmt.Errorf("%w: package details incomplete", ErrPurchaseIntentInvalid)
 	}
-	canonicalOptionCode, err := resolvePurchaseCanonicalCode(intent, details.PackageOption.PackageOptionCode)
-	if err != nil {
-		return resolvedPurchase{}, err
-	}
+	canonicalOptionCode := freshPurchaseCanonicalCode(intent, details.PackageOption.PackageOptionCode)
 	token := strings.TrimSpace(details.TokenConfirmation)
 	if token == "" {
 		return resolvedPurchase{}, fmt.Errorf("%w: confirmation token unavailable", ErrPurchaseIntentInvalid)

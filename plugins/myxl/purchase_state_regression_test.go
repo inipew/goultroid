@@ -3,7 +3,6 @@ package myxl
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -14,7 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/network"
 )
 
-func TestPurchaseIntentKeepsLookupCodeWhenDetailCanonicalizes(t *testing.T) {
+func TestPurchaseIntentKeepsLookupCodeWhileCanonicalRefreshes(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(":memory:")
 	if err != nil {
@@ -43,7 +42,7 @@ func TestPurchaseIntentKeepsLookupCodeWhenDetailCanonicalizes(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		detailCalls.Add(1)
+		call := detailCalls.Add(1)
 		var env EncryptedBody
 		if err := json.NewDecoder(r.Body).Decode(&env); err != nil {
 			t.Fatal(err)
@@ -60,9 +59,33 @@ func TestPurchaseIntentKeepsLookupCodeWhenDetailCanonicalizes(t *testing.T) {
 			t.Errorf("lookup option code = %#v, want OPT-SAVED-OLD", got)
 		}
 
-		payload := `{"status":"SUCCESS","message":"","data":{"package_family":{"name":"Family","package_family_code":"FAM"},"package_option":{"name":"Paket Canonical","package_option_code":"OPT-CANON","price":25000},"token_confirmation":"TOKEN-A"}}`
+		canonicalCode := "OPT-CANON-A"
+		token := "TOKEN-A"
+		if call > 1 {
+			canonicalCode = "OPT-CANON-B"
+			token = "TOKEN-B"
+		}
+		payload, err := json.Marshal(map[string]any{
+			"status":  "SUCCESS",
+			"message": "",
+			"data": map[string]any{
+				"package_family": map[string]any{
+					"name":                "Family",
+					"package_family_code": "FAM",
+				},
+				"package_option": map[string]any{
+					"name":                "Paket Canonical",
+					"package_option_code": canonicalCode,
+					"price":               25000,
+				},
+				"token_confirmation": token,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		xTime := time.Now().UnixMilli()
-		xData, _ := EncryptXData(payload, xTime, DefaultXDataKey)
+		xData, _ := EncryptXData(string(payload), xTime, DefaultXDataKey)
 		_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xData, XTime: xTime})
 	}))
 	defer server.Close()
@@ -79,10 +102,10 @@ func TestPurchaseIntentKeepsLookupCodeWhenDetailCanonicalizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("preparePurchaseIntent() error = %v", err)
 	}
-	if intent.LookupOptionCode != "OPT-SAVED-OLD" || intent.OptionCode != "OPT-CANON" {
-		t.Fatalf("canonicalized intent = %+v", intent)
+	if intent.LookupOptionCode != "OPT-SAVED-OLD" || intent.OptionCode != "OPT-CANON-A" {
+		t.Fatalf("prepared intent = %+v", intent)
 	}
-	if quote.Intent.OptionCode != "OPT-CANON" || quote.Intent.LookupOptionCode != "OPT-SAVED-OLD" {
+	if quote.Intent.OptionCode != "OPT-CANON-A" || quote.Intent.LookupOptionCode != "OPT-SAVED-OLD" {
 		t.Fatalf("quote intent = %+v", quote.Intent)
 	}
 
@@ -90,27 +113,27 @@ func TestPurchaseIntentKeepsLookupCodeWhenDetailCanonicalizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolvePurchaseIntent() error = %v", err)
 	}
-	if resolved.Item.ItemCode != "OPT-CANON" || resolved.Intent.LookupOptionCode != "OPT-SAVED-OLD" {
-		t.Fatalf("resolved purchase = %+v", resolved)
+	if resolved.Item.ItemCode != "OPT-CANON-B" {
+		t.Fatalf("fresh settlement item = %q, want OPT-CANON-B", resolved.Item.ItemCode)
+	}
+	if resolved.Intent.OptionCode != "OPT-CANON-B" || resolved.Intent.LookupOptionCode != "OPT-SAVED-OLD" {
+		t.Fatalf("fresh resolved intent = %+v", resolved.Intent)
+	}
+	if resolved.Item.TokenConfirmation != "TOKEN-B" {
+		t.Fatalf("fresh confirmation token = %q, want TOKEN-B", resolved.Item.TokenConfirmation)
 	}
 	if detailCalls.Load() != 2 {
 		t.Fatalf("detail calls = %d, want prepare + fresh resolve", detailCalls.Load())
 	}
 }
 
-func TestPurchaseCanonicalCodeRejectsDriftAfterCanonicalization(t *testing.T) {
-	intent := purchaseIntentState{
-		OptionCode:       "OPT-CANON",
-		LookupOptionCode: "OPT-SAVED-OLD",
-	}
+func TestFreshPurchaseCanonicalCodeUsesLatestDetail(t *testing.T) {
+	intent := purchaseIntentState{OptionCode: "OPT-CANON-A", LookupOptionCode: "OPT-SAVED-OLD"}
 
-	if got, err := resolvePurchaseCanonicalCode(intent, ""); err != nil || got != "OPT-CANON" {
-		t.Fatalf("missing echo = (%q, %v), want expected canonical code", got, err)
+	if got := freshPurchaseCanonicalCode(intent, ""); got != "OPT-CANON-A" {
+		t.Fatalf("missing echo = %q, want existing canonical code", got)
 	}
-	if got, err := resolvePurchaseCanonicalCode(intent, "opt-canon"); err != nil || got != "opt-canon" {
-		t.Fatalf("matching echo = (%q, %v)", got, err)
-	}
-	if _, err := resolvePurchaseCanonicalCode(intent, "OPT-CHANGED"); !errors.Is(err, ErrPurchaseIntentInvalid) {
-		t.Fatalf("canonical drift error = %v, want ErrPurchaseIntentInvalid", err)
+	if got := freshPurchaseCanonicalCode(intent, "OPT-CANON-B"); got != "OPT-CANON-B" {
+		t.Fatalf("fresh echo = %q, want OPT-CANON-B", got)
 	}
 }
