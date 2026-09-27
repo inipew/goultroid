@@ -309,7 +309,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
 					return nil
 				}
-				return tgRuntime.dispatcher.Service()
+				return tgRuntime.dispatcher.MessageService()
 			},
 			AdminService: func() core.AdminServicer {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
