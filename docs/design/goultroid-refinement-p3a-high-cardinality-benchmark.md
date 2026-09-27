@@ -6,7 +6,7 @@ Harness baseline: `aeae302d125bf1e5ac39df9671c0ea6b026bd10e` — `bench(refineme
 
 ## Status
 
-**HARNESS READY / MEASUREMENTS OPEN.**
+**HARNESS READY / ISOLATED DIAGNOSTICS CAPTURED / REAL-CHECKOUT MEASUREMENTS OPEN.**
 
 This P3-A slice adds reproducible measurement points for current Inline registry, Inline cache, and generic rate-limiter high-cardinality behavior. It deliberately changes no production algorithm.
 
@@ -14,7 +14,7 @@ The purpose is to answer one question before P3-C:
 
 > Which current bounded path, if any, is materially expensive enough to justify optimization?
 
-No optimization decision is valid from this document until the benchmark commands are run against a real checkout and results are recorded.
+No production optimization decision is final from this document until the benchmark commands are run against a real checkout and results are recorded. A source-isolated diagnostic run is recorded below to narrow attention without pretending it is full repository acceptance.
 
 ## 1. Inline registry
 
@@ -138,30 +138,136 @@ go env GOOS GOARCH GOMAXPROCS
 
 Record CPU model separately from the host.
 
-## 6. Result table
+## 6. Source-isolated diagnostic measurements
 
-No measured values are recorded yet.
+These numbers are **directional evidence only**, not P3-A closure.
 
-| Area | Case | ns/op | B/op | allocs/op | Decision |
-|---|---|---:|---:|---:|---|
-| Inline | exact/1..4096 | PENDING | PENDING | PENDING | PENDING |
-| Inline | custom/1..4096 | PENDING | PENDING | PENDING | PENDING |
-| Cache | hit/1..500 | PENDING | PENDING | PENDING | PENDING |
-| Cache | fill/1..500 | PENDING | PENDING | PENDING | PENDING |
-| Cache | churn/501,4096 | PENDING | PENDING | PENDING | PENDING |
-| Cache | next-expiry/500 | PENDING | PENDING | PENDING | PENDING |
-| Limiter | hot/1..4096 | PENDING | PENDING | PENDING | PENDING |
-| Limiter | insert/1..4096 | PENDING | PENDING | PENDING | PENDING |
-| Limiter | saturated/4096 | PENDING | PENDING | PENDING | PENDING |
-| Limiter | forced-sweep/4096 | PENDING | PENDING | PENDING | PENDING |
+The container still cannot resolve external hosts and cannot build the complete repository dependency graph. To avoid inventing numbers:
+
+- generic rate-limiter logic was compiled as a local source-isolated reproduction of the current implementation and current benchmark;
+- Inline cache logic was compiled from the current implementation with minimal local stubs only for unrelated presentation/runtime/UI dependency types;
+- Inline registry resolution was compiled from the current Registry/ResolveOwnedExplicit implementation with minimal local task/type stubs;
+- no CI result was used;
+- no result below is represented as a full-repository benchmark.
+
+Environment:
+
+```text
+OS/kernel     Linux 6.18.44 amd64
+CPU           Intel Xeon Platinum 8573C
+logical CPUs  5
+Go            go1.23.2 linux/amd64
+GOMAXPROCS     5 during benchmark runs
+runs          median of 3
+```
+
+### 6.1 Generic rate limiter — source-isolated current implementation
+
+Median of three runs:
+
+| Case | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| hot/1 | 261.5 | 48 | 3 |
+| hot/16 | 287.0 | 48 | 3 |
+| hot/64 | 289.4 | 48 | 3 |
+| hot/256 | 284.1 | 48 | 3 |
+| hot/4096 | 299.8 | 48 | 3 |
+| saturated missing key / 4096 | 249.5 | 48 | 3 |
+| forced capacity sweep / 4096 | 110,242 | 48 | 3 |
+
+Population batch:
+
+| Keys/op | batch ns/op | approx ns/key | B/op | allocs/op |
+|---:|---:|---:|---:|---:|
+| 1 | 1,314 | 1,314 | 355 | 5 |
+| 16 | 10,411 | 651 | 3,666 | 67 |
+| 64 | 32,500 | 508 | 16,244 | 266 |
+| 256 | 131,989 | 516 | 63,591 | 1,040 |
+| 4096 | 2,050,872 | 501 | 1,015,298 | 16,688 |
+
+Diagnostic interpretation:
+
+- existing-bucket hot cost is effectively cardinality-flat for this scale: 261.5 ns at 1 bucket versus 299.8 ns at 4096;
+- saturated fail-closed lookup remains in the same range at 249.5 ns/op;
+- the intentionally forced 4096-bucket cleanup sweep costs roughly 110 µs, but it is gated by `capacitySweepInterval` rather than paid on each hot lookup;
+- current diagnostic evidence does **not** justify optimizing the generic limiter hot path.
+
+### 6.2 Inline cache — source-isolated diagnostic proxy
+
+Median of three runs:
+
+| Case | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| hit/1 | 194.9 | 320 | 1 |
+| hit/16 | 192.4 | 320 | 1 |
+| hit/64 | 200.8 | 320 | 1 |
+| hit/256 | 209.0 | 320 | 1 |
+| hit/500 | 215.4 | 320 | 1 |
+| saturated churn / working-set 501 | 15,010 | 320 | 1 |
+| saturated churn / working-set 4096 | 21,333 | 322 | 1 |
+| next-expiry scan / 500 | 7,218 | 0 | 0 |
+
+Fill from empty:
+
+| Entries/op | batch ns/op | approx ns/entry | B/op | allocs/op |
+|---:|---:|---:|---:|---:|
+| 1 | 938.8 | 938.8 | 979 | 2 |
+| 16 | 9,941 | 621 | 9,949 | 19 |
+| 64 | 28,227 | 441 | 41,878 | 73 |
+| 256 | 124,211 | 485 | 169,427 | 278 |
+| 500 | 222,544 | 445 | 334,987 | 542 |
+
+Diagnostic interpretation:
+
+- cache hit cost remains approximately flat through the production 500-entry cap;
+- `nextExpiry()` scans the bounded 500-entry cache in about 7.2 µs with zero allocation in this environment;
+- the expensive path is saturated insertion/churn: each insert beyond the cap currently scans for expired entries and then searches the retained set for the oldest expiry, producing roughly 15–21 µs per churn insert in this proxy;
+- this makes saturated churn a **candidate to confirm**, not yet a P3-C authorization. Real-checkout numbers and realistic churn frequency are still required.
+
+### 6.3 Inline registry — source-isolated diagnostic proxy
+
+Median of three runs:
+
+| Cardinality | exact ns/op | custom ns/op | exact B/op | custom B/op |
+|---:|---:|---:|---:|---:|
+| 1 | 135.7 | 162.8 | 48 | 64 |
+| 16 | 144.2 | 228.5 | 48 | 64 |
+| 64 | 139.4 | 430.0 | 48 | 64 |
+| 256 | 148.6 | 1,184 | 48 | 64 |
+| 1024 | 147.7 | 4,121 | 48 | 64 |
+| 4096 | 160.3 | 16,483 | 48 | 64 |
+
+Allocation count remains 2 allocs/op for exact and 3 allocs/op for custom in this proxy.
+
+Diagnostic interpretation:
+
+- indexed exact resolution remains effectively cardinality-flat;
+- custom matcher lookup grows approximately linearly because the benchmark intentionally places the matching matcher at the end of the ordered custom slice;
+- 4096 custom matchers are about 16.5 µs/op in this environment;
+- this is expected structurally, but it only becomes a P3-C concern if real production custom matcher cardinality/frequency is high enough to matter.
+
+### 6.4 Provisional decision
+
+```text
+generic limiter hot path     -> NO optimization evidence
+inline exact lookup          -> NO optimization evidence
+inline cache hit             -> NO optimization evidence
+limiter forced sweep         -> bounded diagnostic cost; no action yet
+inline cache saturated churn -> CONFIRM on real checkout / realistic churn
+inline custom matcher scan   -> CONFIRM against real production cardinality
+```
+
+P3-C remains blocked.
+
+---
 
 ## 7. Environment limitation in this session
 
 The current model container cannot resolve github.com and does not contain a complete Goultroid checkout or dependency module cache. CI was intentionally not used.
 
-Therefore this session can verify source/diff structure and run `gofmt` on the changed benchmark files, but it cannot honestly produce repository benchmark numbers.
+Therefore the isolated measurements above are useful only to prioritize confirmation. They are not full-package/full-repository acceptance numbers.
 
-P3-A remains **OPEN** until measurements are executed on a real checkout.
+P3-A remains **OPEN** until measurements are executed on a real checkout at the actual Goultroid HEAD.
 
 ## 8. Gate before P3-C
 

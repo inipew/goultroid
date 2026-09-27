@@ -8,6 +8,40 @@ Purpose: finish **P3-A benchmark measurements** before any P3-C optimization. P3
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
 
 
+## 2026-09-27 P3-A isolated diagnostic measurement update
+
+P3-A is still **OPEN**, but source-isolated diagnostics have now been captured after the benchmark harness work.
+
+Environment: Linux amd64, Intel Xeon Platinum 8573C, 5 logical CPUs, Go 1.23.2, three runs per case.
+
+Directional findings:
+
+- generic limiter hot path stayed roughly flat from ~262 ns/op at one bucket to ~300 ns/op at 4096 buckets;
+- saturated generic-limiter fail-closed lookup was ~250 ns/op;
+- an intentionally forced 4096-bucket cleanup sweep was ~110 µs;
+- Inline cache hit stayed ~195–215 ns/op through the 500-entry production cap;
+- Inline cache next-expiry scan across 500 entries was ~7.2 µs with zero allocation;
+- saturated Inline cache churn measured ~15 µs/insert for a 501 working set and ~21 µs/insert for a 4096 working set;
+- exact Inline resolution stayed ~136–160 ns/op through 4096 handlers;
+- custom matcher resolution grew from ~163 ns/op at one matcher to ~16.5 µs/op at 4096 matchers.
+
+These are not full-repository acceptance numbers: cache/registry measurements used minimal local stubs for unrelated dependency types, and the complete repository cannot be built in this environment. They narrow P3-C candidates but do not authorize optimization.
+
+Provisional direction:
+
+```text
+generic limiter hot path     -> no optimization evidence
+inline exact lookup          -> no optimization evidence
+inline cache hit             -> no optimization evidence
+inline cache saturated churn -> confirm with real-checkout workload
+inline custom matcher scan   -> confirm against production cardinality
+```
+
+See `docs/design/goultroid-refinement-p3a-high-cardinality-benchmark.md`.
+
+**P3-A remains OPEN and P3-C remains BLOCKED until real-checkout measurements are captured.**
+
+
 ## 2026-09-27 P3-B closure update
 
 P3-B is **CLOSED** at `440c9ba977ecaa95da4cf9ce232305915f2a3936` (`refactor(taskengine): make completion drain event-driven`).
