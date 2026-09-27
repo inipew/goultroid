@@ -14,14 +14,14 @@ import (
 func (p *PeerFacade) DisplayUser(peer tg.InputPeerClass, userID int64) string {
 	fallback := fmt.Sprintf("<code>%d</code>", userID)
 	c := p.ctx
-	if c == nil || c.Svc == nil || userID == 0 {
+	if c == nil || c.peerServicer() == nil || userID == 0 {
 		return fallback
 	}
 	inputPeer, ok := peer.(*tg.InputPeerUser)
 	if !ok || inputPeer == nil || inputPeer.AccessHash == 0 {
 		return fallback
 	}
-	full, err := c.Svc.GetFullUser(c.Ctx, &tg.InputUser{UserID: inputPeer.UserID, AccessHash: inputPeer.AccessHash})
+	full, err := c.peerServicer().GetFullUser(c.Ctx, &tg.InputUser{UserID: inputPeer.UserID, AccessHash: inputPeer.AccessHash})
 	if err != nil || full == nil {
 		return fallback
 	}
@@ -133,49 +133,49 @@ func (p *PeerFacade) ResolveTargetUser() (tg.InputPeerClass, int64, error) {
 
 func (p *PeerFacade) GetFullUser(user tg.InputUserClass) (*tg.UsersUserFull, error) {
 	c := p.ctx
-	if c == nil || c.Svc == nil {
+	if c == nil || c.peerServicer() == nil {
 		return nil, errors.New("telegram service not initialized")
 	}
-	return c.Svc.GetFullUser(c.Ctx, user)
+	return c.peerServicer().GetFullUser(c.Ctx, user)
 }
 
 func (p *PeerFacade) ResolveUsername(username string) (*tg.ContactsResolvedPeer, error) {
 	c := p.ctx
-	if c == nil || c.Svc == nil {
+	if c == nil || c.peerServicer() == nil {
 		return nil, errors.New("telegram service not initialized")
 	}
-	return c.Svc.ResolveUsername(c.Ctx, username)
+	return c.peerServicer().ResolveUsername(c.Ctx, username)
 }
 
 func (p *PeerFacade) GetFullChat() (*tg.MessagesChatFull, error) {
 	c := p.ctx
-	if c == nil || c.Svc == nil {
+	if c == nil || c.peerServicer() == nil {
 		return nil, errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
 		return nil, errors.New("peer is nil")
 	}
-	return c.Svc.GetFullChat(c.Ctx, c.PeerID)
+	return c.peerServicer().GetFullChat(c.Ctx, c.PeerID)
 }
 
 func (p *PeerFacade) BlockUser(peer tg.InputPeerClass) error {
 	c := p.ctx
-	if c == nil || c.Svc == nil {
+	if c == nil || c.peerServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if peer == nil {
 		return errors.New("peer is nil")
 	}
-	return c.Svc.BlockUser(c.Ctx, peer)
+	return c.peerServicer().BlockUser(c.Ctx, peer)
 }
 
 func (p *PeerFacade) UnblockUser(peer tg.InputPeerClass) error {
 	c := p.ctx
-	if c == nil || c.Svc == nil {
+	if c == nil || c.peerServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
 	if peer == nil {
 		return errors.New("peer is nil")
 	}
-	return c.Svc.UnblockUser(c.Ctx, peer)
+	return c.peerServicer().UnblockUser(c.Ctx, peer)
 }

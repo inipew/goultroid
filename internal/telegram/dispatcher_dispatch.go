@@ -230,7 +230,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		Chat:      chat,
 		Sender:    sender,
 		Perms:     d.perms,
-		Svc:       d.getService(),
+		Telegram:  core.TelegramCapabilitiesFrom(d.getService()),
 		PeerID:    peerInput,
 		Resolver:  d.getResolver(),
 		Localizer: localizer,

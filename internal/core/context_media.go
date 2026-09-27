@@ -24,7 +24,7 @@ type MediaFacade struct {
 // DownloadMedia downloads the media attached to the current message or replied message.
 func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 	c := m.ctx
-	if c == nil || c.Svc == nil {
+	if c == nil || c.mediaServicer() == nil {
 		return "", errors.New("telegram service not initialized")
 	}
 
@@ -89,7 +89,7 @@ func (m *MediaFacade) DownloadMedia(destDir string) (string, error) {
 	fileName = SanitizeFileName(fileName)
 	filePath := filepath.Join(destDir, fileName)
 
-	if err := c.Svc.DownloadFile(c.Ctx, media.Location, filePath); err != nil {
+	if err := c.mediaServicer().DownloadFile(c.Ctx, media.Location, filePath); err != nil {
 		_ = os.Remove(filePath)
 		return "", fmt.Errorf("download failed: %w", err)
 	}
@@ -139,7 +139,7 @@ func mediaFileExtension(media *MediaInfo) string {
 // SendMedia sends a media file with the specified mediaType ("file", "photo", "sticker", "audio", "video").
 func (m *MediaFacade) SendMedia(mediaType string, filePath string, caption string) (*Message, error) {
 	c := m.ctx
-	if c == nil || c.Svc == nil {
+	if c == nil || c.mediaServicer() == nil {
 		return nil, errors.New("telegram service not initialized")
 	}
 	if c.PeerID == nil {
@@ -151,12 +151,12 @@ func (m *MediaFacade) SendMedia(mediaType string, filePath string, caption strin
 	var msg *tg.Message
 	var err error
 	send := messageSendContext(c)
-	if contextual, ok := c.Svc.(ContextualTelegramServicer); ok {
+	if contextual := c.contextualMediaServicer(); contextual != nil {
 		msg, err = contextual.SendMediaContext(c.Ctx, c.PeerID, mediaType, filePath, caption, send)
 	} else if send.TopicID > 0 {
 		return nil, fmt.Errorf("%w: telegram transport cannot preserve forum topic %d", ErrUnavailable, send.TopicID)
 	} else {
-		msg, err = c.Svc.SendMedia(c.Ctx, c.PeerID, mediaType, filePath, caption)
+		msg, err = c.mediaServicer().SendMedia(c.Ctx, c.PeerID, mediaType, filePath, caption)
 	}
 	if err != nil {
 		return nil, err

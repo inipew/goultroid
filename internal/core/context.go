@@ -291,7 +291,10 @@ type Context struct {
 	// LastResponseID tracks the ID of the bot's most recent reply in this context
 	LastResponseID int
 
-	Svc            TelegramServicer
+	Telegram       TelegramCapabilities
+	// Svc is a compatibility-only aggregate for direct Context construction.
+	// Production wiring should populate Telegram with capability-sized ports.
+	Svc            CommandTelegramServicer
 	PeerID         tg.InputPeerClass
 	Resolver       PeerResolver
 	Localizer      Localizer
@@ -543,7 +546,7 @@ func normalizeReplyMessage(msg *tg.Message) *Message {
 // Successful lookups and authoritative absence are cached. Transient RPC
 // failures are deliberately not cached so a later caller can retry.
 func (c *Context) GetReply() (*Message, error) {
-	if c == nil || c.Svc == nil {
+	if c == nil || c.messageServicer() == nil {
 		return nil, errors.New("telegram service not initialized")
 	}
 	if c.Message == nil || c.Message.ReplyToID == 0 {
@@ -565,7 +568,7 @@ func (c *Context) GetReply() (*Message, error) {
 		return memo.message, nil
 	}
 
-	msg, err := c.Svc.GetMessage(c.Ctx, c.PeerID, replyToID)
+	msg, err := c.messageServicer().GetMessage(c.Ctx, c.PeerID, replyToID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			memo.replyToID = replyToID
@@ -1025,10 +1028,10 @@ func (c *Context) IsSudo() bool {
 
 // UpdateProfile updates the account's first name, last name, and/or bio.
 func (c *Context) UpdateProfile(firstName, lastName, about *string) error {
-	if c == nil || c.Svc == nil {
+	if c == nil || c.profileServicer() == nil {
 		return errors.New("telegram service not initialized")
 	}
-	return c.Svc.UpdateProfile(c.Ctx, firstName, lastName, about)
+	return c.profileServicer().UpdateProfile(c.Ctx, firstName, lastName, about)
 }
 
 // BlockUser blocks the specified user.
