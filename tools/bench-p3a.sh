@@ -60,10 +60,34 @@ go test -run='^$' \
 
 echo
 echo "[3/3] Production hierarchical RPC limiter"
-go test -run='^$' \
+go test -run='^
+P3-A evidence bundle
+
+HEAD: $head_sha
+Generated: $stamp
+
+Files:
+- manifest.txt
+- inline.txt
+- ratelimit.txt
+- telegram-rpc-limiter.txt
+- summary.md
+
+Formal P3-A review should use a clean checkout. If P3A_ALLOW_DIRTY=1 was used,
+treat the result as diagnostic only.
+EOF2
+
+echo
+echo "P3-A benchmark evidence captured in: $out_dir"
+echo "Share summary.md plus the raw bundle files for closure review."
+ \
   -bench='BenchmarkHierarchicalRPCLimiter' \
   -benchmem -benchtime=1s -count=5 \
   ./internal/telegram | tee "$out_dir/telegram-rpc-limiter.txt"
+
+echo
+echo "[review] Validate bundle + aggregate medians"
+go run ./tools/p3areview -bundle "$out_dir" -expect-head "$head_sha"
 
 cat > "$out_dir/README.txt" <<EOF2
 P3-A evidence bundle

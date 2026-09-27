@@ -149,10 +149,13 @@ manifest.txt
 inline.txt
 ratelimit.txt
 telegram-rpc-limiter.txt
+summary.md
 README.txt
 ```
 
-For formal closure, preserve the complete bundle and verify `dirty=no` in `manifest.txt`.
+After the three benchmark groups complete, the runner invokes the stdlib-only reviewer at `tools/p3areview`. The reviewer verifies clean-checkout metadata, optional exact HEAD matching, presence of all benchmark families, and exactly five samples per benchmark, then writes median `ns/op`, `B/op`, and `allocs/op` to `summary.md`. It deliberately does **not** apply a performance threshold or decide P3-C automatically.
+
+For formal closure, preserve the complete bundle, require `Evidence shape: **COMPLETE**` in `summary.md`, verify `dirty=no`, and then perform the human/source-aware optimization decision described below.
 
 ## 5.1 Manual equivalent commands
 
