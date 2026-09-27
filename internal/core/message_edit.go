@@ -120,7 +120,8 @@ func (m *MessagesFacade) editMessageID(text string, msgID int) error {
 	if c == nil {
 		return messageEditFailure(MessageEditStagePreflight, false, errors.New("context is nil"))
 	}
-	if c.Svc == nil {
+	svc := c.messageServicer()
+	if svc == nil {
 		return messageEditFailure(MessageEditStagePreflight, false, errors.New("telegram service not initialized"))
 	}
 	if c.PeerID == nil {
@@ -129,7 +130,7 @@ func (m *MessagesFacade) editMessageID(text string, msgID int) error {
 	if msgID <= 0 {
 		return messageEditFailure(MessageEditStagePreflight, false, errors.New("no message to edit"))
 	}
-	if err := c.Svc.EditMessage(c.Ctx, c.PeerID, msgID, text); err != nil {
+	if err := svc.EditMessage(c.Ctx, c.PeerID, msgID, text); err != nil {
 		return messageEditFailure(
 			MessageEditStageSend,
 			true,

@@ -780,10 +780,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 		return err
 	}
 
-	mediaSvc := telegramMediaSender(ctx.Telegram.Media)
-	if mediaSvc == nil {
-		mediaSvc = ctx.Svc
-	}
+	mediaSvc := telegramMediaSender(ctx.MediaService())
 	if qrErr == nil && p.files != nil && p.tasks != nil && mediaSvc != nil && ctx.PeerID != nil {
 		if err := p.sendQRPhoto(ctx.Ctx, mediaSvc, ctx.PeerID, qrPayload, pending.PackageName, pending.Price); err != nil {
 			_ = ctx.Reply("⚠️ Detail QRIS tersedia, tetapi gambar QR gagal dikirim. Gunakan string QRIS di pesan sebelumnya.")

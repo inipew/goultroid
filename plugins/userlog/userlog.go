@@ -553,13 +553,14 @@ func (p *Plugin) handleSetLog(ctx *core.Context) error {
 		}
 	}
 
-	// Verification: send a test verification message to ensure we have permission to write
-	if ctx.Svc != nil {
-		testMsg := "🧪 <b>UserLog Destination Verification</b>\n\n• <b>Status:</b> Verified\n• <b>System:</b> GoUltroid Audit Logging\n• <b>Time:</b> <code>" + time.Now().UTC().Format(time.RFC3339) + "</code>"
-		_, err := ctx.Svc.SendMessage(ctx.Ctx, dest.InputPeer(), testMsg)
-		if err != nil {
-			return ctx.Error(fmt.Sprintf("<b>Verification failed:</b> Cannot post to target (%v). Make sure the bot/account has permission to post.", err))
-		}
+	// Verification: send a test verification message to ensure we have permission to write.
+	messageSvc := ctx.MessageService()
+	if messageSvc == nil {
+		return ctx.Error("<b>Verification failed:</b> Telegram message service is unavailable.")
+	}
+	testMsg := "🧪 <b>UserLog Destination Verification</b>\n\n• <b>Status:</b> Verified\n• <b>System:</b> GoUltroid Audit Logging\n• <b>Time:</b> <code>" + time.Now().UTC().Format(time.RFC3339) + "</code>"
+	if _, err := messageSvc.SendMessage(ctx.Ctx, dest.InputPeer(), testMsg); err != nil {
+		return ctx.Error(fmt.Sprintf("<b>Verification failed:</b> Cannot post to target (%v). Make sure the bot/account has permission to post.", err))
 	}
 
 	if err := p.svc.SetDestination(ctx.Ctx, dest); err != nil {

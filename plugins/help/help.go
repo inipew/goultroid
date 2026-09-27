@@ -250,8 +250,8 @@ func (p *Plugin) openUserbotHelp(ctx *core.Context, prefix string) (bool, error)
 		}
 		return true, ctx.Status(ctx.T("help.interactive_uncertain"))
 	}
-	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
-		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
+	if ctx.Message != nil && ctx.Message.ID > 0 {
+		_ = ctx.Messages().Delete()
 	}
 	return true, nil
 }

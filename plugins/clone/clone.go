@@ -299,7 +299,11 @@ func (p *Plugin) executeClone(ctx *core.Context, plan clonePlan) error {
 		if err := p.repo.SaveCloneState(ctx.Ctx, snapshot); err != nil {
 			return p.cloneFailure(ctx, snapshot, false, fmt.Errorf("persist photo mutation intent: %w", err))
 		}
-		if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, path); err != nil {
+		profileSvc := ctx.ProfileService()
+		if profileSvc == nil {
+			return p.cloneFailure(ctx, snapshot, false, fmt.Errorf("%w: telegram profile service is unavailable", core.ErrUnavailable))
+		}
+		if err := profileSvc.UploadProfilePhoto(ctx.Ctx, path); err != nil {
 			return p.cloneFailure(ctx, snapshot, true, fmt.Errorf("profile photo upload failed: %w", err))
 		}
 	}
@@ -315,7 +319,7 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 	if state == nil || !state.Active {
 		return ctx.Status("No active clone state exists.")
 	}
-	if ctx.Svc == nil {
+	if ctx.ProfileService() == nil {
 		return ctx.Error("Telegram service is not available.")
 	}
 
@@ -343,8 +347,12 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 }
 
 func (p *Plugin) executeRevert(ctx *core.Context, state CloneState) error {
+	profileSvc := ctx.ProfileService()
+	if profileSvc == nil {
+		return ctx.Error("Telegram service is not available.")
+	}
 	if state.ClonedPhoto {
-		if _, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
+		if _, err := profileSvc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
 			return ctx.Fail(err, "Failed to remove cloned profile photo.")
 		}
 	}
@@ -362,7 +370,7 @@ func (p *Plugin) executeRevert(ctx *core.Context, state CloneState) error {
 		if err != nil {
 			return ctx.Fail(err, "Profile text was restored, but the original photo snapshot is unavailable.")
 		}
-		if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, path); err != nil {
+		if err := profileSvc.UploadProfilePhoto(ctx.Ctx, path); err != nil {
 			return ctx.Fail(err, "Profile text was restored, but the original profile photo could not be restored.")
 		}
 	}
@@ -433,7 +441,7 @@ func (p *Plugin) workspacePath(workspace, name string) (string, error) {
 }
 
 func (p *Plugin) downloadProfilePhoto(ctx *core.Context, peer tg.InputPeerClass, photoID int64, workspace, name string) (string, error) {
-	if ctx == nil || ctx.Svc == nil {
+	if ctx == nil || ctx.MediaService() == nil {
 		return "", errors.New("telegram service is not initialized")
 	}
 	if photoID == 0 {
@@ -444,7 +452,7 @@ func (p *Plugin) downloadProfilePhoto(ctx *core.Context, peer tg.InputPeerClass,
 		return "", err
 	}
 	location := &tg.InputPeerPhotoFileLocation{Peer: peer, PhotoID: photoID, Big: true}
-	if err := ctx.Svc.DownloadFile(ctx.Ctx, location, path); err != nil {
+	if err := ctx.MediaService().DownloadFile(ctx.Ctx, location, path); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -561,11 +569,12 @@ func (p *Plugin) cleanupSnapshot(parent context.Context, ref string) error {
 
 func (p *Plugin) cloneFailure(ctx *core.Context, snapshot CloneState, photoMutationStarted bool, cause error) error {
 	var rollbackErrs []error
-	if ctx == nil || ctx.Svc == nil {
+	if ctx == nil || ctx.ProfileService() == nil {
 		rollbackErrs = append(rollbackErrs, errors.New("telegram service is unavailable for rollback"))
 	} else {
+		profileSvc := ctx.ProfileService()
 		if photoMutationStarted {
-			if _, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
+			if _, err := profileSvc.DeleteProfilePhotos(ctx.Ctx, 1); err != nil {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("remove cloned photo: %w", err))
 			}
 		}
@@ -580,7 +589,7 @@ func (p *Plugin) cloneFailure(ctx *core.Context, snapshot CloneState, photoMutat
 				path, materializeErr := p.materializeSnapshot(ctx.Ctx, workspace, snapshot.OriginalPhoto)
 				if materializeErr != nil {
 					rollbackErrs = append(rollbackErrs, fmt.Errorf("materialize original photo: %w", materializeErr))
-				} else if uploadErr := ctx.Svc.UploadProfilePhoto(ctx.Ctx, path); uploadErr != nil {
+				} else if uploadErr := profileSvc.UploadProfilePhoto(ctx.Ctx, path); uploadErr != nil {
 					rollbackErrs = append(rollbackErrs, fmt.Errorf("restore original photo: %w", uploadErr))
 				}
 				_ = p.files.RemoveTempDir(workspace)

@@ -25,7 +25,7 @@ func (c *Context) Respond(text string, opts ResponseOptions) error {
 	if opts.DeleteTrigger {
 		_ = c.Messages().Delete()
 	}
-	if opts.AutoDeleteDelay > 0 && c.LastResponseID > 0 && c.Svc != nil && c.PeerID != nil {
+	if opts.AutoDeleteDelay > 0 && c.LastResponseID > 0 && c.messageServicer() != nil && c.PeerID != nil {
 		if err := c.Messages().scheduleDelete(c.PeerID, c.LastResponseID, opts.AutoDeleteDelay); err != nil {
 			return err
 		}

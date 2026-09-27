@@ -285,10 +285,11 @@ func (p *Plugin) handleSetPic(ctx *core.Context) error {
 		return ctx.Fail(err, ctx.T("profile.photo.invalid_download"))
 	}
 
-	if ctx.Svc == nil {
+	profileSvc := ctx.ProfileService()
+	if profileSvc == nil {
 		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
-	if err := ctx.Svc.UploadProfilePhoto(ctx.Ctx, filePath); err != nil {
+	if err := profileSvc.UploadProfilePhoto(ctx.Ctx, filePath); err != nil {
 		return ctx.Fail(err, ctx.T("profile.photo.set_failed"))
 	}
 	return ctx.Success(ctx.T("profile.photo.updated"))
@@ -306,11 +307,12 @@ func (p *Plugin) handleDelPhoto(ctx *core.Context) error {
 		}
 	}
 
-	if ctx.Svc == nil {
+	profileSvc := ctx.ProfileService()
+	if profileSvc == nil {
 		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
 
-	deleted, err := ctx.Svc.DeleteProfilePhotos(ctx.Ctx, limit)
+	deleted, err := profileSvc.DeleteProfilePhotos(ctx.Ctx, limit)
 	if err != nil {
 		return ctx.Fail(err, ctx.T("profile.photo.delete_failed"))
 	}
@@ -352,11 +354,12 @@ func (p *Plugin) handleUnblock(ctx *core.Context) error {
 
 // handleContacts lists saved contacts.
 func (p *Plugin) handleContacts(ctx *core.Context) error {
-	if ctx.Svc == nil {
+	profileSvc := ctx.ProfileService()
+	if profileSvc == nil {
 		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
 
-	contacts, err := ctx.Svc.GetContacts(ctx.Ctx)
+	contacts, err := profileSvc.GetContacts(ctx.Ctx)
 	if err != nil {
 		return ctx.Fail(err, ctx.T("profile.contacts.fetch_failed"))
 	}
@@ -406,11 +409,12 @@ func (p *Plugin) handleDialogs(ctx *core.Context) error {
 		limit = 30
 	}
 
-	if ctx.Svc == nil {
+	profileSvc := ctx.ProfileService()
+	if profileSvc == nil {
 		return ctx.Error(ctx.T("profile.telegram_unavailable"))
 	}
 
-	dialogs, err := ctx.Svc.GetDialogs(ctx.Ctx, limit)
+	dialogs, err := profileSvc.GetDialogs(ctx.Ctx, limit)
 	if err != nil {
 		return ctx.Fail(err, ctx.T("profile.dialogs.fetch_failed"))
 	}

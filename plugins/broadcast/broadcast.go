@@ -234,7 +234,8 @@ func detachBroadcastContext(ctx *core.Context) *core.Context {
 }
 
 func (p *Plugin) runBroadcast(ctx *core.Context, scope broadcast.TargetType, response savedresponse.Response) error {
-	if ctx.Svc == nil {
+	profileSvc := ctx.ProfileService()
+	if profileSvc == nil {
 		return ctx.Status("Telegram service is unavailable.")
 	}
 	if err := savedresponse.Validate(response); err != nil {
@@ -242,7 +243,7 @@ func (p *Plugin) runBroadcast(ctx *core.Context, scope broadcast.TargetType, res
 	}
 
 	_ = ctx.EditOrReply(fmt.Sprintf("📡 <i>Fetching dialogs for broadcast (scope: %s)...</i>", scope))
-	dialogs, err := ctx.Svc.GetDialogs(ctx.Ctx, 100)
+	dialogs, err := profileSvc.GetDialogs(ctx.Ctx, 100)
 	if err != nil {
 		return ctx.Fail(err, "Failed to retrieve dialogs.")
 	}

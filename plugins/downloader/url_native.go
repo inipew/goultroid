@@ -10,8 +10,13 @@ import (
 )
 
 func (p *Plugin) startNativeURLDownload(ctx *core.Context, normalizedURL, providerName string) error {
-	if ctx == nil || ctx.Svc == nil || ctx.PeerID == nil {
+	if ctx == nil || ctx.PeerID == nil {
 		return core.ErrInvalidArgs
+	}
+	messageSvc := ctx.MessageService()
+	mediaSvc := ctx.MediaService()
+	if messageSvc == nil || mediaSvc == nil {
+		return core.ErrUnavailable
 	}
 	if p == nil || p.tasks == nil {
 		return fmt.Errorf("%w: downloader TaskEngine client is not configured", core.ErrUnavailable)
@@ -36,16 +41,18 @@ func (p *Plugin) startNativeURLDownload(ctx *core.Context, normalizedURL, provid
 		}
 	}
 
-	svc := ctx.Svc
 	peer := ctx.PeerID
 	edit := func(editCtx context.Context, text string) error {
 		if editCtx == nil {
 			editCtx = context.Background()
 		}
-		return svc.EditMessage(editCtx, peer, anchorID, text)
+		return messageSvc.EditMessage(editCtx, peer, anchorID, text)
 	}
 	deliveryBase := &core.Context{
-		Svc:    svc,
+		Telegram: core.TelegramCapabilities{
+			Media:           mediaSvc,
+			ContextualMedia: ctx.ContextualMediaService(),
+		},
 		PeerID: peer,
 		Message: &core.Message{
 			ID:      deliveryReplyID,

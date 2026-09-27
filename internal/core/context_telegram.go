@@ -116,3 +116,43 @@ func (c *Context) contextualMediaServicer() ContextualMediaServicer {
 	}
 	return nil
 }
+
+// MessageService returns the message capability available to this Context.
+// Legacy Svc fallback is resolved here so production callers do not need to
+// depend on the compatibility aggregate.
+func (c *Context) MessageService() MessageServicer {
+	return c.messageServicer()
+}
+
+// AdminService returns the moderation/admin capability available to this
+// Context.
+func (c *Context) AdminService() AdminServicer {
+	return c.adminServicer()
+}
+
+// MediaService returns the file/media capability available to this Context.
+func (c *Context) MediaService() MediaServicer {
+	return c.mediaServicer()
+}
+
+// PeerService returns the peer lookup/state capability available to this
+// Context.
+func (c *Context) PeerService() PeerServicer {
+	return c.peerServicer()
+}
+
+// ProfileService returns the self-profile/dialog/contact capability available
+// to this Context.
+func (c *Context) ProfileService() ProfileServicer {
+	return c.profileServicer()
+}
+
+// ContextualMessageService returns the optional contextual message transport.
+func (c *Context) ContextualMessageService() ContextualMessageServicer {
+	return c.contextualMessageServicer()
+}
+
+// ContextualMediaService returns the optional contextual media transport.
+func (c *Context) ContextualMediaService() ContextualMediaServicer {
+	return c.contextualMediaServicer()
+}

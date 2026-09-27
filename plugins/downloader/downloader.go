@@ -409,8 +409,8 @@ func (p *Plugin) openInteractiveURLDownload(ctx *core.Context, normalizedURL str
 		}
 		return true, ctx.Status("Interactive downloader delivery could not be confirmed. Please retry the command.")
 	}
-	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
-		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
+	if ctx.Message != nil && ctx.Message.ID > 0 {
+		_ = ctx.Messages().Delete()
 	}
 	return true, nil
 }

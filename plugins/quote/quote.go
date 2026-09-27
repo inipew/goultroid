@@ -204,10 +204,10 @@ type profilePhotoDownloader interface {
 }
 
 func (p *Plugin) downloadAvatar(ctx *core.Context, userID int64, workspace string) string {
-	if ctx == nil || ctx.Svc == nil || ctx.Resolver == nil {
+	if ctx == nil || ctx.ProfileService() == nil || ctx.Resolver == nil {
 		return ""
 	}
-	service, ok := ctx.Svc.(profilePhotoDownloader)
+	service, ok := ctx.ProfileService().(profilePhotoDownloader)
 	if !ok {
 		return ""
 	}
@@ -255,8 +255,8 @@ func (p *Plugin) resolveAuthorInfo(ctx *core.Context, reply *core.Message) autho
 	if ctx != nil && reply.SenderID != 0 && ctx.Resolver != nil {
 		peer, _, err := ctx.Resolver.ResolveUser(ctx.Ctx, strconv.FormatInt(reply.SenderID, 10))
 		if err == nil {
-			if inputUser, ok := peerToInputUser(peer); ok && ctx.Svc != nil {
-				full, fullErr := ctx.Svc.GetFullUser(ctx.Ctx, inputUser)
+			if inputUser, ok := peerToInputUser(peer); ok && ctx.PeerService() != nil {
+				full, fullErr := ctx.PeerService().GetFullUser(ctx.Ctx, inputUser)
 				if fullErr == nil && full != nil {
 					for _, item := range full.Users {
 						if u, ok := item.(*tg.User); ok && u.ID == reply.SenderID {
@@ -280,10 +280,10 @@ func (p *Plugin) resolveAuthorInfo(ctx *core.Context, reply *core.Message) autho
 }
 
 func (p *Plugin) resolveReplyPreview(ctx *core.Context, replyToID int) *ReplyPreview {
-	if ctx == nil || ctx.Svc == nil || replyToID == 0 {
+	if ctx == nil || ctx.MessageService() == nil || replyToID == 0 {
 		return &ReplyPreview{Text: "Deleted message"}
 	}
-	msg, err := ctx.Svc.GetMessage(ctx.Ctx, ctx.PeerID, replyToID)
+	msg, err := ctx.MessageService().GetMessage(ctx.Ctx, ctx.PeerID, replyToID)
 	if err != nil || msg == nil {
 		return &ReplyPreview{Text: "Deleted message"}
 	}
@@ -325,8 +325,8 @@ func (p *Plugin) resolveUserName(ctx *core.Context, userID int64) string {
 	if ctx != nil && ctx.Resolver != nil {
 		peer, _, err := ctx.Resolver.ResolveUser(ctx.Ctx, strconv.FormatInt(userID, 10))
 		if err == nil {
-			if inputUser, ok := peerToInputUser(peer); ok && ctx.Svc != nil {
-				full, err := ctx.Svc.GetFullUser(ctx.Ctx, inputUser)
+			if inputUser, ok := peerToInputUser(peer); ok && ctx.PeerService() != nil {
+				full, err := ctx.PeerService().GetFullUser(ctx.Ctx, inputUser)
 				if err == nil && full != nil {
 					for _, item := range full.Users {
 						if u, ok := item.(*tg.User); ok && u.ID == userID {

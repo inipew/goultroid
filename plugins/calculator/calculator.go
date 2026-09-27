@@ -168,8 +168,8 @@ func (p *Plugin) handleCommand(ctx *core.Context) error {
 		}
 		return ctx.Status("Interactive calculator delivery could not be confirmed. Please retry the command.")
 	}
-	if ctx.Message != nil && ctx.Message.ID > 0 && ctx.Svc != nil {
-		_ = ctx.Svc.DeleteMessage(ctx.Ctx, ctx.PeerID, []int{ctx.Message.ID})
+	if ctx.Message != nil && ctx.Message.ID > 0 {
+		_ = ctx.Messages().Delete()
 	}
 	return nil
 }
