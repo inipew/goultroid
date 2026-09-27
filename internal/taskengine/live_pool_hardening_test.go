@@ -175,6 +175,10 @@ func TestStartupPoolValidationUsesEffectiveBounds(t *testing.T) {
 			if err := ValidateConfig(tc.cfg); err == nil {
 				t.Fatal("ValidateConfig accepted invalid startup bounds")
 			}
+			engine := NewEngine(tc.cfg)
+			if err := engine.Start(context.Background()); err == nil {
+				t.Fatal("Start accepted invalid startup bounds")
+			}
 		})
 	}
 

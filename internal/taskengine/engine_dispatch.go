@@ -133,6 +133,7 @@ func (e *Engine) applyPoolConfig(pool tasks.PoolID, cfg PoolEngineConfig) error 
 	}
 	return nil
 }
+
 func runningCount(slots []bool) int {
 	count := 0
 	for _, running := range slots {
