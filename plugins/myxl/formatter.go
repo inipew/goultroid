@@ -128,6 +128,85 @@ func FormatQuotaResponse(account *Account, balance *BalanceData, quota *QuotaDet
 	}, maskMSISDN)
 }
 
+const maxDashboardQuotaSummaryRunes = 2800
+
+// FormatDashboardQuotaSummary renders a richer quota overview for the MyXL
+// dashboard. It shows every benefit for as many active packages as fit in a
+// conservative Telegram message budget, then points users to the full detail
+// screen only when more packages remain.
+func FormatDashboardQuotaSummary(quota *QuotaDetailsData) string {
+	if quota == nil || len(quota.Quotas) == 0 {
+		return "<i>Tidak ada paket kuota aktif yang terdeteksi.</i>"
+	}
+
+	var b strings.Builder
+	b.WriteString("📦 <b>Paket Aktif:</b>\n")
+	shown := 0
+
+	for i, q := range quota.Quotas {
+		var section strings.Builder
+		name := strings.TrimSpace(q.Name)
+		if name == "" {
+			name = "Paket Internet"
+		}
+		section.WriteString(fmt.Sprintf("\n%d. <b>%s</b>\n", i+1, html.EscapeString(name)))
+		if q.ExpiredAt > 0 {
+			section.WriteString(fmt.Sprintf("   ⏳ <i>Berlaku s/d: %s</i>\n", FormatWIBTime(q.ExpiredAt)))
+		}
+
+		hasBenefits := false
+		for _, benefit := range q.Benefits {
+			bName := strings.TrimSpace(benefit.Name)
+			if bName == "" {
+				bName = benefit.DataType
+			}
+			if bName == "" {
+				bName = "Kuota"
+			}
+
+			if strings.EqualFold(benefit.DataType, "DATA") || benefit.Total > 1000 {
+				bar, pct := RenderProgressBar(benefit.Remaining, benefit.Total, 10)
+				section.WriteString(fmt.Sprintf(
+					"   ▫️ <b>%s:</b>\n      <code>%s %s</code>\n      <i>%s / %s</i>\n",
+					html.EscapeString(bName),
+					bar,
+					pct,
+					FormatBytes(benefit.Remaining),
+					FormatBytes(benefit.Total),
+				))
+				hasBenefits = true
+			} else if benefit.Total > 0 {
+				section.WriteString(fmt.Sprintf(
+					"   ▫️ <b>%s:</b> <code>%.0f / %.0f %s</code>\n",
+					html.EscapeString(bName),
+					benefit.Remaining,
+					benefit.Total,
+					html.EscapeString(benefit.DataType),
+				))
+				hasBenefits = true
+			}
+		}
+		if !hasBenefits {
+			section.WriteString("   <i>Tidak ada rincian benefit.</i>\n")
+		}
+
+		candidate := b.String() + section.String()
+		if shown > 0 && len([]rune(candidate)) > maxDashboardQuotaSummaryRunes {
+			remaining := len(quota.Quotas) - shown
+			b.WriteString(fmt.Sprintf(
+				"\n… dan %d paket lainnya. Buka Rincian Kuota untuk daftar lengkap.",
+				remaining,
+			))
+			break
+		}
+
+		b.WriteString(section.String())
+		shown++
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
 // FormatQuotaSnapshot renders independently fetched balance/quota results. It
 // deliberately distinguishes an API failure from a successful empty response.
 func FormatQuotaSnapshot(account *Account, snapshot quotaSnapshot, maskMSISDN bool) string {
@@ -210,7 +289,7 @@ func FormatQuotaSnapshot(account *Account, snapshot quotaSnapshot, maskMSISDN bo
 	}
 
 	if snapshot.BalanceErr != nil || snapshot.QuotaErr != nil {
-		b.WriteString("\n🔄 <i>Sebagian data gagal dimuat. Gunakan Perbarui / Coba Lagi untuk mengambil ulang data yang gagal.</i>\n")
+		b.WriteString("\n🔄 <i>Sebagian data gagal dimuat. Gunakan Muat Ulang untuk mengambil ulang data yang gagal.</i>\n")
 	}
 	return b.String()
 }

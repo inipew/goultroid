@@ -105,28 +105,7 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	case snapshot.Quota == nil || len(snapshot.Quota.Quotas) == 0:
 		rawSections = append(rawSections, "<i>Tidak ada paket kuota aktif yang terdeteksi.</i>")
 	default:
-		var qb strings.Builder
-		qb.WriteString("📦 <b>Ringkasan Kuota:</b>\n")
-		count := 0
-		for _, q := range snapshot.Quota.Quotas {
-			for _, ben := range q.Benefits {
-				if strings.EqualFold(ben.DataType, "DATA") || ben.Total > 1000 {
-					bar, pct := RenderProgressBar(ben.Remaining, ben.Total, 10)
-					qb.WriteString(fmt.Sprintf("• <b>%s:</b>\n  <code>%s %s</code>\n  <i>%s / %s</i>\n",
-						html.EscapeString(q.Name), bar, pct, FormatBytes(ben.Remaining), FormatBytes(ben.Total)))
-					count++
-					break
-				}
-			}
-			if count >= 2 {
-				break
-			}
-		}
-		if count > 0 {
-			rawSections = append(rawSections, strings.TrimSpace(qb.String()))
-		} else {
-			rawSections = append(rawSections, "<i>Kuota berhasil dimuat, tetapi tidak ada benefit data yang dapat diringkas.</i>")
-		}
+		rawSections = append(rawSections, FormatDashboardQuotaSummary(snapshot.Quota))
 	}
 
 	var pendingQR *PendingQRIS
@@ -149,11 +128,9 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	}
 
 	if snapshot.partial() {
-		card.WithFooter("<i>Sebagian data gagal dimuat. Pilih Coba Lagi untuk mengambil ulang tanpa membuang data yang berhasil.</i>")
+		card.WithFooter("<i>Sebagian data gagal dimuat. Pilih Muat Ulang untuk mengambil ulang tanpa membuang data yang berhasil.</i>")
 	} else if snapshot.allFailed() {
 		card.WithFooter("<i>Pulsa dan kuota gagal dimuat. Akun tetap tersedia; pilih Coba Lagi.</i>")
-	} else {
-		card.WithFooter("<i>Lanjutkan sesuai urutan: kuota → akun → pilih paket → tinjau pembelian.</i>")
 	}
 
 	screen := ui.NewScreen("myxl", "", card.Render())
@@ -163,7 +140,7 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	}
 	screen.AddRow(
 		newMenuButton("📊 Rincian Kuota", "myxl:detail"),
-		newMenuButton("🔄 Coba Lagi", "myxl:refresh"),
+		newMenuButton("🔄 Muat Ulang", "myxl:refresh"),
 	)
 	screen.AddRow(newMenuButton("👥 Kelola Akun", "myxl:accounts"))
 	screen.AddRow(
@@ -185,7 +162,7 @@ func (m *MenuManager) BuildQuotaDetailScreen(ctx context.Context, mask bool) (*u
 
 	screen := ui.NewScreen("myxl:detail", "", FormatQuotaSnapshot(acc, snapshot, mask))
 	screen.AddRow(
-		newMenuButton("🔄 Coba Lagi", "myxl:detail"),
+		newMenuButton("🔄 Muat Ulang", "myxl:detail"),
 		newMenuButton("🔙 Kembali ke Ringkasan", "myxl:home"),
 	)
 	return screen, nil
@@ -319,6 +296,7 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 		screen := ui.NewScreen("myxl:saved", "", card.Render())
 		screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "myxl:buy_opt_input"))
 		screen.AddRow(newMenuButton("🔙 Kembali ke Store", "myxl:store"))
+		screen.AddRow(newMenuButton("🏠 Kembali ke Ringkasan", "myxl:home"))
 		return screen, nil
 	}
 
@@ -340,6 +318,7 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 		)
 	}
 	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "myxl:store"))
+	screen.AddRow(newMenuButton("🏠 Kembali ke Ringkasan", "myxl:home"))
 	return screen, nil
 }
 

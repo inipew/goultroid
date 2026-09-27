@@ -44,7 +44,7 @@ func setupTestMyXLEnv(t *testing.T) (*Plugin, *httptest.Server, *SQLiteRepositor
 			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
 			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
 		case "/api/v8/packages/quota-details":
-			payload := `{"status":"SUCCESS","message":"","data":{"quotas":[{"name":"Akrab","expired_at":1735689600,"benefits":[{"name":"Utama","data_type":"DATA","remaining":2147483648,"total":5368709120}]}]}}`
+			payload := `{"status":"SUCCESS","message":"","data":{"quotas":[{"name":"Akrab","expired_at":1735689600,"benefits":[{"name":"Utama","data_type":"DATA","remaining":2147483648,"total":5368709120},{"name":"Akumulasi","data_type":"DATA","remaining":0,"total":6442450944}]},{"name":"Bonus WhatsApp","expired_at":1735689600,"benefits":[{"name":"WhatsApp","data_type":"DATA","remaining":9019431321,"total":10737418240}]},{"name":"Bonus YouTube","expired_at":1735689600,"benefits":[{"name":"YouTube","data_type":"DATA","remaining":7988639170,"total":10737418240}]},{"name":"Bonus TikTok","expired_at":1735689600,"benefits":[{"name":"TikTok","data_type":"DATA","remaining":4745935258,"total":10737418240}]}]}}`
 			xtime := time.Now().UnixMilli()
 			xdata, _ := EncryptXData(payload, xtime, DefaultXDataKey)
 			_ = json.NewEncoder(w).Encode(EncryptedBody{XData: xdata, XTime: xtime})
@@ -131,6 +131,18 @@ func TestMenuManager_Screens(t *testing.T) {
 		t.Errorf("expected masked msisdn in group, got: %s", screenMasked.Body)
 	}
 
+	for _, want := range []string{"Akrab", "Akumulasi", "Bonus WhatsApp", "Bonus YouTube", "Bonus TikTok"} {
+		if !strings.Contains(screenUnmasked.Body, want) {
+			t.Errorf("dashboard should show richer quota summary %q, got: %s", want, screenUnmasked.Body)
+		}
+	}
+	if strings.Contains(screenUnmasked.Body, "Lanjutkan sesuai urutan") {
+		t.Errorf("dashboard should not show removed workflow footer: %s", screenUnmasked.Body)
+	}
+	if !screenHasButtonText(screenUnmasked, "Muat Ulang") || screenHasButtonText(screenUnmasked, "Coba Lagi") {
+		t.Errorf("dashboard refresh action should use Muat Ulang label")
+	}
+
 	// 3. Quota Detail screen
 	quotaScreen, err := plugin.menuMgr.BuildQuotaDetailScreen(ctx, false)
 	if err != nil {
@@ -166,6 +178,9 @@ func TestMenuManager_Screens(t *testing.T) {
 	if !strings.Contains(savedEmpty.Body, "Belum ada paket") {
 		t.Errorf("expected empty saved packages, got: %s", savedEmpty.Body)
 	}
+	if !screenHasAction(savedEmpty, "myxl:home") {
+		t.Error("empty saved packages screen missing back-to-summary action")
+	}
 
 	_ = repo.SavePackage(ctx, &SavedPackage{
 		MSISDN:     acc.MSISDN,
@@ -181,6 +196,9 @@ func TestMenuManager_Screens(t *testing.T) {
 	}
 	if !strings.Contains(savedPopulated.Body, "Paket Hemat 50GB") {
 		t.Errorf("expected saved package name in list, got: %s", savedPopulated.Body)
+	}
+	if !screenHasAction(savedPopulated, "myxl:home") {
+		t.Error("saved packages screen missing back-to-summary action")
 	}
 
 	// 7. Package Detail screen

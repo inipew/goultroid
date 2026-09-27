@@ -206,3 +206,59 @@ func TestFormatPurchaseResultBoundsInlineQRIS(t *testing.T) {
 		t.Fatalf("missing truncation explanation: %s", out)
 	}
 }
+
+
+func TestFormatDashboardQuotaSummaryShowsMultiplePackagesAndBenefits(t *testing.T) {
+	quota := &QuotaDetailsData{Quotas: []QuotaInfo{
+		{
+			Name:      "Paket Utama",
+			ExpiredAt: 1735689600,
+			Benefits: []BenefitInfo{
+				{Name: "Kuota Utama", DataType: "DATA", Remaining: 5 * 1024 * 1024 * 1024, Total: 10 * 1024 * 1024 * 1024},
+				{Name: "Akumulasi", DataType: "DATA", Remaining: 0, Total: 6 * 1024 * 1024 * 1024},
+			},
+		},
+		{Name: "Bonus WhatsApp", ExpiredAt: 1735689600, Benefits: []BenefitInfo{{Name: "WhatsApp", DataType: "DATA", Remaining: 8 * 1024 * 1024 * 1024, Total: 10 * 1024 * 1024 * 1024}}},
+		{Name: "Bonus YouTube", ExpiredAt: 1735689600, Benefits: []BenefitInfo{{Name: "YouTube", DataType: "DATA", Remaining: 7 * 1024 * 1024 * 1024, Total: 10 * 1024 * 1024 * 1024}}},
+		{Name: "Bonus TikTok", ExpiredAt: 1735689600, Benefits: []BenefitInfo{{Name: "TikTok", DataType: "DATA", Remaining: 4 * 1024 * 1024 * 1024, Total: 10 * 1024 * 1024 * 1024}}},
+	}}
+
+	out := FormatDashboardQuotaSummary(quota)
+	for _, want := range []string{
+		"Paket Aktif",
+		"1. <b>Paket Utama</b>",
+		"Kuota Utama",
+		"Akumulasi",
+		"2. <b>Bonus WhatsApp</b>",
+		"3. <b>Bonus YouTube</b>",
+		"4. <b>Bonus TikTok</b>",
+		"Berlaku s/d",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("summary missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestFormatDashboardQuotaSummaryBoundsLargeCatalog(t *testing.T) {
+	quota := &QuotaDetailsData{}
+	for i := 0; i < 40; i++ {
+		quota.Quotas = append(quota.Quotas, QuotaInfo{
+			Name:      strings.Repeat("Paket Sangat Panjang ", 4),
+			ExpiredAt: 1735689600,
+			Benefits: []BenefitInfo{{
+				Name:      strings.Repeat("Benefit Sangat Panjang ", 4),
+				DataType:  "DATA",
+				Remaining: 1024 * 1024 * 1024,
+				Total:     10 * 1024 * 1024 * 1024,
+			}},
+		})
+	}
+	out := FormatDashboardQuotaSummary(quota)
+	if len([]rune(out)) > maxDashboardQuotaSummaryRunes+180 {
+		t.Fatalf("dashboard quota summary too large: %d runes", len([]rune(out)))
+	}
+	if !strings.Contains(out, "paket lainnya") {
+		t.Fatalf("bounded summary should disclose truncated packages: %s", out)
+	}
+}
