@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1 CLOSED; M2 CLOSED (scoped acceptance passed); M3 NEXT**
+Status: **IN PROGRESS — M1 CLOSED; M2 CLOSED (scoped acceptance passed); M3 IMPLEMENTED / LOCAL ACCEPTANCE PENDING**
 
 Audit baseline:
 
@@ -597,12 +597,26 @@ Gate:
 
 ### M3 — Split TaskEngine by responsibility
 
-Tasks:
+Status: **IMPLEMENTED — local structural/regression acceptance pending**
 
-- move methods/types from `engine.go` into the target files above;
-- preserve one Engine and one runLoop;
-- do not change exported behavior in the structural commit;
-- keep commit(s) mechanically reviewable.
+Implementation commits:
+
+- `2fc271d7ce6d035ac1e8ecfc60860b89093384b0` — `refactor(taskengine): split config and state declarations`
+- `11431fdb96aa25fab3f96b3741c689110c74369d` — `refactor(taskengine): split coordinator responsibilities`
+
+Implemented structure:
+
+- `engine.go` now owns lifecycle/control coordination and the single canonical `runLoop`;
+- `engine_config.go` owns configuration defaults, validation, and construction;
+- `engine_state.go` owns the sole `Engine` struct plus coordinator request/state types;
+- `engine_admission.go` owns submit admission, owner-limit control, and submit linearization;
+- `engine_dispatch.go` owns queue expiry, worker/resource dispatch, pool configuration, and dispatch-time worker hooks;
+- `engine_completion.go` owns physical completion, cancellation settlement, terminal retention, and drain detection;
+- `engine_api.go` owns public stats/health/cancel/snapshot query surfaces;
+- existing `durability.go`, `delivery.go`, `accounting.go`, `executor.go`, `shutdown.go`, and `diagnostics.go` remain specialized files;
+- no second Engine, coordinator, queue, registry, or execution authority was introduced.
+
+An architecture fence requires exactly one `type Engine struct` and exactly one `(*Engine).runLoop`, and pins them to `engine_state.go` and `engine.go` respectively.
 
 Required regression groups:
 
@@ -618,7 +632,9 @@ Required regression groups:
 Gate:
 
 - `engine.go` is no longer a 2k-line multi-responsibility file;
-- all mutable ownership invariants remain unchanged.
+- all mutable ownership invariants remain unchanged;
+- run local TaskEngine architecture/regression tests and hot/cold benchmarks before changing M3 to final CLOSED;
+- do not inspect or poll CI unless explicitly requested.
 
 ### M4 — Split Jobs Manager by responsibility
 
