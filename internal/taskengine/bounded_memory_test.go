@@ -245,6 +245,59 @@ func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
 	}
 }
 
+
+func TestQueuedCancelPreservesAttemptAfterTerminalDetach(t *testing.T) {
+	e := boundedTestEngine(t, Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"p": {Concurrency: 1, BacklogLimit: 4, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity: 4, MaxTerminalRetained: 4,
+	})
+	blockerStarted := make(chan struct{})
+	blockerRelease := make(chan struct{})
+	defer close(blockerRelease)
+	if _, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "detach-blocker", QuotaOwner: "blocker", Pool: "p",
+		Handler: func(context.Context) error { close(blockerStarted); <-blockerRelease; return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blockerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocker did not start")
+	}
+
+	executed := make(chan struct{}, 1)
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "detach-queued", QuotaOwner: "owner", Pool: "p", Input: []byte("payload"),
+		Job:     &tasks.OccurrenceRef{AttemptID: "queued-attempt"},
+		Handler: func(context.Context) error { executed <- struct{}{}; return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := e.Cancel("detach-queued", tasks.CauseUserCancel)
+	if err != nil || !receipt.Accepted {
+		t.Fatalf("cancel receipt = %+v err=%v", receipt, err)
+	}
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.AttemptID != "queued-attempt" {
+		t.Fatalf("attempt id = %q, want queued-attempt", res.AttemptID)
+	}
+	rec := e.registry["detach-queued"]
+	if rec == nil || rec.spec.Job != nil || rec.spec.Input != nil {
+		t.Fatalf("terminal queued record = %+v", rec)
+	}
+	select {
+	case <-executed:
+		t.Fatal("cancelled queued task executed")
+	default:
+	}
+}
 func TestTerminalTTLEvictsWhileEngineIdle(t *testing.T) {
 	e := boundedTestEngine(t, Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{
