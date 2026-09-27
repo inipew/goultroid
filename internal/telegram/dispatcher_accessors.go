@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/inipew/goultroid/internal/core"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/services/inline"
 )
 
@@ -57,11 +58,20 @@ func (d *Dispatcher) getRootContext() context.Context {
 	return d.rootCtx
 }
 
-// SetService updates the TelegramServicer instance (e.g. once client is connected).
+// SetService is the compatibility injection path for older tests and
+// composition. Production client startup binds capability slots directly.
 func (d *Dispatcher) SetService(svc DispatcherService) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.svc = svc
+	d.compatService = svc
+	d.services = dispatcherCapabilitiesFrom(svc)
+}
+
+func (d *Dispatcher) setRuntimeService(svc *Service) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.compatService = nil
+	d.services = dispatcherCapabilitiesFrom(svc)
 }
 
 // SetResolver updates the PeerResolver instance.
@@ -98,28 +108,75 @@ func (d *Dispatcher) getSelfID() int64 {
 func (d *Dispatcher) getService() DispatcherService {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.svc
+	return d.compatService
 }
 
-// Service returns the configured TelegramServicer.
+// Service returns only the compatibility aggregate configured through
+// NewDispatcher/SetService. Production runtime wiring uses narrow accessors.
 func (d *Dispatcher) Service() DispatcherService {
 	return d.getService()
 }
 
 func (d *Dispatcher) getCommandService() core.CommandTelegramServicer {
-	return d.getService()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.command
+}
+
+func (d *Dispatcher) CommandService() core.CommandTelegramServicer {
+	return d.getCommandService()
+}
+
+func (d *Dispatcher) MessageService() core.MessageServicer {
+	return d.getCommandService()
+}
+
+func (d *Dispatcher) AdminService() core.AdminServicer {
+	return d.getCommandService()
+}
+
+func (d *Dispatcher) MediaService() core.MediaServicer {
+	return d.getCommandService()
+}
+
+func (d *Dispatcher) ContextualMessageService() core.ContextualMessageServicer {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.contextualMessages
+}
+
+func (d *Dispatcher) ContextualMediaService() core.ContextualMediaServicer {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.contextualMedia
+}
+
+func (d *Dispatcher) PresentationService() presentationtelegram.BridgeService {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.presentation
 }
 
 func (d *Dispatcher) getCallbackAnswerer() callbackQueryAnswerer {
-	return d.getService()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.callback
 }
 
 func (d *Dispatcher) getInlineAnswerer() inline.TelegramAnswerer {
-	return d.getService()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.inline
 }
 
 func (d *Dispatcher) getOriginTracker() botOriginTracker {
-	return d.getService()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.services.origin
+}
+
+func (d *Dispatcher) OriginTracker() OriginTracker {
+	return d.getOriginTracker()
 }
 
 // EventBus returns the domain event bus used by this dispatcher.

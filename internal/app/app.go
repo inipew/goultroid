@@ -327,15 +327,13 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
 					return nil
 				}
-				service, _ := tgRuntime.dispatcher.Service().(core.ContextualMessageServicer)
-				return service
+				return tgRuntime.dispatcher.ContextualMessageService()
 			},
 			ContextualMediaService: func() core.ContextualMediaServicer {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {
 					return nil
 				}
-				service, _ := tgRuntime.dispatcher.Service().(core.ContextualMediaServicer)
-				return service
+				return tgRuntime.dispatcher.ContextualMediaService()
 			},
 			OriginTracker: func() module.BotOriginTracker {
 				if tgRuntime == nil || tgRuntime.dispatcher == nil {

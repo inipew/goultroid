@@ -5,6 +5,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 )
 
@@ -15,6 +16,44 @@ type DispatcherService interface {
 	inlineservice.TelegramAnswerer
 	callbackQueryAnswerer
 	botOriginTracker
+}
+
+type dispatcherCapabilities struct {
+	command            core.CommandTelegramServicer
+	inline             inlineservice.TelegramAnswerer
+	callback           callbackQueryAnswerer
+	origin             botOriginTracker
+	contextualMessages core.ContextualMessageServicer
+	contextualMedia    core.ContextualMediaServicer
+	presentation       presentationtelegram.BridgeService
+}
+
+func dispatcherCapabilitiesFrom(service DispatcherService) dispatcherCapabilities {
+	if service == nil {
+		return dispatcherCapabilities{}
+	}
+	caps := dispatcherCapabilities{
+		command:  service,
+		inline:   service,
+		callback: service,
+		origin:   service,
+	}
+	if contextual, ok := service.(core.ContextualMessageServicer); ok {
+		caps.contextualMessages = contextual
+	}
+	if contextual, ok := service.(core.ContextualMediaServicer); ok {
+		caps.contextualMedia = contextual
+	}
+	if presentation, ok := service.(presentationtelegram.BridgeService); ok {
+		caps.presentation = presentation
+	}
+	return caps
+}
+
+// OriginTracker is the narrow bot-origin classification boundary exposed to
+// application composition.
+type OriginTracker interface {
+	IsBotSent(int) bool
 }
 
 // callbackQueryAnswerer is owned by Telegram callback ingress. Callback

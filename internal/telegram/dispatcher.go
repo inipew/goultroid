@@ -26,7 +26,8 @@ type NativeInteractionDispatcher interface {
 type Dispatcher struct {
 	router             *core.Router
 	perms              *core.Permissions
-	svc                DispatcherService
+	services           dispatcherCapabilities
+	compatService      DispatcherService
 	logger             *zap.Logger
 	cooldown           *core.CooldownTracker
 	executor           *core.CommandExecutor
@@ -144,7 +145,8 @@ func NewDispatcher(
 	d := &Dispatcher{
 		router:        router,
 		perms:         perms,
-		svc:           svc,
+		services:      dispatcherCapabilitiesFrom(svc),
+		compatService: svc,
 		logger:        logger,
 		cooldown:      cooldown,
 		executor:      executor,

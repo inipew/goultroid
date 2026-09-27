@@ -213,7 +213,7 @@ func (c *Client) Service() core.TelegramServicer {
 	if c == nil || c.dispatcher == nil {
 		return nil
 	}
-	svc, _ := c.dispatcher.Service().(core.TelegramServicer)
+	svc, _ := c.dispatcher.CommandService().(core.TelegramServicer)
 	return svc
 }
 
@@ -223,8 +223,7 @@ func (c *Client) PresentationService() presentationtelegram.BridgeService {
 	if c == nil || c.dispatcher == nil {
 		return nil
 	}
-	service, _ := c.dispatcher.Service().(presentationtelegram.BridgeService)
-	return service
+	return c.dispatcher.PresentationService()
 }
 
 // Dispatcher returns the underlying Dispatcher instance.
@@ -307,7 +306,7 @@ func (c *Client) Run(ctx context.Context) error {
 		if c.peerStorage != nil {
 			svc.SetStorage(c.peerStorage)
 		}
-		c.dispatcher.SetService(svc)
+		c.dispatcher.setRuntimeService(svc)
 		resolver := NewResolverWithContextAndExecutor(ctx, c.raw.API(), c.peerManager, defaultResolverCacheConfig(), c.executor)
 		defer func() {
 			if err := resolver.Close(); err != nil && c.logger != nil {
@@ -380,7 +379,7 @@ func (c *Client) NotifyRestartState(ctx context.Context) error {
 	if c.dispatcher == nil {
 		return nil
 	}
-	return notifyRestartState(ctx, c.dispatcher.Service(), c.logger)
+	return notifyRestartState(ctx, c.dispatcher.MessageService(), c.logger)
 }
 
 type restartNotifierService interface {
