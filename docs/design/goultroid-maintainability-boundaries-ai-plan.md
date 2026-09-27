@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1 CLOSED; M2 REOPENED FOR REGRESSION/BORDER FIXES**
+Status: **IN PROGRESS — M1 CLOSED; M2 IMPLEMENTATION COMPLETE / LOCAL BUILD ACCEPTANCE PENDING**
 
 Audit baseline:
 
@@ -498,7 +498,7 @@ Gate:
 
 ### M2 — Migrate Context and Telegram callers
 
-Status: **REOPENED — runtime regressions fixed; composition boundary cleanup still open**
+Status: **IMPLEMENTATION COMPLETE — local build / targeted acceptance pending before final CLOSED**
 
 Implementation commits:
 
@@ -509,14 +509,23 @@ Implementation commits:
 - `cd6e96a1e2b8e0e8e466d5d7b13c2e32eeb04581` — `test(architecture): fence telegram capability migration`
 - `a062f4d636d0472e3cb6474d88bfa297b2810340` — `fix(m2): route production contexts through capabilities`
 - `b671f09fe66fee3cf0ba140b1533c6a107fb4a3a` — `fix(assistant): fail closed for unsupported telegram capabilities`
+- `09719a73b45f18ba8f1dd9606d9810af99049176` — `test(m2): reopen and fence capability migration`
+- `8d3deb877a7080123928e00d8f743cbc6ecd906f` — `test(core): cover capability backed edit cleanup`
+- `2f41b93c6a5c250b80b88061d5d39e48822cb381` — `refactor(m2): narrow module telegram providers`
+- `be8a746d99a794c419c41fafcc2dbae77731f21c` — `refactor(m2): narrow service telegram providers`
+- `d0fea3bddc8e5622dece5078d40096ed6c6c0963` — `refactor(m2): narrow native presentation transport`
+- `7f548c23cab38114962d74302b9eb081443ddf7b` — `refactor(m2): split dispatcher service storage`
+- `c19b636a435bcc25b5780a20b562f3f082be2145` — `fix(m2): bind module runtime to dispatcher capabilities`
+- `3303b189bb1d369e9c4d82c5101933e6988d68e9` — `refactor(m2): remove command aggregate from production path`
+- `ae9bd52a4a3c49ab11568fc2df373b3d4c5bb9db` — `refactor(m2): fence legacy telegram aggregate paths`
 
 Closed behavior/boundary work:
 
 - `core.Context` now owns `TelegramCapabilities`; production userbot, Assistant, and scheduled-command paths populate that container instead of `Svc`.
 - Core message/admin/media/peer/profile facades resolve their own capability and contextual message/media extensions independently.
 - `Context.Svc` is no longer typed as the 38-method `TelegramServicer`; it is a deprecated `CommandTelegramServicer` compatibility fallback for direct legacy/test construction only.
-- `CommandExecutor.ExecuteExecution` accepts `CommandTelegramServicer` and constructs a capability-backed Context.
-- Dispatcher composition uses `DispatcherService`, while command/callback/inline/origin paths receive typed narrow getters.
+- `CommandExecutor.ExecuteExecution` accepts a `TelegramCapabilities` value directly; scheduled execution no longer carries `CommandTelegramServicer`.
+- Dispatcher production storage is capability-sized: command state is a `TelegramCapabilities` snapshot and callback/inline/origin/contextual/presentation ports are stored independently. `DispatcherService` remains only as a compatibility constructor/test input.
 - Inline engine public execution methods now accept `inline.TelegramAnswerer`.
 - Presentation Telegram bridge now stores `BridgeService`; contextual media remains an independent optional capability.
 - Assistant inline query service no longer implements unrelated Telegram operations.
@@ -542,13 +551,25 @@ Compatibility intentionally retained:
 - `core.Context.Svc` remains as a deprecated, narrower command-only fallback, but direct production callers must not read or bind it;
 - compatibility assertions/adapters may mention the legacy aggregate, but migrated production execution surfaces may not depend on it.
 
-Still open before M2 can close again:
+Remaining acceptance before final M2 CLOSED:
 
-- replace the still-wide `DispatcherService` storage/injection aggregate with capability-specific composition;
-- remove the `Client.Service() core.TelegramServicer` compatibility assertion from production composition;
-- narrow `module.TelegramRuntime.TelegramService` and downstream service/module providers by actual consumer need;
-- retire `CommandTelegramServicer` from production scheduler/executor composition where capability bundles can be passed directly;
-- once production broad-provider callers reach zero, remove `Context.Svc` compatibility fallback and legacy aggregate surfaces.
+- run local `go build -o bin/goultroid ./cmd/goultroid`;
+- run the M2 architecture/core/Telegram targeted tests and fix any compile or behavior regression they expose;
+- do not inspect or poll CI unless explicitly requested.
+
+Production boundary cleanup completed:
+
+- module runtime exposes narrow message/admin/media/contextual/origin providers instead of a legacy Telegram aggregate;
+- PMPermit, UserLog, AFK, Blacklist, Filters, broadcast, and native interaction production wiring consume narrow ports/adapters;
+- dispatcher production state stores capability-sized ports; the wide `DispatcherService` path is compatibility-only;
+- `Client.Service() core.TelegramServicer` is deprecated compatibility-only and is fenced out of application production composition;
+- scheduler and `CommandExecutor.ExecuteExecution` consume `TelegramCapabilities` directly;
+- production application wiring is fenced from `Client.Service()`, `Dispatcher.Service()`, and `Dispatcher.CommandService()`.
+
+Deferred compatibility cleanup, not a production M2 dependency:
+
+- remove `Context.Svc`, `CommandTelegramServicer`, `DispatcherService`, and `core.TelegramServicer` only after their remaining compatibility/test callers are migrated;
+- further split coarse M1 capability method sets where a consumer currently receives a fail-closed `ErrUnsupported` implementation rather than a smaller compile-time interface.
 
 Tasks:
 
