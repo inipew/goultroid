@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1 CLOSED; M2 IMPLEMENTATION COMPLETE / LOCAL BUILD ACCEPTANCE PENDING**
+Status: **IN PROGRESS — M1 CLOSED; M2 CLOSED (scoped acceptance passed); M3 NEXT**
 
 Audit baseline:
 
@@ -498,7 +498,7 @@ Gate:
 
 ### M2 — Migrate Context and Telegram callers
 
-Status: **IMPLEMENTATION COMPLETE — local build / targeted acceptance pending before final CLOSED**
+Status: **CLOSED — scoped local acceptance passed; broader unrelated failures remain unattributed**
 
 Implementation commits:
 
@@ -518,6 +518,10 @@ Implementation commits:
 - `c19b636a435bcc25b5780a20b562f3f082be2145` — `fix(m2): bind module runtime to dispatcher capabilities`
 - `3303b189bb1d369e9c4d82c5101933e6988d68e9` — `refactor(m2): remove command aggregate from production path`
 - `ae9bd52a4a3c49ab11568fc2df373b3d4c5bb9db` — `refactor(m2): fence legacy telegram aggregate paths`
+- `92b2d17c09bfb5397ef872d9312eddd1afb5463b` — `fix(m2): keep runtime capability providers live`
+- `a92aa2a7b050b3435eef79e7d9343e75f098db96` — `fix(m2): restore canonical group rule contracts`
+- `1b3c633f5a306d36fac7b2140693edd3f662d86a` — `test(m2): update app fixtures for capability wiring`
+- `b91c9cbcaabca08a46a16d7ecba5ca10f1d82e51` — `refactor(m2): make assistant telegram capabilities truthful`
 
 Closed behavior/boundary work:
 
@@ -541,7 +545,7 @@ Regression audit / reopened findings:
 - fixed delayed response deletion so `AutoDeleteDelay` resolves the message capability rather than gating on `Svc`;
 - migrated native downloader child Contexts and plugin command paths away from direct `ctx.Svc` reads;
 - migrated broadcast/profile/clone/quote/userlog and self-inline cleanup paths to narrow capability accessors;
-- removed production Assistant embedding of `MockTelegramServicer`; unsupported command capabilities now fail closed with `core.ErrUnsupported`;
+- removed production Assistant embedding of `MockTelegramServicer`; follow-up capability refinement now removes unsupported Assistant methods from its type entirely and binds only supported narrow ports;
 - Assistant message deletion now propagates transport errors instead of discarding them;
 - full plugin production sweep after the fixes found no remaining direct `ctx.Svc` reads.
 
@@ -551,11 +555,16 @@ Compatibility intentionally retained:
 - `core.Context.Svc` remains as a deprecated, narrower command-only fallback, but direct production callers must not read or bind it;
 - compatibility assertions/adapters may mention the legacy aggregate, but migrated production execution surfaces may not depend on it.
 
-Remaining acceptance before final M2 CLOSED:
+Scoped local acceptance evidence:
 
-- run local `go build -o bin/goultroid ./cmd/goultroid`;
-- run the M2 architecture/core/Telegram targeted tests and fix any compile or behavior regression they expose;
-- do not inspect or poll CI unless explicitly requested.
+- application build passes at HEAD `1b3c633f5...`;
+- targeted M1/M2 architecture tests pass;
+- targeted core, Telegram, Assistant command, and app tests pass;
+- related-package `go vet` passes;
+- previously confirmed `Context.Svc`, module-provider, self-inline, group-rule-contract, and app-fixture regressions were fixed;
+- broader related package tests still contain failures, but the current investigation found no evidence attributing those failures to M1/M2.
+
+The scoped evidence above closes M2. It must not be restated as a claim that the entire repository or every related package test is green. Do not inspect or poll CI unless explicitly requested.
 
 Production boundary cleanup completed:
 
@@ -569,7 +578,7 @@ Production boundary cleanup completed:
 Deferred compatibility cleanup, not a production M2 dependency:
 
 - remove `Context.Svc`, `CommandTelegramServicer`, `DispatcherService`, and `core.TelegramServicer` only after their remaining compatibility/test callers are migrated;
-- further split coarse M1 capability method sets where a consumer currently receives a fail-closed `ErrUnsupported` implementation rather than a smaller compile-time interface.
+- continue capability granularity cleanup only where new consumers justify it; Assistant command transport now advertises supported message-action, admin, media-send, full-chat, and contextual capabilities without pretending to support reactions, forwarding, media download, or broad peer/profile APIs.
 
 Tasks:
 
