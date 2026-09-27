@@ -242,3 +242,23 @@ func (r *Runtime) Stats() Stats {
 	r.mu.Unlock()
 	return stats
 }
+
+// SnapshotStats reports retained state without triggering lazy expiration.
+// This is suitable for passive process diagnostics and health probes.
+func (r *Runtime) SnapshotStats() Stats {
+	if r == nil {
+		return Stats{}
+	}
+	r.mu.Lock()
+	stats := Stats{
+		Sessions:         len(r.sessions),
+		Inputs:           len(r.inputs),
+		StateBytes:       r.stateBytes,
+		Expired:          r.expiredCount,
+		Canceled:         r.canceledCount,
+		Stale:            r.staleCount,
+		CapacityRejected: r.capacityRejectedCount,
+	}
+	r.mu.Unlock()
+	return stats
+}

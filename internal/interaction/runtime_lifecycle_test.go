@@ -62,6 +62,30 @@ func TestTTLExpiryCancelsSessionContext(t *testing.T) {
 	}
 }
 
+func TestSnapshotStatsDoesNotPruneExpiredSessions(t *testing.T) {
+	runtime, _, _ := testRuntime(t, Config{DefaultTTL: time.Minute, MaxTTL: time.Hour})
+	now := time.Unix(100, 0)
+	runtime.now = func() time.Time { return now }
+	created, err := runtime.Create(context.Background(), CreateRequest{
+		FeatureID: "demo", Binding: Binding{ActorID: 10}, State: []byte("x"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	if got := runtime.SnapshotStats(); got.Sessions != 1 || got.StateBytes != 1 || got.Expired != 0 {
+		t.Fatalf("snapshot unexpectedly changed retention: %+v", got)
+	}
+	select {
+	case <-created.Context.Done():
+		t.Fatal("snapshot canceled session")
+	default:
+	}
+	if got := runtime.Stats(); got.Sessions != 0 || got.Expired != 1 {
+		t.Fatalf("pruning stats = %+v", got)
+	}
+}
+
 func TestGenerationChangeInvalidatesSession(t *testing.T) {
 	runtime, catalog, scope := testRuntime(t, Config{})
 	created, err := runtime.Create(context.Background(), CreateRequest{

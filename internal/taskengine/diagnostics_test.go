@@ -2,6 +2,7 @@ package taskengine
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,78 @@ func TestSnapshotPoolRuntimeStatsSeparatesLifecycleStates(t *testing.T) {
 	if stats.WaitingBytes != 17 {
 		t.Fatalf("WaitingBytes=%d, want 17", stats.WaitingBytes)
 	}
+}
+
+func TestStats_LaneWorkers(t *testing.T) {
+	engine := NewEngine(Config{Pools: map[tasks.PoolID]PoolEngineConfig{
+		"diag": {Concurrency: 1, BacklogLimit: 2},
+	}, ResultCapacity: 4, DeliveryConcurrency: 1})
+	if err := engine.SetDurabilityConcurrency(1); err != nil {
+		t.Fatal(err)
+	}
+	engine.delivery.idleTimeout = 10 * time.Millisecond
+	engine.durability.idleTimeout = 10 * time.Millisecond
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(release) })
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = engine.Stop(ctx)
+	})
+	started := make(chan struct{}, 2)
+	for i := 0; i < 2; i++ {
+		if !engine.delivery.reserve() || !engine.delivery.enqueueReserved(func(tasks.TaskResult) {
+			started <- struct{}{}
+			<-release
+		}, tasks.TaskResult{}) {
+			t.Fatal("enqueue delivery")
+		}
+		if !engine.durability.enqueue(func() {
+			started <- struct{}{}
+			<-release
+		}) {
+			t.Fatal("enqueue durability")
+		}
+	}
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("lane worker did not start")
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got, err := engine.Stats(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.DeliveryLane.Workers == 1 && got.DeliveryLane.Pending == 1 && got.DeliveryLane.Active == 1 && got.DeliveryLane.WorkerLimit == 1 &&
+			got.DurabilityLane.Workers == 1 && got.DurabilityLane.Pending == 1 && got.DurabilityLane.Active == 1 && got.DurabilityLane.WorkerLimit == 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	got, err := engine.Stats(context.Background())
+	if err != nil || got.DeliveryLane != (LaneRuntimeStats{WorkerLimit: 1, Workers: 1, Pending: 1, Active: 1}) ||
+		got.DurabilityLane != (LaneRuntimeStats{WorkerLimit: 1, Workers: 1, Pending: 1, Active: 1}) {
+		t.Fatalf("lane snapshot = %+v, error = %v", got, err)
+	}
+	releaseOnce.Do(func() { close(release) })
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got, err = engine.Stats(context.Background())
+		if err == nil && got.DeliveryLane.Workers == 0 && got.DeliveryLane.Pending == 0 && got.DeliveryLane.Active == 0 &&
+			got.DurabilityLane.Workers == 0 && got.DurabilityLane.Pending == 0 && got.DurabilityLane.Active == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("lane workers did not retire: %+v", got)
 }
 
 func TestPoolRuntimeStatsTrackRunningWaitingAndIdle(t *testing.T) {

@@ -160,6 +160,11 @@ type RecoverReport struct {
 
 // Diagnostics is a read-only count of declarative job registrations.
 type Diagnostics struct {
+	RetryWorkerLimit    int
+	RetryWorkers        int
+	RetryQueued         int
+	RetryActive         int
+	TrackedOccurrences  int
 	Definitions         int
 	Handlers            int
 	Accepting           bool
@@ -1686,9 +1691,14 @@ func (m *Manager) Diagnostics() Diagnostics {
 	}
 	m.mu.RLock()
 	diagnostics := Diagnostics{
-		Definitions: len(m.definitions),
-		Handlers:    len(m.handlers),
-		Accepting:   m.accepting,
+		RetryWorkerLimit:   retryWorkers,
+		RetryWorkers:       int(m.retryRemaining.Load()),
+		RetryQueued:        int(m.retryQueued.Load()),
+		RetryActive:        int(m.retryActive.Load()),
+		TrackedOccurrences: len(m.tracked),
+		Definitions:        len(m.definitions),
+		Handlers:           len(m.handlers),
+		Accepting:          m.accepting,
 	}
 	store := m.store
 	m.mu.RUnlock()

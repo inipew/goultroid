@@ -246,6 +246,14 @@ type PoolRuntimeStats struct {
 
 type ResourceRuntimeStats struct{ Used, Capacity int64 }
 
+// LaneRuntimeStats reports physical workers and outstanding work in a lazy lane.
+type LaneRuntimeStats struct {
+	WorkerLimit int
+	Workers     int
+	Pending     int
+	Active      int
+}
+
 // RuntimeStats is a bounded-cardinality snapshot of execution coordination.
 type RuntimeStats struct {
 	ResultSlotsHeld int
@@ -261,6 +269,8 @@ type RuntimeStats struct {
 	DurabilityQueue int
 	DurabilityCap   int
 	DurabilityFail  int64
+	DeliveryLane    LaneRuntimeStats
+	DurabilityLane  LaneRuntimeStats
 	ScopeTombstones int
 	Pools           map[tasks.PoolID]PoolRuntimeStats
 	Resources       map[string]ResourceRuntimeStats
@@ -1806,7 +1816,7 @@ func (e *Engine) Stats(ctx context.Context) (RuntimeStats, error) {
 		return RuntimeStats{}, err
 	}
 	s := rep.stats
-	return RuntimeStats{
+	stats := RuntimeStats{
 		ResultSlotsHeld: s.resultSlotsHeld, ResultCapacity: s.resultCapacity,
 		ActiveTasks: s.activeTasks, RetainedBytes: s.retainedBytes, RetainedCap: s.retainedCap,
 		TerminalCount: s.terminalCount, CommitPending: s.commitPending,
@@ -1814,7 +1824,24 @@ func (e *Engine) Stats(ctx context.Context) (RuntimeStats, error) {
 		DurabilityQueue: s.durabilityQueue, DurabilityCap: s.durabilityCap, DurabilityFail: s.durabilityFail,
 		ScopeTombstones: s.scopeTombstones,
 		Pools:           s.pools, Resources: s.resources,
-	}, nil
+	}
+	if e.delivery != nil {
+		stats.DeliveryLane = LaneRuntimeStats{
+			WorkerLimit: e.delivery.workers,
+			Workers:     int(e.delivery.remaining.Load()),
+			Pending:     int(e.delivery.pending.Load()),
+			Active:      int(e.delivery.active.Load()),
+		}
+	}
+	if e.durability != nil {
+		stats.DurabilityLane = LaneRuntimeStats{
+			WorkerLimit: e.durability.workers,
+			Workers:     int(e.durability.remaining.Load()),
+			Pending:     int(e.durability.pending.Load()),
+			Active:      int(e.durability.active.Load()),
+		}
+	}
+	return stats, nil
 }
 
 func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {

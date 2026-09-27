@@ -16,7 +16,7 @@ R1 extends `App.Diagnostics()` and the existing subsystem statistics. It does no
 
 `PersistencePumpStats` gains configured worker limit, physical workers, queued and active counts from its existing fields. `jobs.Diagnostics` gains retry worker limit, physical workers, queued and active retry work, plus the length of the existing `tracked` map under its owning lock; durable occurrence counts remain the existing store-backed snapshot. An unavailable or timed-out store snapshot must remain distinguishable through `DurableSnapshotOK`.
 
-`App.Diagnostics()` includes `plugin.Manager.InteractionRuntime().Stats()` and `inline.Engine.RuntimeStats()` where available. Resource totals are aggregated from `resource.Manager.AllSnapshots()` as active and leaked counts, without exposing owner names in the top-level totals. Existing plugin resource details remain available. Existing DB, Telegram cache/RPC, scheduler, supervisor, and media/process snapshots remain in place.
+`App.Diagnostics()` includes a passive snapshot of `plugin.Manager.InteractionRuntime()` and `inline.Engine.RuntimeStats()` where available. The existing interaction `Stats()` method prunes expired entries, so add a read-only `SnapshotStats()` method and use it here; diagnostics must not change retention timing. The snapshot reports entries still physically retained, including entries awaiting lazy expiration. Resource totals are aggregated from `resource.Manager.AllSnapshots()` as active and leaked counts, without exposing owner names in the top-level totals. Existing plugin resource details remain available. Existing DB, Telegram cache/RPC, scheduler, supervisor, and media/process snapshots remain in place.
 
 ## On-demand goroutine dump
 

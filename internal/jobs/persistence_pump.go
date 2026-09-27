@@ -34,6 +34,10 @@ type persistenceRequest struct {
 
 // PersistencePumpStats is a bounded-cardinality view of persistence admission.
 type PersistencePumpStats struct {
+	WorkerLimit    int
+	Workers        int
+	Queued         int
+	Active         int
 	QueueDepth     int
 	QueueCapacity  int
 	RetainedBytes  int64
@@ -111,6 +115,10 @@ func (p *PersistencePump) Stats() PersistencePumpStats {
 		depth = len(p.requests)
 	}
 	return PersistencePumpStats{
+		WorkerLimit:    p.concurrency,
+		Workers:        int(p.remaining.Load()),
+		Queued:         int(p.queued.Load()),
+		Active:         int(p.active.Load()),
 		QueueDepth:     depth,
 		QueueCapacity:  p.queueCap,
 		RetainedBytes:  p.retainedBytes,

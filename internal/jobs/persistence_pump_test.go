@@ -249,6 +249,9 @@ func TestPersistencePumpRetainedByteBudgetIncludesInFlight(t *testing.T) {
 
 func TestPersistencePumpWorkersAreLazyAndRetire(t *testing.T) {
 	p := NewPersistencePump(2, 4)
+	if stats := p.Stats(); stats.WorkerLimit != 2 || stats.Workers != 0 || stats.Queued != 0 || stats.Active != 0 {
+		t.Fatalf("idle pump stats = %+v", stats)
+	}
 	p.idleTimeout = 10 * time.Millisecond
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -271,6 +274,9 @@ func TestPersistencePumpWorkersAreLazyAndRetire(t *testing.T) {
 	}
 	if got := p.remaining.Load(); got != 0 {
 		t.Fatalf("persistence pump retained %d workers after idle timeout", got)
+	}
+	if stats := p.Stats(); stats.Workers != 0 || stats.Active != 0 || stats.Queued != 0 {
+		t.Fatalf("retired pump stats = %+v", stats)
 	}
 	if err := p.Stop(context.Background()); err != nil {
 		t.Fatal(err)
@@ -306,11 +312,24 @@ func TestPersistencePumpLazyWorkersScaleToDemand(t *testing.T) {
 			t.Fatal("persistence pump failed to scale to configured concurrency")
 		}
 	}
+	if stats := p.Stats(); stats.Workers != 2 || stats.Active != 2 || stats.WorkerLimit != 2 {
+		t.Fatalf("busy pump stats = %+v", stats)
+	}
+	queuedResult, err := p.Enqueue(context.Background(), func(context.Context) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats := p.Stats(); stats.Queued != 1 || stats.QueueDepth != 1 {
+		t.Fatalf("queued pump stats = %+v", stats)
+	}
 	close(release)
 	for i, result := range results {
 		if err := <-result; err != nil {
 			t.Fatalf("result %d: %v", i, err)
 		}
+	}
+	if err := <-queuedResult; err != nil {
+		t.Fatal(err)
 	}
 	if err := p.Stop(context.Background()); err != nil {
 		t.Fatal(err)

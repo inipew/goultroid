@@ -5,9 +5,11 @@ import (
 	"sort"
 	"time"
 
+	"github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/taskengine"
@@ -18,25 +20,35 @@ import (
 // It intentionally contains metadata and counters, not mutable subsystem
 // references.
 type DiagnosticsSnapshot struct {
-	Lifecycle          string
-	Uptime             time.Duration
-	EventBus           EventBusDiagnostics
-	Commands           CommandDiagnostics
-	PeriodicTasks      []PeriodicTaskDiagnostics
-	Plugins            []PluginDiagnostics
-	Media              media.DiagnosticsSnapshot
-	Process            processSvc.DiagnosticsSnapshot
-	Jobs               jobs.Diagnostics
-	PersistencePanics  uint64
-	PersistencePump    jobs.PersistencePumpStats
-	LifecycleCallbacks runtime.CallbackExecutorStats
-	TaskEngine         taskengine.RuntimeStats
-	RPC                telegram.RPCMetricsSnapshot
-	DB                 DBDiagnostics
-	ResolverCacheCount int
-	PeerStorageCache   telegram.PeerStorageCacheStats
-	Workers            []runtime.WorkerSnapshot
-	LastShutdownReport runtime.ShutdownReport
+	Lifecycle            string
+	Uptime               time.Duration
+	ProcessMemory        ProcessMemoryDiagnostics
+	EventBus             EventBusDiagnostics
+	Interaction          interaction.Stats
+	Inline               inline.RuntimeStats
+	Resources            ResourceDiagnostics
+	Commands             CommandDiagnostics
+	PeriodicTasks        []PeriodicTaskDiagnostics
+	Plugins              []PluginDiagnostics
+	Media                media.DiagnosticsSnapshot
+	Process              processSvc.DiagnosticsSnapshot
+	Jobs                 jobs.Diagnostics
+	PersistencePanics    uint64
+	PersistencePump      jobs.PersistencePumpStats
+	LifecycleCallbacks   runtime.CallbackExecutorStats
+	TaskEngine           taskengine.RuntimeStats
+	TaskEngineSnapshotOK bool
+	RPC                  telegram.RPCMetricsSnapshot
+	DB                   DBDiagnostics
+	ResolverCacheCount   int
+	PeerStorageCache     telegram.PeerStorageCacheStats
+	Workers              []runtime.WorkerSnapshot
+	LastShutdownReport   runtime.ShutdownReport
+}
+
+type ResourceDiagnostics struct {
+	TotalActive int
+	Leaked      int
 }
 
 type DBDiagnostics struct {
@@ -51,13 +63,15 @@ type DBDiagnostics struct {
 }
 
 type EventBusDiagnostics struct {
-	Published     int64
-	Delivered     int64
-	Dropped       int64
-	Panics        int64
-	Subscriptions int
-	QueueDepth    int
-	QueueCapacity int
+	Published      int64
+	Delivered      int64
+	Dropped        int64
+	Panics         int64
+	Subscriptions  int
+	QueueDepth     int
+	QueueCapacity  int
+	ActiveWorkers  int
+	OrderedWorkers int
 }
 
 type CommandDiagnostics struct {
@@ -83,20 +97,22 @@ type PluginDiagnostics struct {
 // Diagnostics returns a consistent snapshot of the app-owned runtime
 // subsystems. It is safe to call while the application is running or stopping.
 func (a *App) Diagnostics() DiagnosticsSnapshot {
-	snapshot := DiagnosticsSnapshot{Lifecycle: a.LifecycleState()}
+	snapshot := DiagnosticsSnapshot{Lifecycle: a.LifecycleState(), ProcessMemory: processMemoryDiagnostics()}
 	if !a.startTime.IsZero() {
 		snapshot.Uptime = time.Since(a.startTime)
 	}
 	if a.eventBus != nil {
 		stats := a.eventBus.Stats()
 		snapshot.EventBus = EventBusDiagnostics{
-			Published:     stats.Published,
-			Delivered:     stats.Delivered,
-			Dropped:       stats.Dropped,
-			Panics:        stats.Panics,
-			Subscriptions: a.eventBus.SubscriptionCount(""),
-			QueueDepth:    stats.QueueDepth,
-			QueueCapacity: stats.QueueCapacity,
+			Published:      stats.Published,
+			Delivered:      stats.Delivered,
+			Dropped:        stats.Dropped,
+			Panics:         stats.Panics,
+			Subscriptions:  a.eventBus.SubscriptionCount(""),
+			QueueDepth:     stats.QueueDepth,
+			QueueCapacity:  stats.QueueCapacity,
+			ActiveWorkers:  stats.ActiveWorkers,
+			OrderedWorkers: stats.OrderedWorkers,
 		}
 	}
 	if a.client != nil && a.client.Dispatcher() != nil {
@@ -115,6 +131,9 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 		})
 	}
 	if a.plugins != nil {
+		if interactions := a.plugins.InteractionRuntime(); interactions != nil {
+			snapshot.Interaction = interactions.SnapshotStats()
+		}
 		snapshot.LifecycleCallbacks = a.plugins.CleanupStats()
 		for _, p := range a.plugins.Plugins() {
 			entry := PluginDiagnostics{Name: p.Name()}
@@ -125,6 +144,15 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 			snapshot.Plugins = append(snapshot.Plugins, entry)
 		}
 		sort.Slice(snapshot.Plugins, func(i, j int) bool { return snapshot.Plugins[i].Name < snapshot.Plugins[j].Name })
+	}
+	if a.inlineEngine != nil {
+		snapshot.Inline = a.inlineEngine.RuntimeStats()
+	}
+	if a.resources != nil {
+		for _, owner := range a.resources.AllSnapshots() {
+			snapshot.Resources.TotalActive += owner.TotalActive
+			snapshot.Resources.Leaked += owner.Leaked
+		}
 	}
 	if a.media != nil {
 		snapshot.Media = a.media.Diagnostics()
@@ -143,6 +171,7 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		if stats, err := a.taskEngine.Stats(ctx); err == nil {
 			snapshot.TaskEngine = stats
+			snapshot.TaskEngineSnapshotOK = true
 		}
 		cancel()
 	}

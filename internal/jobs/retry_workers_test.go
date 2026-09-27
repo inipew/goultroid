@@ -102,5 +102,9 @@ func TestRetryWorkersScaleToDemand(t *testing.T) {
 		close(release)
 		t.Fatalf("retry workers=%d, want at least 2", got)
 	}
+	if stats := m.Diagnostics(); stats.RetryWorkers < 2 || stats.RetryActive != 2 || stats.TrackedOccurrences != 2 || stats.RetryWorkerLimit != retryWorkers {
+		close(release)
+		t.Fatalf("busy retry stats = %+v", stats)
+	}
 	close(release)
 }
