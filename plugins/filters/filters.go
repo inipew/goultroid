@@ -764,7 +764,7 @@ func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEn
 
 func (p *Plugin) ApplyAssistantRule(
 	ctx context.Context,
-	svc TelegramService,
+	svc core.GroupRuleTransport,
 	message *core.MessageEnvelope,
 ) (bool, error) {
 	if message == nil || message.ChatID == 0 {

@@ -29,7 +29,7 @@ func (s *ruleSourceStub) MatchAssistantRule(context.Context, *core.MessageEnvelo
 }
 func (s *ruleSourceStub) ApplyAssistantRule(
 	context.Context,
-	core.TelegramServicer,
+	core.GroupRuleTransport,
 	*core.MessageEnvelope,
 ) (bool, error) {
 	s.applyCalls++

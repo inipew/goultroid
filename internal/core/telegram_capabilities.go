@@ -88,6 +88,16 @@ type ContextualMediaServicer interface {
 	SendMediaContext(context.Context, tg.InputPeerClass, string, string, string, MessageSendContext) (*tg.Message, error)
 }
 
+// GroupRuleTransport is the canonical Assistant group-rule action boundary.
+// Blacklist only consumes deletion while filters consume text/media delivery;
+// sharing this small union keeps both rule sources compatible without restoring
+// the legacy TelegramServicer aggregate.
+type GroupRuleTransport interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
+	DeleteMessage(context.Context, tg.InputPeerClass, []int) error
+}
+
 // The broad compatibility service must continue to cover every command-context
 // capability during M1. M2 will migrate callers away from the broad boundary.
 var (

@@ -18,7 +18,7 @@ type Source interface {
 	AssistantRuleInterested(chatID int64) bool
 	AssistantRuleRevision(chatID int64) uint64
 	MatchAssistantRule(context.Context, *core.MessageEnvelope) (bool, error)
-	ApplyAssistantRule(context.Context, core.TelegramServicer, *core.MessageEnvelope) (bool, error)
+	ApplyAssistantRule(context.Context, core.GroupRuleTransport, *core.MessageEnvelope) (bool, error)
 }
 
 type Revision struct {
@@ -46,7 +46,7 @@ type Service struct {
 	roles      core.GroupRoleResolver
 	privileged func(int64) bool
 	enabled    func(string) bool
-	svc        core.TelegramServicer
+	svc        core.GroupRuleTransport
 }
 
 func New(blacklist, filters Source) *Service {
@@ -124,7 +124,7 @@ func (s *Service) dependencies() (
 	core.GroupRoleResolver,
 	func(int64) bool,
 	func(string) bool,
-	core.TelegramServicer,
+	core.GroupRuleTransport,
 ) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -273,7 +273,6 @@ func (s *Service) Evaluate(
 }
 
 type interactionServicer struct {
-	core.MockTelegramServicer
 	inter interaction.MessageInteraction
 }
 

@@ -272,6 +272,14 @@ func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEn
 
 func (p *Plugin) ApplyAssistantRule(
 	ctx context.Context,
+	svc core.GroupRuleTransport,
+	message *core.MessageEnvelope,
+) (bool, error) {
+	return p.applyRuleWithDeleter(ctx, svc, message)
+}
+
+func (p *Plugin) applyRuleWithDeleter(
+	ctx context.Context,
 	svc MessageDeleter,
 	message *core.MessageEnvelope,
 ) (bool, error) {
@@ -408,7 +416,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	if svc == nil {
 		return nil
 	}
-	handled, err := p.ApplyAssistantRule(ctx, svc, message)
+	handled, err := p.applyRuleWithDeleter(ctx, svc, message)
 	if err != nil {
 		return err
 	}
