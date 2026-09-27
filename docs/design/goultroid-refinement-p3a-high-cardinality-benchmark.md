@@ -118,7 +118,43 @@ Interpretation: hot existing-bucket cost should be compared across resident card
 
 The production Telegram hierarchical RPC limiter already has dedicated cardinality benchmarks in `internal/telegram/benchmarks_test.go`, including high-cardinality hot-peer and reclamation cases. P3-A should reuse those results when needed rather than introduce another limiter or duplicate benchmark authority.
 
-## 5. Reproducible commands
+## 5. Canonical real-checkout evidence runner
+
+The final P3-A gate now has a repo-local runner:
+
+```bash
+tools/bench-p3a.sh
+```
+
+It is intentionally independent of CI and performs three benchmark groups on the current checkout:
+
+1. Inline registry + cache, including production matcher cardinality and lifecycle-active saturated churn;
+2. generic multi-dimensional rate limiter;
+3. existing production hierarchical Telegram RPC limiter.
+
+The runner:
+
+- requires a clean checkout by default;
+- records exact HEAD, branch, commit message, Go version, GOOS/GOARCH/CGO, CPU model, logical CPU count and kernel;
+- uses `-benchmem -benchtime=1s -count=5`;
+- writes raw benchmark output plus a manifest into a timestamped evidence directory under `${TMPDIR:-/tmp}`;
+- never invokes CI.
+
+A dirty checkout can be run only for diagnostics with `P3A_ALLOW_DIRTY=1`; such output must not be used for formal P3-A closure.
+
+The evidence bundle contains:
+
+```text
+manifest.txt
+inline.txt
+ratelimit.txt
+telegram-rpc-limiter.txt
+README.txt
+```
+
+For formal closure, preserve the complete bundle and verify `dirty=no` in `manifest.txt`.
+
+## 5.1 Manual equivalent commands
 
 Run from a real checkout at the exact commit being evaluated:
 
@@ -388,7 +424,7 @@ The current model container cannot resolve github.com and does not contain a com
 
 Therefore the isolated measurements above are useful only to prioritize confirmation. They are not full-package/full-repository acceptance numbers.
 
-P3-A remains **OPEN** until measurements are executed on a real checkout at the actual Goultroid HEAD.
+P3-A remains **OPEN** until `tools/bench-p3a.sh` (or its exact manual equivalent) is executed on a clean real checkout at the actual Goultroid HEAD and the evidence bundle is reviewed.
 
 ## 8. Gate before P3-C
 

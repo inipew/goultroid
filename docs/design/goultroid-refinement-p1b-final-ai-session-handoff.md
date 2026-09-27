@@ -3,9 +3,30 @@
 Date: 2026-09-27
 Branch: `test-next`
 Current audited implementation baseline after the P3-A lifecycle-active cache benchmark update: `da3527163d6078f0fb250893c902fee299709dab` — `bench(inline): cover active cache churn`
-Purpose: finish **P3-A real-checkout benchmark measurements**. P3-B is CLOSED; P3-C is PREPARED/BLOCKED with a current no-optimization decision; P4 remains blocked.
+Purpose: run/review the canonical **P3-A real-checkout evidence bundle** via `tools/bench-p3a.sh`. P3-B is CLOSED; P3-C is PREPARED/BLOCKED with a current no-optimization decision; P4 remains blocked.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+
+## 2026-09-27 P3-A real-checkout evidence tooling update
+
+The remaining P3-A gate now has a canonical repo-local runner: `tools/bench-p3a.sh`.
+
+It captures exact environment metadata and runs the complete P3-A benchmark set against a clean real checkout:
+
+```text
+Inline registry + cache
+generic rate limiter
+production hierarchical RPC limiter
+```
+
+Each group uses `-benchmem -benchtime=1s -count=5`. Output is written to a timestamped bundle under `${TMPDIR:-/tmp}` containing `manifest.txt`, `inline.txt`, `ratelimit.txt`, and `telegram-rpc-limiter.txt`.
+
+The runner refuses a dirty checkout by default. `P3A_ALLOW_DIRTY=1` exists only for non-acceptance diagnostics.
+
+The script was syntax-checked with `bash -n` before commit. It does not inspect or invoke CI.
+
+P3-A is still formally OPEN until this runner is executed on a complete checkout and the resulting bundle is reviewed. P3-C remains PREPARED/BLOCKED and P4 remains blocked.
 
 
 ## 2026-09-27 P3-C decision preflight
