@@ -207,7 +207,6 @@ func TestFormatPurchaseResultBoundsInlineQRIS(t *testing.T) {
 	}
 }
 
-
 func TestFormatDashboardQuotaSummaryShowsMultiplePackagesAndBenefits(t *testing.T) {
 	quota := &QuotaDetailsData{Quotas: []QuotaInfo{
 		{
