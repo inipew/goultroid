@@ -24,7 +24,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	if rt == nil {
 		return module.ErrNilRuntime
 	}
-	p := New(rt.MediaService)
+	p := New(rt.ServiceRuntime.MediaService)
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }
 

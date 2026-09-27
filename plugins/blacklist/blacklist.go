@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
