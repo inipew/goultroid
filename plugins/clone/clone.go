@@ -228,7 +228,7 @@ func (p *Plugin) handleClone(ctx *core.Context) error {
 		taskCore := uiCtx.WithContext(taskCtx)
 		current, stateErr := p.repo.GetCloneState(taskCtx, p.ownerID)
 		if stateErr != nil {
-			return taskCore.EditOrReply(fmt.Sprintf("❌ Failed to re-check clone state: %v", stateErr))
+			return taskCore.Fail(stateErr, "Failed to re-check clone state.")
 		}
 		if current != nil && current.Active {
 			return taskCore.EditOrReply("⚠️ A clone became active before this operation started. Revert it before cloning another identity.")
@@ -330,7 +330,7 @@ func (p *Plugin) handleRevert(ctx *core.Context) error {
 		taskCore := uiCtx.WithContext(taskCtx)
 		current, stateErr := p.repo.GetCloneState(taskCtx, p.ownerID)
 		if stateErr != nil {
-			return taskCore.EditOrReply(fmt.Sprintf("❌ Failed to re-check clone state: %v", stateErr))
+			return taskCore.Fail(stateErr, "Failed to re-check clone state.")
 		}
 		if current == nil || !current.Active {
 			return taskCore.EditOrReply("ℹ️ No active clone state exists.")
