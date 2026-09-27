@@ -3,9 +3,28 @@
 Date: 2026-09-27
 Branch: `test-next`
 Current audited implementation baseline after the P3-A lifecycle-active cache benchmark update: `da3527163d6078f0fb250893c902fee299709dab` — `bench(inline): cover active cache churn`
-Purpose: finish **P3-A real-checkout benchmark measurements** before any P3-C optimization. P3-B is CLOSED; P3-A remains OPEN.
+Purpose: finish **P3-A real-checkout benchmark measurements**. P3-B is CLOSED; P3-C is PREPARED/BLOCKED with a current no-optimization decision; P4 remains blocked.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+
+## 2026-09-27 P3-C decision preflight
+
+P3-C is now **PREPARED / BLOCKED**, not started as a production optimization.
+
+The current P3-A diagnostic evidence plus source-derived production cardinality shows no material hotspot that justifies complexity. In particular, production custom matcher cardinality is 2, generic limiter hot lookup stays sub-microsecond, cache hits are sub-microsecond, and lifecycle-active saturated cache churn remains tens of microseconds per insert with a source-derived saturation threshold around 16.7 new distinct Wikipedia keys/s.
+
+The decision is intentionally conservative:
+
+```text
+real-checkout P3-A confirms current magnitude
+  -> P3-C INTENTIONALLY SKIPPED
+
+real-checkout P3-A contradicts current magnitude materially
+  -> optimize only that measured path
+```
+
+No production P3-C code change has been made. P4 remains blocked.
 
 
 ## 2026-09-27 P3-A lifecycle-active cache diagnostic update
@@ -1414,26 +1433,62 @@ Verification limitation: source/diff acceptance plus local `gofmt` only; no clai
 
 ---
 
-# 19. P3-C — optimize only measured hotspots
+# 19. P3-C — benchmark-proven optimization only — PREPARED / BLOCKED
 
-Potential candidates only if P3-A proves material impact:
+Status: **PREPARED / BLOCKED ON P3-A REAL-CHECKOUT CONFIRMATION.**
 
-- Inline expiry management;
-- generic limiter expiry management;
-- presentation allocations;
-- plugin registration overhead;
-- a2 hot-path allocation;
-- TaskEngine completion path.
+P3-C remains a no-op unless measurement evidence demonstrates material impact. Current source-isolated diagnostics plus production-shape audit do **not** identify a hotspot worth optimizing:
 
-Forbidden:
+| Candidate | Current evidence | P3-C action |
+|---|---|---|
+| generic limiter hot path | ~262–300 ns/op across 1→4096 buckets | none |
+| generic limiter saturated fail-closed | ~250 ns/op | none |
+| generic limiter forced 4096 sweep | ~110 µs, gated by 30 s capacity sweep interval | none |
+| Inline exact registry lookup | ~136–160 ns/op through 4096 synthetic handlers | none |
+| Inline custom matcher lookup | production cardinality = 2; ~169 ns/op at cardinality 2 | none |
+| Inline cache hit | ~195–215 ns/op through production cap 500 | none |
+| Inline cache next-expiry scan | ~7.2 µs across 500 entries, 0 alloc | none |
+| Inline cache saturated churn | ~32.6–40.9 µs/insert with lifecycle active | no preemptive optimization |
+| TaskEngine completion drain | correctness/resource issue confirmed independently | already fixed by P3-B, not a P3-C benchmark optimization |
 
-- unbounded caches;
-- permanent cleanup workers;
-- sync.Pool solely for benchmark cosmetics;
-- lock-free complexity without measured contention;
-- unsafe cross-session reuse.
+Production-shape constraints narrow the synthetic worst cases:
 
-If measurements show bounded scans are cheap, document that and skip optimization.
+- only Calculator and Wikipedia currently contribute feature-owned custom Inline matchers;
+- Calculator is `CacheNone`;
+- SavedResponse dynamic Inline is `CacheNone`;
+- Wikipedia is the current `CacheGlobal` feature;
+- local Inline cache cap is 500 entries with 30-second engine TTL;
+- persistent saturated churn therefore requires roughly >16.7 new distinct cacheable Wikipedia query keys/s with insufficient reuse.
+
+At that source-derived threshold, lifecycle-active churn diagnostic cost is approximately 0.068% of one core caller-side; even a deliberately conservative full 500-entry expiry scan per insert keeps the estimate around 0.080% of one core.
+
+Therefore current decision is:
+
+```text
+DO NOT:
+- replace bounded maps with more complex structures;
+- add permanent cleanup workers;
+- add sync.Pool for benchmark cosmetics;
+- introduce lock-free state;
+- weaken cache/cardinality bounds;
+- create a second limiter/cache/runtime.
+
+IF real-checkout P3-A confirms the current order of magnitude:
+- mark P3-C INTENTIONALLY SKIPPED;
+- record "no measured material hotspot";
+- proceed to P4.
+
+IF real-checkout P3-A materially contradicts these diagnostics:
+- open only the measured hotspot;
+- preserve existing architecture authorities and bounds;
+- re-benchmark before/after.
+```
+
+The P3-C decision record is maintained in:
+
+`docs/design/goultroid-refinement-p3c-optimization-decision.md`
+
+P4 remains blocked while P3-A is formally open.
 
 ---
 
