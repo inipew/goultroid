@@ -24,8 +24,16 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	// same update can still be delivered more than once around reconnects. Keep
 	// this transport-level guard memory-only and bounded: ordinary chat traffic
 	// must never require a durable database claim just to enter the dispatcher.
-	if d.ingressDedupe != nil && !d.ingressDedupe.Accept(msg, time.Now()) {
-		return nil
+	//
+	// Keep ownership of the exact ingress generation so a recognized command can
+	// make the update retryable again if it fails before TaskEngine admission.
+	var ingressClaim ingressDedupeClaim
+	if d.ingressDedupe != nil {
+		var ingressAccepted bool
+		ingressClaim, ingressAccepted = d.ingressDedupe.Begin(msg, time.Now())
+		if !ingressAccepted {
+			return nil
+		}
 	}
 
 	chatID := extractChatIDFromPeer(msg.PeerID)
@@ -101,10 +109,14 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	// claim durable idempotency. This keeps ordinary traffic, unknown commands,
 	// and suppressed commands off the SQLite write path while preserving the
 	// fail-closed guarantee before command/event side effects.
+	var commandClaim dispatcherCommandClaim
 	if cmdExists && d.idempotencyMgr != nil {
 		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
-		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		var isNew bool
+		var claimErr error
+		commandClaim, isNew, claimErr = d.beginCommandClaim(ctx, key)
 		if claimErr != nil {
+			ingressClaim.Release()
 			d.logger.Error("dispatcher: command idempotency claim failed",
 				zap.String("key", key),
 				zap.String("command", cmdName),
@@ -167,6 +179,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		peerInput = &tg.InputPeerSelf{}
 	}
 	if peerInput == nil && msg.PeerID != nil {
+		d.releaseCommandClaim(ctx, cmdName, commandClaim)
+		ingressClaim.Release()
 		d.logger.Warn("dispatch: peer unresolvable without access hash, command execution skipped",
 			zap.Int64("chatID", chat.ID),
 			zap.String("command", cmdName),
@@ -229,12 +243,24 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 	taskID := fmt.Sprintf("cmd:%d:%d", chat.ID, msg.ID)
 	correlationID := fmt.Sprintf("msg:%d:%d", chat.ID, msg.ID)
-	if err := d.submitInteractiveCommand(execCtx, cancel, coreCtx, cmd, taskID, taskOwner, correlationID); err != nil {
+	if err := d.submitInteractiveCommandWithAdmission(
+		execCtx,
+		cancel,
+		coreCtx,
+		cmd,
+		taskID,
+		taskOwner,
+		correlationID,
+		func() error { return d.acceptCommandClaim(ctx, cmdName, commandClaim) },
+	); err != nil {
+		d.releaseCommandClaim(ctx, cmdName, commandClaim)
+		ingressClaim.Release()
 		d.logger.Warn("interactive command admission rejected",
 			zap.String("command", cmdName),
 			zap.Int64("chat_id", chat.ID),
 			zap.Error(err),
 		)
+		return nil
 	}
 
 	d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)

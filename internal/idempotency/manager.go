@@ -14,6 +14,8 @@ var (
 
 type entry struct {
 	key       string
+	token     string
+	status    claimStatus
 	createdAt time.Time
 	expiresAt time.Time
 }
