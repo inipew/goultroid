@@ -41,6 +41,14 @@ type completionDelivery struct {
 	stopOs   sync.Once
 	done     chan struct{}
 	doneOnce sync.Once
+
+	// drainCh is a generation signal for completion delivery. It is closed when
+	// the current generation transitions to fully drained, which broadcasts the
+	// transition to every concurrent Drain waiter. The next enqueue replaces it
+	// with a fresh open channel before publishing pending work.
+	drainMu sync.Mutex
+	drainCh chan struct{}
+	drained bool
 }
 
 func newCompletionDelivery(workers, queueCap int) *completionDelivery {
@@ -50,6 +58,8 @@ func newCompletionDelivery(workers, queueCap int) *completionDelivery {
 	if queueCap <= 0 {
 		queueCap = 256
 	}
+	drainCh := make(chan struct{})
+	close(drainCh)
 	return &completionDelivery{
 		queue:        make(chan deliveryItem, queueCap),
 		reservations: make(chan struct{}, queueCap),
@@ -57,6 +67,8 @@ func newCompletionDelivery(workers, queueCap int) *completionDelivery {
 		idleTimeout:  defaultLaneIdleTimeout,
 		stopCh:       make(chan struct{}),
 		done:         make(chan struct{}),
+		drainCh:      drainCh,
+		drained:      true,
 	}
 }
 
@@ -141,6 +153,7 @@ func (d *completionDelivery) loop() {
 					if item.release {
 						d.releaseReservation()
 					}
+					d.signalDrained()
 				}()
 				item.fn(item.res)
 			}()
@@ -185,6 +198,40 @@ func (d *completionDelivery) releaseReservation() {
 	}
 }
 
+func (d *completionDelivery) markBusy() {
+	if d == nil {
+		return
+	}
+	d.drainMu.Lock()
+	if d.drained {
+		d.drained = false
+		d.drainCh = make(chan struct{})
+	}
+	d.drainMu.Unlock()
+}
+
+func (d *completionDelivery) signalDrained() {
+	if d == nil || d.pending.Load() != 0 || d.active.Load() != 0 || len(d.queue) != 0 {
+		return
+	}
+	d.drainMu.Lock()
+	defer d.drainMu.Unlock()
+	if d.drained || d.pending.Load() != 0 || d.active.Load() != 0 || len(d.queue) != 0 {
+		return
+	}
+	d.drained = true
+	close(d.drainCh)
+}
+
+func (d *completionDelivery) drainSignal() (<-chan struct{}, bool) {
+	if d == nil {
+		return nil, true
+	}
+	d.drainMu.Lock()
+	defer d.drainMu.Unlock()
+	return d.drainCh, d.drained
+}
+
 // enqueueReserved hands off a callback whose delivery credit was reserved at
 // admission. Since reservations are bounded by queue capacity and each
 // reservation can have at most one queued callback, the non-blocking send must
@@ -204,6 +251,7 @@ func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res task
 		d.releaseReservation()
 		return false
 	}
+	d.markBusy()
 	d.pending.Add(1)
 	select {
 	case d.queue <- deliveryItem{fn: fn, res: res, release: true}:
@@ -213,12 +261,14 @@ func (d *completionDelivery) enqueueReserved(fn func(tasks.TaskResult), res task
 		d.pending.Add(-1)
 		d.failed.Add(1)
 		d.releaseReservation()
+		d.signalDrained()
 		return false
 	}
 }
 
 // drain waits until all enqueued callbacks have been dequeued and all active
-// callbacks have returned, or ctx expires.
+// callbacks have returned, or ctx expires. Completion transitions close a
+// generation channel, so drain is event-driven and does not poll.
 func (d *completionDelivery) drain(ctx context.Context) error {
 	if d == nil {
 		return nil
@@ -226,16 +276,15 @@ func (d *completionDelivery) drain(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
 	for {
-		if d.pending.Load() == 0 && d.active.Load() == 0 && len(d.queue) == 0 {
+		wait, drained := d.drainSignal()
+		if drained {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
+		case <-wait:
 		}
 	}
 }
