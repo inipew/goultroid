@@ -2,10 +2,47 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after P3-B completion-drain refinement: `440c9ba977ecaa95da4cf9ce232305915f2a3936` — `refactor(taskengine): make completion drain event-driven`
-Purpose: finish **P3-A benchmark measurements** before any P3-C optimization. P3-B is CLOSED; P3-A remains OPEN until real benchmark numbers are captured.
+Current audited implementation baseline after the P3-A production-cardinality benchmark update: `f265c010a1515a3e6b730622e23dc7c8c00d61e9` — `bench(inline): add production matcher cardinality`
+Purpose: finish **P3-A real-checkout benchmark measurements** before any P3-C optimization. P3-B is CLOSED; P3-A remains OPEN.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+
+## 2026-09-27 P3-A production-cardinality update
+
+P3-A remains **OPEN**, but current-source workload shape has now been audited to distinguish synthetic 4096-cardinality probes from actual production cardinality.
+
+Production Inline registration authority is:
+
+```text
+app creates empty Inline Registry
+  -> plugin.Manager receives registry
+  -> InlineFeatureProvider bindings register through plugin/features.go
+  -> SavedResponse is one separate DynamicSource
+```
+
+Fresh inventory of all primary production plugins found exactly two Inline feature providers:
+
+- Calculator: one custom prefix matcher (`calc`), priority 20, `CacheNone`;
+- Wikipedia: one custom matcher (`wikiMatcher{}`), priority 10, `CacheGlobal`.
+
+So current production custom matcher cardinality is **2**. The official benchmark now includes cardinality 2 at `f265c010a1515a3e6b730622e23dc7c8c00d61e9`. An isolated production-shaped run measured median `custom/2 ≈ 169.2 ns/op` and `exact/2 ≈ 140.5 ns/op`.
+
+This removes custom matcher scanning from current P3-C candidates despite the synthetic 4096-case reaching ~16.5 µs/op.
+
+Cache source shape is also narrow: Calculator and SavedResponse are `CacheNone`; Wikipedia is the current `CacheGlobal` feature. With the engine's local 30-second TTL and 500-entry hard cap, sustained saturated churn requires roughly **500 distinct cacheable keys per 30 seconds ≈ 16.7 new distinct keys/s**, absent sufficient reuse. No production telemetry in this session establishes that workload.
+
+Updated candidate status:
+
+```text
+generic limiter hot path     -> no optimization evidence
+inline exact lookup          -> no optimization evidence
+inline custom matcher scan   -> no current production optimization evidence
+inline cache hit             -> no optimization evidence
+inline cache saturated churn -> only remaining confirmation candidate
+```
+
+P3-C remains blocked until real-checkout P3-A evidence exists.
 
 
 ## 2026-09-27 P3-A isolated diagnostic measurement update

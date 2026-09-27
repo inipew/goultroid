@@ -26,8 +26,8 @@ Cardinality:
 
 | Path | Cardinality |
 |---|---|
-| exact indexed handler | 1, 16, 64, 256, 1024, 4096 |
-| custom matcher | 1, 16, 64, 256, 1024, 4096 |
+| exact indexed handler | 1, **2**, 16, 64, 256, 1024, 4096 |
+| custom matcher | 1, **2**, 16, 64, 256, 1024, 4096 |
 
 The exact path exercises the first-token indexed map lookup. The custom path places the matching matcher at the end of the ordered custom matcher list so high cardinality exposes scan cost.
 
@@ -254,10 +254,70 @@ inline exact lookup          -> NO optimization evidence
 inline cache hit             -> NO optimization evidence
 limiter forced sweep         -> bounded diagnostic cost; no action yet
 inline cache saturated churn -> CONFIRM on real checkout / realistic churn
-inline custom matcher scan   -> CONFIRM against real production cardinality
+inline custom matcher scan   -> NO current optimization evidence; production cardinality is 2
 ```
 
 P3-C remains blocked.
+
+---
+
+## 6.5 Production-shape source audit
+
+Fresh current-source inventory was performed because the repository code-search index is unavailable and zero-result search responses are not authoritative.
+
+The production Inline registry is created empty in `internal/app/wiring_core.go`, then handed to `plugin.Manager`. Feature-owned Inline registrations flow through `internal/plugin/features.go`; SavedResponse is installed separately as one `DynamicSource`.
+
+Primary production plugin inventory found only two `InlineFeatureProvider` implementations:
+
+| Plugin | Binding count | Matcher | Priority | Cache policy |
+|---|---:|---|---:|---|
+| Calculator | 1 | prefix `calc` | 20 | `CacheNone` |
+| Wikipedia | 1 | `wikiMatcher{}` | 10 | `CacheGlobal` |
+
+Therefore current production feature custom-matcher cardinality is **2**, not hundreds or thousands.
+
+A production-shaped isolated Registry run at cardinality 2 produced:
+
+| Case | median ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| exact/2 | 140.5 | 48 | 2 |
+| custom/2 | 169.2 | 64 | 3 |
+
+The official benchmark matrix now includes cardinality 2 at commit `f265c010a1515a3e6b730622e23dc7c8c00d61e9` (`bench(inline): add production matcher cardinality`).
+
+### Cache production shape
+
+Current source shows:
+
+- Calculator is `CacheNone`;
+- SavedResponse dynamic Inline execution is `CacheNone`;
+- Wikipedia is the only current feature provider using `CacheGlobal`;
+- the engine stores materialized cache entries locally with a hard-coded 30-second TTL;
+- the key includes handler pattern plus normalized query string (and scope dimensions when applicable).
+
+At the current 500-entry cache cap, continuously exercising the saturated eviction path requires on the order of:
+
+```text
+500 distinct cacheable keys / 30 seconds
+≈ 16.7 new distinct keys/second
+```
+
+with little enough repetition for the cache to remain at capacity.
+
+That threshold is a source-derived workload condition, not an observed production traffic rate. There is currently no telemetry evidence in this session that Wikipedia receives sustained >16.7 distinct cacheable query keys per second.
+
+### Updated provisional decision
+
+```text
+generic limiter hot path     -> NO optimization evidence
+inline exact lookup          -> NO optimization evidence
+inline custom matcher scan   -> NO current production optimization evidence (cardinality = 2)
+inline cache hit             -> NO optimization evidence
+limiter forced sweep         -> bounded diagnostic cost; no action
+inline cache saturated churn -> ONLY remaining confirmation candidate
+```
+
+This further narrows P3-C, but does not close P3-A: a real checkout benchmark is still required by the refinement gate.
 
 ---
 
