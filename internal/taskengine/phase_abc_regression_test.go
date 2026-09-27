@@ -110,23 +110,31 @@ func TestCompletionDeliverySaturationBackpressuresAdmission(t *testing.T) {
 	}
 }
 
-// A/P0: completion is fenced by the exact physical permit/epoch, not TaskID.
+// A/P0: completion is fenced by the exact physical permit and dispatch epoch,
+// not by TaskID or an inert pool-wide generation counter.
 func TestStaleWorkerCompletionCannotMutateReusedTaskID(t *testing.T) {
 	e := NewEngine(Config{Pools: map[tasks.PoolID]PoolEngineConfig{"p": {Concurrency: 1, BacklogLimit: 8}}})
-	current := newPermit("p", 0, 2, "same-id", 20, nil)
-	stale := newPermit("p", 0, 1, "same-id", 10, nil)
+	current := newPermit("p", 0, "same-id", 20, nil)
+	foreign := newPermit("p", 0, "same-id", 20, nil)
 	rec := &taskRecord{
 		spec:  tasks.WorkSpec{ID: "same-id", Pool: "p", QuotaOwner: "owner"},
-		state: tasks.StateRunning, permit: current, poolGeneration: 2, dispatchEpoch: 20,
+		state: tasks.StateRunning, permit: current, dispatchEpoch: 20,
 	}
 	e.registry["same-id"] = rec
 
-	e.applyWorkerCompleted(tasks.TaskResult{TaskID: "same-id", Outcome: tasks.OutcomeCompleted}, stale)
-	if rec.state != tasks.StateRunning {
-		t.Fatalf("stale completion changed state to %s", rec.state)
+	// Same TaskID and epoch are insufficient without the exact coordinator-owned
+	// permit identity.
+	e.applyWorkerCompleted(tasks.TaskResult{TaskID: "same-id", Outcome: tasks.OutcomeCompleted}, foreign)
+	if rec.state != tasks.StateRunning || rec.result.Outcome != "" {
+		t.Fatalf("foreign permit mutated record: state=%s result=%+v", rec.state, rec.result)
 	}
-	if rec.result.Outcome != "" {
-		t.Fatalf("stale completion wrote result: %+v", rec.result)
+
+	// Even the exact permit cannot complete a record whose dispatch epoch has
+	// advanced.
+	rec.dispatchEpoch = 21
+	e.applyWorkerCompleted(tasks.TaskResult{TaskID: "same-id", Outcome: tasks.OutcomeCompleted}, current)
+	if rec.state != tasks.StateRunning || rec.result.Outcome != "" {
+		t.Fatalf("stale epoch mutated record: state=%s result=%+v", rec.state, rec.result)
 	}
 }
 

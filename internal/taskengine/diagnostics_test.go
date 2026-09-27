@@ -219,3 +219,31 @@ func waitForDetailedPoolStats(t *testing.T, engine *Engine, pool tasks.PoolID, t
 	stats, _ := engine.Stats(context.Background())
 	t.Fatalf("pool %s did not reach expected state; got %+v", pool, stats.Pools[pool])
 }
+
+func TestRuntimeStatsExposeLifecycleState(t *testing.T) {
+	engine := NewEngine(DefaultConfig)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+
+	stats, err := engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stats.Accepting || stats.Quiesced {
+		t.Fatalf("running lifecycle stats = %+v, want accepting and not quiesced", stats)
+	}
+
+	if err := engine.Quiesce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Accepting || !stats.Quiesced {
+		t.Fatalf("quiesced lifecycle stats = %+v, want not accepting and quiesced", stats)
+	}
+}
+

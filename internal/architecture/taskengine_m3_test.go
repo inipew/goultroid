@@ -106,3 +106,114 @@ func TestM3TaskEngineResponsibilityFilesExist(t *testing.T) {
 		}
 	}
 }
+
+func TestM3TaskEngineControlInboxHasSingleSendSite(t *testing.T) {
+	root := repositoryRoot(t)
+	taskengineDir := filepath.Join(root, "internal", "taskengine")
+	fset := token.NewFileSet()
+	type sendSite struct {
+		file string
+		fn   string
+	}
+	var sites []sendSite
+
+	err := filepath.WalkDir(taskengineDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				send, ok := node.(*ast.SendStmt)
+				if !ok {
+					return true
+				}
+				isInbox := false
+				switch channel := send.Chan.(type) {
+				case *ast.Ident:
+					isInbox = channel.Name == "inbox"
+				case *ast.SelectorExpr:
+					isInbox = channel.Sel != nil && channel.Sel.Name == "inbox"
+				}
+				if isInbox {
+					sites = append(sites, sendSite{file: filepath.Base(path), fn: fn.Name.Name})
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sites) != 1 || sites[0].file != "engine.go" || sites[0].fn != "enqueueRequest" {
+		t.Fatalf("TaskEngine control inbox send sites = %+v, want only engine.go:enqueueRequest", sites)
+	}
+}
+
+func TestM3TaskEngineMutableExecutionStateStaysOnEngine(t *testing.T) {
+	root := repositoryRoot(t)
+	taskengineDir := filepath.Join(root, "internal", "taskengine")
+	fset := token.NewFileSet()
+	owned := map[string]struct{}{
+		"registry": {}, "idleSlots": {}, "workerRunning": {}, "resourceUsed": {},
+		"commitWaiters": {}, "cancelledScopes": {}, "terminalOrder": {},
+	}
+
+	err := filepath.WalkDir(taskengineDir, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			return err
+		}
+		for _, decl := range file.Decls {
+			gen, ok := decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok {
+					continue
+				}
+				st, ok := ts.Type.(*ast.StructType)
+				if !ok {
+					continue
+				}
+				for _, field := range st.Fields.List {
+					for _, name := range field.Names {
+						if _, tracked := owned[name.Name]; tracked && ts.Name.Name != "Engine" {
+							t.Fatalf("mutable TaskEngine field %s gained second owner %s in %s", name.Name, ts.Name.Name, filepath.Base(path))
+						}
+					}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
