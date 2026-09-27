@@ -194,7 +194,8 @@ type RuntimeStats struct {
 // Engine coordinates admission, fairness, physical worker permits, result credits, and lifecycles.
 // All mutable execution state below is owned exclusively by the runLoop goroutine.
 type Engine struct {
-	mu sync.Mutex
+	mu          sync.Mutex
+	controlGate sync.RWMutex
 
 	config    Config
 	configErr error

@@ -106,8 +106,13 @@ func (e *Engine) releaseQueuedRequests(inbox <-chan *engineRequest) {
 }
 
 func (e *Engine) finishCoordinator(inbox <-chan *engineRequest) {
+	e.controlGate.Lock()
+	defer e.controlGate.Unlock()
+
 	e.mu.Lock()
-	e.inbox = nil
+	if e.inbox == inbox {
+		e.inbox = nil
+	}
 	e.mu.Unlock()
 	e.releaseQueuedRequests(inbox)
 }
@@ -116,10 +121,13 @@ func (e *Engine) enqueueRequest(ctx context.Context, queued *engineRequest) erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	e.controlGate.RLock()
+	defer e.controlGate.RUnlock()
+
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	inbox := e.inbox
 	rootCtx := e.rootCtx
+	e.mu.Unlock()
 	if inbox == nil || rootCtx == nil || rootCtx.Err() != nil {
 		return tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
