@@ -142,6 +142,14 @@ func TestMenuManager_Screens(t *testing.T) {
 	if !screenHasButtonText(screenUnmasked, "Muat Ulang") || screenHasButtonText(screenUnmasked, "Coba Lagi") {
 		t.Errorf("dashboard refresh action should use Muat Ulang label")
 	}
+	if strings.Contains(screenUnmasked.Body, "Status Akun") ||
+		strings.Contains(screenUnmasked.Body, "Akun aktif dan status penggunaan saat ini") {
+		t.Errorf("compact dashboard should omit redundant status/header prose: %s", screenUnmasked.Body)
+	}
+	if !strings.Contains(screenUnmasked.Body, "<code>6281987654321</code>") ||
+		!strings.Contains(screenUnmasked.Body, "💰 Rp 50.000 · aktif s/d") {
+		t.Errorf("compact dashboard identity/balance line missing: %s", screenUnmasked.Body)
+	}
 
 	// 3. Quota Detail screen
 	quotaScreen, err := plugin.menuMgr.BuildQuotaDetailScreen(ctx, false)
@@ -181,6 +189,9 @@ func TestMenuManager_Screens(t *testing.T) {
 	if !screenHasAction(savedEmpty, "myxl:home") {
 		t.Error("empty saved packages screen missing back-to-summary action")
 	}
+	if !screenHasButtonText(savedEmpty, "Store") || !screenHasButtonText(savedEmpty, "Back") {
+		t.Error("empty saved packages screen should expose Store | Back navigation")
+	}
 
 	_ = repo.SavePackage(ctx, &SavedPackage{
 		MSISDN:     acc.MSISDN,
@@ -199,6 +210,9 @@ func TestMenuManager_Screens(t *testing.T) {
 	}
 	if !screenHasAction(savedPopulated, "myxl:home") {
 		t.Error("saved packages screen missing back-to-summary action")
+	}
+	if !screenHasButtonText(savedPopulated, "Store") || !screenHasButtonText(savedPopulated, "Back") {
+		t.Error("saved packages screen should expose Store | Back navigation")
 	}
 
 	// 7. Package Detail screen

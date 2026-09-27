@@ -77,35 +77,34 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 		displayNum = MaskMSISDN(acc.MSISDN)
 	}
 
-	card := ui.NewCard("Ringkasan MyXL").
-		WithIcon("📱").
-		WithHeader("Akun aktif dan status penggunaan saat ini.").
-		AddField("Nomor", "<code>"+html.EscapeString(displayNum)+"</code>")
-	if acc.Alias != "" {
-		card.AddField("Alias", html.EscapeString(acc.Alias))
+	var body strings.Builder
+	body.WriteString("📱 <b>Ringkasan MyXL</b>\n")
+	body.WriteString("<code>" + html.EscapeString(displayNum) + "</code>")
+	if alias := strings.TrimSpace(acc.Alias); alias != "" {
+		body.WriteString(" · " + html.EscapeString(alias))
 	}
-	card.AddField("Status Akun", "🟢 Aktif")
+	body.WriteByte('\n')
 
 	switch {
 	case snapshot.BalanceErr != nil:
-		card.AddField("Pulsa", "⚠️ Gagal dimuat")
+		body.WriteString("💰 Pulsa gagal dimuat")
 	case snapshot.Balance != nil:
-		card.AddField("Pulsa", fmt.Sprintf("<code>Rp %s</code>", formatRupiah(int64(snapshot.Balance.Remaining))))
+		body.WriteString("💰 Rp " + formatRupiah(int64(snapshot.Balance.Remaining)))
 		if snapshot.Balance.ExpiredAt > 0 {
-			card.AddField("Masa Aktif", FormatWIBTime(snapshot.Balance.ExpiredAt))
+			body.WriteString(" · aktif s/d " + formatWIBDate(snapshot.Balance.ExpiredAt, true))
 		}
 	default:
-		card.AddField("Pulsa", "ℹ️ Data tidak tersedia")
+		body.WriteString("💰 Data pulsa tidak tersedia")
 	}
 
-	rawSections := make([]string, 0, 3)
+	body.WriteString("\n\n")
 	switch {
 	case snapshot.QuotaErr != nil:
-		rawSections = append(rawSections, "⚠️ <b>Kuota:</b> gagal dimuat. Data pulsa yang berhasil tetap ditampilkan.")
+		body.WriteString("📦 <b>Paket Aktif</b>\n⚠️ Kuota gagal dimuat.")
 	case snapshot.Quota == nil || len(snapshot.Quota.Quotas) == 0:
-		rawSections = append(rawSections, "<i>Tidak ada paket kuota aktif yang terdeteksi.</i>")
+		body.WriteString("📦 <b>Paket Aktif</b>\n<i>Tidak ada paket kuota aktif.</i>")
 	default:
-		rawSections = append(rawSections, FormatDashboardQuotaSummary(snapshot.Quota))
+		body.WriteString(FormatDashboardQuotaSummary(snapshot.Quota))
 	}
 
 	var pendingQR *PendingQRIS
@@ -113,27 +112,28 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 		var pendingErr error
 		pendingQR, pendingErr = m.plugin.repo.GetPendingQRIS(ctx, acc.MSISDN)
 		if pendingErr != nil {
-			rawSections = append(rawSections, "⚠️ <b>Status QRIS:</b> tagihan tersimpan gagal dimuat.")
+			body.WriteString("\n\n⚠️ Status QRIS tersimpan gagal dimuat.")
 		}
 	}
 	if pendingQR != nil {
 		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
 		if rem > 0 {
-			rawSections = append(rawSections, fmt.Sprintf("⏳ <b>QRIS Menunggu Pembayaran:</b>\n• <b>Paket:</b> %s\n• <b>Nominal:</b> Rp %s\n• <b>Sisa Waktu:</b> %s (s/d %s)",
-				html.EscapeString(pendingQR.PackageName), formatRupiah(pendingQR.Price), FormatRemainingDuration(rem), FormatWIBClock(pendingQR.ExpiresAt)))
+			body.WriteString(fmt.Sprintf(
+				"\n\n⏳ <b>QRIS:</b> %s · Rp %s · %s",
+				html.EscapeString(pendingQR.PackageName),
+				formatRupiah(pendingQR.Price),
+				FormatRemainingDuration(rem),
+			))
 		}
-	}
-	if len(rawSections) > 0 {
-		card.WithRaw(strings.Join(rawSections, "\n\n"))
 	}
 
 	if snapshot.partial() {
-		card.WithFooter("<i>Sebagian data gagal dimuat. Pilih Muat Ulang untuk mengambil ulang tanpa membuang data yang berhasil.</i>")
+		body.WriteString("\n\n⚠️ <i>Sebagian data gagal dimuat. Gunakan Muat Ulang.</i>")
 	} else if snapshot.allFailed() {
-		card.WithFooter("<i>Pulsa dan kuota gagal dimuat. Akun tetap tersedia; pilih Coba Lagi.</i>")
+		body.WriteString("\n\n⚠️ <i>Pulsa dan kuota gagal dimuat. Gunakan Muat Ulang.</i>")
 	}
 
-	screen := ui.NewScreen("myxl", "", card.Render())
+	screen := ui.NewScreen("myxl", "", body.String())
 	if pendingQR != nil && time.Now().UTC().Before(pendingQR.ExpiresAt) {
 		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
 		screen.AddRow(newMenuButton("⏳ Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "myxl:pending_qris"))
@@ -295,8 +295,10 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 		card.WithRaw("<i>Belum ada paket yang disimpan dalam daftar favorit.</i>\n\nAnda dapat menyimpan paket ke favorit setelah melihat rincian paket atau menyelesaikan transaksi.")
 		screen := ui.NewScreen("myxl:saved", "", card.Render())
 		screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "myxl:buy_opt_input"))
-		screen.AddRow(newMenuButton("🔙 Kembali ke Store", "myxl:store"))
-		screen.AddRow(newMenuButton("🏠 Kembali ke Ringkasan", "myxl:home"))
+		screen.AddRow(
+			newMenuButton("🛒 Store", "myxl:store"),
+			newMenuButton("🔙 Back", "myxl:home"),
+		)
 		return screen, nil
 	}
 
@@ -317,8 +319,10 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 			newMenuButton("❌ Hapus", fmt.Sprintf("myxl:bookmark_del:%s", optKey)),
 		)
 	}
-	screen.AddRow(newMenuButton("🔙 Kembali ke Store", "myxl:store"))
-	screen.AddRow(newMenuButton("🏠 Kembali ke Ringkasan", "myxl:home"))
+	screen.AddRow(
+		newMenuButton("🛒 Store", "myxl:store"),
+		newMenuButton("🔙 Back", "myxl:home"),
+	)
 	return screen, nil
 }
 

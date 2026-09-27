@@ -231,7 +231,8 @@ func TestFormatDashboardQuotaSummaryShowsMultiplePackagesAndBenefits(t *testing.
 		"2. <b>Bonus WhatsApp</b>",
 		"3. <b>Bonus YouTube</b>",
 		"4. <b>Bonus TikTok</b>",
-		"Berlaku s/d",
+		" · 01 Jan",
+		"<code>[",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("summary missing %q: %s", want, out)
@@ -259,5 +260,15 @@ func TestFormatDashboardQuotaSummaryBoundsLargeCatalog(t *testing.T) {
 	}
 	if !strings.Contains(out, "paket lainnya") {
 		t.Fatalf("bounded summary should disclose truncated packages: %s", out)
+	}
+}
+
+func TestFormatWIBDateCompact(t *testing.T) {
+	const epoch = 1735689600
+	if got := formatWIBDate(epoch, true); got != "01 Jan 2025" {
+		t.Fatalf("formatWIBDate(with year)=%q", got)
+	}
+	if got := formatWIBDate(epoch, false); got != "01 Jan" {
+		t.Fatalf("formatWIBDate(short)=%q", got)
 	}
 }

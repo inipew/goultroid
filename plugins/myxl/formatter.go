@@ -89,6 +89,21 @@ func FormatWIBTime(epoch float64) string {
 	return t.Format("02 Jan 2006 15:04 WIB")
 }
 
+func formatWIBDate(epoch float64, withYear bool) string {
+	if epoch <= 0 || math.IsNaN(epoch) || math.IsInf(epoch, 0) {
+		return "N/A"
+	}
+	if epoch > 4102444800 {
+		epoch /= 1000
+	}
+	wib := time.FixedZone("WIB", 7*3600)
+	t := time.Unix(int64(epoch), 0).In(wib)
+	if withYear {
+		return t.Format("02 Jan 2006")
+	}
+	return t.Format("02 Jan")
+}
+
 // FormatWIBClock formats a time.Time to "15:04:05 WIB".
 func FormatWIBClock(t time.Time) string {
 	wib := time.FixedZone("WIB", 7*3600)
@@ -136,11 +151,11 @@ const maxDashboardQuotaSummaryRunes = 2800
 // screen only when more packages remain.
 func FormatDashboardQuotaSummary(quota *QuotaDetailsData) string {
 	if quota == nil || len(quota.Quotas) == 0 {
-		return "<i>Tidak ada paket kuota aktif yang terdeteksi.</i>"
+		return "📦 <b>Paket Aktif</b>\n<i>Tidak ada paket kuota aktif.</i>"
 	}
 
 	var b strings.Builder
-	b.WriteString("📦 <b>Paket Aktif:</b>\n")
+	b.WriteString("📦 <b>Paket Aktif</b>\n")
 	shown := 0
 
 	for i, q := range quota.Quotas {
@@ -149,10 +164,11 @@ func FormatDashboardQuotaSummary(quota *QuotaDetailsData) string {
 		if name == "" {
 			name = "Paket Internet"
 		}
-		section.WriteString(fmt.Sprintf("\n%d. <b>%s</b>\n", i+1, html.EscapeString(name)))
+		section.WriteString(fmt.Sprintf("\n%d. <b>%s</b>", i+1, html.EscapeString(name)))
 		if q.ExpiredAt > 0 {
-			section.WriteString(fmt.Sprintf("   ⏳ <i>Berlaku s/d: %s</i>\n", FormatWIBTime(q.ExpiredAt)))
+			section.WriteString(" · " + formatWIBDate(q.ExpiredAt, false))
 		}
+		section.WriteByte('\n')
 
 		hasBenefits := false
 		for _, benefit := range q.Benefits {
@@ -165,19 +181,18 @@ func FormatDashboardQuotaSummary(quota *QuotaDetailsData) string {
 			}
 
 			if strings.EqualFold(benefit.DataType, "DATA") || benefit.Total > 1000 {
-				bar, pct := RenderProgressBar(benefit.Remaining, benefit.Total, 10)
+				bar, _ := RenderProgressBar(benefit.Remaining, benefit.Total, 10)
 				section.WriteString(fmt.Sprintf(
-					"   ▫️ <b>%s:</b>\n      <code>%s %s</code>\n      <i>%s / %s</i>\n",
+					"   %s  <code>%s</code> <i>%s / %s</i>\n",
 					html.EscapeString(bName),
 					bar,
-					pct,
 					FormatBytes(benefit.Remaining),
 					FormatBytes(benefit.Total),
 				))
 				hasBenefits = true
 			} else if benefit.Total > 0 {
 				section.WriteString(fmt.Sprintf(
-					"   ▫️ <b>%s:</b> <code>%.0f / %.0f %s</code>\n",
+					"   %s  <code>%.0f / %.0f %s</code>\n",
 					html.EscapeString(bName),
 					benefit.Remaining,
 					benefit.Total,
@@ -206,9 +221,6 @@ func FormatDashboardQuotaSummary(quota *QuotaDetailsData) string {
 
 	return strings.TrimSpace(b.String())
 }
-
-// FormatQuotaSnapshot renders independently fetched balance/quota results. It
-// deliberately distinguishes an API failure from a successful empty response.
 func FormatQuotaSnapshot(account *Account, snapshot quotaSnapshot, maskMSISDN bool) string {
 	if account == nil {
 		return "<i>Akun MyXL tidak tersedia.</i>"
