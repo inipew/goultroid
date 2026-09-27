@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **PLANNED / NOT YET IMPLEMENTED**
+Status: **IN PROGRESS — M1 CLOSED; M2 NEXT**
 
 Audit baseline:
 
@@ -457,6 +457,26 @@ Gate:
 - caller inventory is explicit enough to migrate without guessing.
 
 ### M1 — Split Telegram contracts
+
+Status: **CLOSED**
+
+Implementation commits:
+
+- `c36fc3bcb4ed4f8552a5c36a7694db2a64f247bd` — `refactor(core): split telegram capability contracts`
+- `e2c771cb9d2b8968142d80daebb418d630b523ed` — `test(core): prove narrow telegram capability fakes`
+
+Implemented:
+
+- added `MessageServicer`, `AdminServicer`, `MediaServicer`, `PeerServicer`, and `ProfileServicer`;
+- added `CommandTelegramServicer` as the command-context target aggregate while keeping the 38-method `TelegramServicer` unchanged for compatibility;
+- split contextual transport into independent `ContextualMessageServicer` and `ContextualMediaServicer`;
+- added consumer-owned boundaries for dispatcher callback answering, bot-origin tracking, inline-query answering, and presentation bridge transport;
+- added compile-time assertions that the existing concrete `telegram.Service` implements every new core capability;
+- added compile-time assertions that the compatibility service still covers the new boundaries;
+- added focused capability-only test fakes, proving consumers can mock one capability without implementing unrelated Telegram operations;
+- added regression tests ensuring command-context capability aggregation does not absorb callback/inline/origin methods and contextual message/media contracts remain independent.
+
+M1 intentionally did **not** change `Context.Svc`, dispatcher service storage, inline Execute signatures, presentation Bridge storage, Assistant compatibility servicers, or runtime wiring. Those caller migrations belong to M2 so this phase remains additive and behavior-neutral.
 
 Tasks:
 
