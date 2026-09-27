@@ -736,11 +736,11 @@ func TestClient_Settlement_RebuildPayloadOn401(t *testing.T) {
 				t.Errorf("call 2: expected Bearer fresh_payment_id_token, got %s", authHeader)
 			}
 			sigTime := r.Header.Get("x-signature-time")
-			if sigTime != "2000" {
-				t.Errorf("call 2: expected x-signature-time 2000, got %s", sigTime)
+			if sigTime == "2000" {
+				t.Errorf("call 2: x-signature-time reused payment signature timestamp")
 			}
 
-			// Read body and verify inner JSON has fresh access token & fresh timestamp
+			// Read body and verify inner JSON has fresh access token & runtime timestamp
 			var env EncryptedBody
 			_ = json.NewDecoder(r.Body).Decode(&env)
 			decrypted, err := DecryptXData(env.XData, env.XTime, DefaultXDataKey)
@@ -756,8 +756,8 @@ func TestClient_Settlement_RebuildPayloadOn401(t *testing.T) {
 			if req.AccessToken != "fresh_payment_access_token" {
 				t.Errorf("call 2: expected body access_token fresh_payment_access_token, got %s", req.AccessToken)
 			}
-			if req.Timestamp != 2000 {
-				t.Errorf("call 2: expected body timestamp 2000, got %d", req.Timestamp)
+			if delta := time.Now().Unix() - req.Timestamp; delta < 0 || delta > 5 {
+				t.Errorf("call 2: expected current body timestamp, got %d", req.Timestamp)
 			}
 			if req.TokenPayment != "TP-2" {
 				t.Errorf("call 2: expected body token_payment TP-2, got %s", req.TokenPayment)

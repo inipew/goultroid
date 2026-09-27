@@ -800,14 +800,24 @@ func (c *Client) GetPackagesByFamily(ctx context.Context, acc *Account, familyCo
 }
 
 // GetPackageDetails retrieves specific details for a package option code.
-func (c *Client) GetPackageDetails(ctx context.Context, acc *Account, packageCode string) (*PackageDetailsData, error) {
+func (c *Client) GetPackageDetails(ctx context.Context, acc *Account, packageOptionCode string) (*PackageDetailsData, error) {
+	return c.packageDetail(ctx, acc, packageOptionCode, "", "")
+}
+
+func (c *Client) packageDetail(ctx context.Context, acc *Account, packageOptionCode, familyCode, variantCode string) (*PackageDetailsData, error) {
 	payload := map[string]any{
-		"is_enterprise":        false,
-		"package_code":         packageCode,
-		"package_option_code":  packageCode,
-		"is_from_hot_campaign": false,
-		"lang":                 "en",
-		"family_member_id":     "",
+		"is_transaction_routine": false,
+		"migration_type":         "NONE",
+		"package_family_code":    strings.TrimSpace(familyCode),
+		"family_role_hub":        "",
+		"is_autobuy":             false,
+		"is_enterprise":          false,
+		"is_shareable":           false,
+		"is_migration":           false,
+		"lang":                   "en",
+		"package_option_code":    strings.TrimSpace(packageOptionCode),
+		"is_upsell_pdp":          false,
+		"package_variant_code":   strings.TrimSpace(variantCode),
 	}
 
 	apiResp, err := c.ExecuteEngsel(ctx, acc, network.MethodPost, "api/v8/xl-stores/options/detail", payload)
@@ -847,7 +857,7 @@ func (c *Client) GetPackageDetailsByVariant(ctx context.Context, acc *Account, f
 		return nil, fmt.Errorf("option not found for variant %s (order %d)", variantCode, optionOrder)
 	}
 
-	return c.GetPackageDetails(ctx, acc, targetOptionCode)
+	return c.packageDetail(ctx, acc, targetOptionCode, familyCode, variantCode)
 }
 
 // GetPaymentMethodsOption retrieves payment options, timestamp, and token_payment for purchasing.
@@ -874,6 +884,13 @@ func (c *Client) GetPaymentMethodsOption(ctx context.Context, acc *Account, toke
 		return nil, fmt.Errorf("unmarshal payment methods option: %w", err)
 	}
 	return &data, nil
+}
+
+func paymentForOrDefault(paymentFor, fallback string) string {
+	if paymentFor = strings.TrimSpace(paymentFor); paymentFor != "" {
+		return paymentFor
+	}
+	return fallback
 }
 
 // SendPayment executes an encrypted payment request with payment-specific signature.
@@ -903,6 +920,7 @@ func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string,
 
 	xSig := MakeXSignaturePaymentParams(params, c.cfg.PaymentSigSecret)
 	reqURL := fmt.Sprintf("%s/%s", strings.TrimRight(c.cfg.BaseAPIURL, "/"), strings.TrimLeft(path, "/"))
+	requestTime := time.UnixMilli(xtimeMs)
 
 	headers := map[string]string{
 		"Content-Type":     "application/json; charset=utf-8",
@@ -910,10 +928,10 @@ func (c *Client) sendPaymentOnce(ctx context.Context, acc *Account, path string,
 		"x-api-key":        c.cfg.APIKey,
 		"authorization":    "Bearer " + acc.IDToken,
 		"x-hv":             "v3",
-		"x-signature-time": strconv.FormatInt(params.SigTimeSec, 10),
+		"x-signature-time": strconv.FormatInt(xtimeMs/1000, 10),
 		"x-signature":      xSig,
 		"x-request-id":     uuid.NewString(),
-		"x-request-at":     FormatMyXLHeaderTS(time.Now()),
+		"x-request-at":     FormatMyXLHeaderTS(requestTime),
 		"x-version-app":    c.cfg.XVersionApp,
 	}
 
@@ -1000,6 +1018,7 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 		if err != nil {
 			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", err)
 		}
+		paymentFor := paymentForOrDefault(payMethods.PaymentFor, "BUY_PACKAGE")
 
 		encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
 		encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
@@ -1012,8 +1031,8 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 			EncryptedAuthenticationID: encryptedAuthID,
 			AccessToken:               curAcc.AccessToken,
 			PaymentMethod:             "BALANCE",
-			Timestamp:                 int64(payMethods.Timestamp),
-			PaymentFor:                "BUY_PACKAGE",
+			Timestamp:                 time.Now().Unix(),
+			PaymentFor:                paymentFor,
 			TotalAmount:               totalAmount,
 			Items:                     []PurchaseItem{req},
 			AdditionalData: BalanceAdditionalData{
@@ -1029,7 +1048,7 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 			PackageCode:    req.ItemCode,
 			TokenPayment:   payMethods.TokenPayment,
 			PaymentMethod:  "BALANCE",
-			PaymentFor:     "BUY_PACKAGE",
+			PaymentFor:     paymentFor,
 			Path:           path,
 			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 		}
@@ -1049,6 +1068,7 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 				if pErr != nil {
 					return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", pErr)
 				}
+				paymentFor := paymentForOrDefault(payMethods.PaymentFor, "BUY_PACKAGE")
 
 				encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
 				encryptedAuthID := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
@@ -1061,8 +1081,8 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 					EncryptedAuthenticationID: encryptedAuthID,
 					AccessToken:               curAcc.AccessToken,
 					PaymentMethod:             "BALANCE",
-					Timestamp:                 int64(payMethods.Timestamp),
-					PaymentFor:                "BUY_PACKAGE",
+					Timestamp:                 time.Now().Unix(),
+					PaymentFor:                paymentFor,
 					TotalAmount:               totalAmount,
 					Items:                     []PurchaseItem{req},
 					AdditionalData: BalanceAdditionalData{
@@ -1078,7 +1098,7 @@ func (c *Client) SettlementBalance(ctx context.Context, acc *Account, req Purcha
 					PackageCode:    req.ItemCode,
 					TokenPayment:   payMethods.TokenPayment,
 					PaymentMethod:  "BALANCE",
-					PaymentFor:     "BUY_PACKAGE",
+					PaymentFor:     paymentFor,
 					Path:           path,
 					XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 				}
@@ -1119,11 +1139,12 @@ func (c *Client) SettlementMultipayment(ctx context.Context, acc *Account, req P
 		if err != nil {
 			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", err)
 		}
+		paymentFor := paymentForOrDefault(payMethods.PaymentFor, "BUY_PACKAGE")
 
 		settlementReq := SettlementMultipaymentRequest{
 			CanTriggerRating:  false,
 			TotalDiscount:     0,
-			PaymentFor:        "BUY_PACKAGE",
+			PaymentFor:        paymentFor,
 			IsEnterprise:      false,
 			AccessToken:       curAcc.AccessToken,
 			IsMyXLWallet:      false,
@@ -1136,7 +1157,7 @@ func (c *Client) SettlementMultipayment(ctx context.Context, acc *Account, req P
 			Items:             []PurchaseItem{req},
 			VerificationToken: payMethods.TokenPayment,
 			PaymentMethod:     paymentMethod,
-			Timestamp:         int64(payMethods.Timestamp),
+			Timestamp:         time.Now().Unix(),
 		}
 
 		path := "payments/api/v8/settlement-multipayment/ewallet"
@@ -1145,8 +1166,8 @@ func (c *Client) SettlementMultipayment(ctx context.Context, acc *Account, req P
 			SigTimeSec:     int64(payMethods.Timestamp),
 			PackageCode:    req.ItemCode,
 			TokenPayment:   payMethods.TokenPayment,
-			PaymentMethod:  "EWALLET",
-			PaymentFor:     "BUY_PACKAGE",
+			PaymentMethod:  paymentMethod,
+			PaymentFor:     paymentFor,
 			Path:           path,
 			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 		}
@@ -1186,11 +1207,12 @@ func (c *Client) SettlementQRIS(ctx context.Context, acc *Account, req PurchaseI
 		if err != nil {
 			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get payment methods: %w", err)
 		}
+		paymentFor := paymentForOrDefault(payMethods.PaymentFor, "BUY_PACKAGE")
 
 		settlementReq := SettlementQrisRequest{
 			CanTriggerRating:  false,
 			TotalDiscount:     0,
-			PaymentFor:        "BUY_PACKAGE",
+			PaymentFor:        paymentFor,
 			IsEnterprise:      false,
 			AccessToken:       curAcc.AccessToken,
 			IsMyXLWallet:      false,
@@ -1202,7 +1224,7 @@ func (c *Client) SettlementQRIS(ctx context.Context, acc *Account, req PurchaseI
 			Items:             []PurchaseItem{req},
 			VerificationToken: payMethods.TokenPayment,
 			PaymentMethod:     "QRIS",
-			Timestamp:         int64(payMethods.Timestamp),
+			Timestamp:         time.Now().Unix(),
 		}
 
 		path := "payments/api/v8/settlement-multipayment/qris"
@@ -1212,7 +1234,7 @@ func (c *Client) SettlementQRIS(ctx context.Context, acc *Account, req PurchaseI
 			PackageCode:    req.ItemCode,
 			TokenPayment:   payMethods.TokenPayment,
 			PaymentMethod:  "QRIS",
-			PaymentFor:     "BUY_PACKAGE",
+			PaymentFor:     paymentFor,
 			Path:           path,
 			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 		}
@@ -1369,6 +1391,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 		if err != nil {
 			return "", nil, PaymentSignatureParams{}, fmt.Errorf("get decoy payment methods: %w", err)
 		}
+		paymentFor := paymentForOrDefault(payMethods.PaymentFor, "SHARE_PACKAGE")
 
 		if norm == "balance" {
 			path := "payments/api/v8/settlement-multipayment"
@@ -1383,8 +1406,8 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 				EncryptedAuthenticationID: encryptedAuthID,
 				AccessToken:               curAcc.AccessToken,
 				PaymentMethod:             "BALANCE",
-				Timestamp:                 int64(payMethods.Timestamp),
-				PaymentFor:                "SHARE_PACKAGE",
+				Timestamp:                 time.Now().Unix(),
+				PaymentFor:                paymentFor,
 				TotalAmount:               totalAmount,
 				Items:                     items,
 				AdditionalData: BalanceAdditionalData{
@@ -1399,7 +1422,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 				PackageCode:    packageCodes,
 				TokenPayment:   payMethods.TokenPayment,
 				PaymentMethod:  "BALANCE",
-				PaymentFor:     "SHARE_PACKAGE",
+				PaymentFor:     paymentFor,
 				Path:           path,
 				XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 			}
@@ -1412,7 +1435,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 		settlementReq := SettlementQrisRequest{
 			CanTriggerRating:  false,
 			TotalDiscount:     0,
-			PaymentFor:        "SHARE_PACKAGE",
+			PaymentFor:        paymentFor,
 			IsEnterprise:      false,
 			AccessToken:       curAcc.AccessToken,
 			IsMyXLWallet:      false,
@@ -1424,7 +1447,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 			Items:             items,
 			VerificationToken: payMethods.TokenPayment,
 			PaymentMethod:     "QRIS",
-			Timestamp:         int64(payMethods.Timestamp),
+			Timestamp:         time.Now().Unix(),
 		}
 
 		params := PaymentSignatureParams{
@@ -1433,7 +1456,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 			PackageCode:    packageCodes,
 			TokenPayment:   payMethods.TokenPayment,
 			PaymentMethod:  "QRIS",
-			PaymentFor:     "SHARE_PACKAGE",
+			PaymentFor:     paymentFor,
 			Path:           path,
 			XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 		}
@@ -1453,6 +1476,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 				if pErr != nil {
 					return "", nil, PaymentSignatureParams{}, fmt.Errorf("get decoy payment methods: %w", pErr)
 				}
+				paymentFor := paymentForOrDefault(payMethods.PaymentFor, "SHARE_PACKAGE")
 
 				path := "payments/api/v8/settlement-multipayment"
 				encryptedPaymentToken := BuildEncryptedFieldWithKey(c.cfg.EncryptedFieldKey, true)
@@ -1466,8 +1490,8 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 					EncryptedAuthenticationID: encryptedAuthID,
 					AccessToken:               curAcc.AccessToken,
 					PaymentMethod:             "BALANCE",
-					Timestamp:                 int64(payMethods.Timestamp),
-					PaymentFor:                "SHARE_PACKAGE",
+					Timestamp:                 time.Now().Unix(),
+					PaymentFor:                paymentFor,
 					TotalAmount:               totalAmount,
 					Items:                     items,
 					AdditionalData: BalanceAdditionalData{
@@ -1482,7 +1506,7 @@ func (c *Client) SettlementDecoy(ctx context.Context, acc *Account, req Purchase
 					PackageCode:    packageCodes,
 					TokenPayment:   payMethods.TokenPayment,
 					PaymentMethod:  "BALANCE",
-					PaymentFor:     "SHARE_PACKAGE",
+					PaymentFor:     paymentFor,
 					Path:           path,
 					XAPIBaseSecret: c.cfg.XAPIBaseSecret,
 				}

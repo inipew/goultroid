@@ -40,10 +40,7 @@ func TestSavedPackageDetailUsesCanonicalReturnedOptionCodeForPayment(t *testing.
 			}
 		}
 	}
-	if pulseData != "myxl:method:balance:OPT-10GB" {
-		t.Fatalf("Pulsa action = %q, want canonical option code", pulseData)
-	}
-	if strings.Contains(pulseData, "OPT-SAVED-OLD") {
-		t.Fatalf("Pulsa action retained stale saved option code: %q", pulseData)
+	if pulseData != "myxl:method:balance:OPT-SAVED-OLD" {
+		t.Fatalf("Pulsa action = %q, want stable lookup option code", pulseData)
 	}
 }

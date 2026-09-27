@@ -359,7 +359,7 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 
 	card.WithFooter("<i>Pilih salah satu metode pembayaran di bawah untuk melanjutkan.</i>")
 
-	optKey := m.RegisterOptionCode(canonicalOptionCode)
+	optKey := m.RegisterOptionCode(optionCode)
 
 	screen := ui.NewScreen("myxl:pkg_detail", "", card.Render())
 	screen.AddRow(

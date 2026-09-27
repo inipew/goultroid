@@ -26,13 +26,14 @@ var (
 // may retain. QuotedPrice is a consent fence, never settlement authority: the
 // package is resolved again immediately before reservation/settlement.
 type purchaseIntentState struct {
-	MSISDN         string `json:"msisdn"`
-	OptionCode     string `json:"option_code"`
-	Method         string `json:"method"`
-	WalletNumber   string `json:"wallet_number,omitempty"`
-	QuotedPrice    int64  `json:"quoted_price"`
-	OverwritePrice int64  `json:"overwrite_price,omitempty"`
-	HasOverwrite   bool   `json:"has_overwrite,omitempty"`
+	MSISDN           string `json:"msisdn"`
+	OptionCode       string `json:"option_code"`
+	LookupOptionCode string `json:"lookup_option_code,omitempty"`
+	Method           string `json:"method"`
+	WalletNumber     string `json:"wallet_number,omitempty"`
+	QuotedPrice      int64  `json:"quoted_price"`
+	OverwritePrice   int64  `json:"overwrite_price,omitempty"`
+	HasOverwrite     bool   `json:"has_overwrite,omitempty"`
 }
 
 type purchaseCheckoutPreview struct {
@@ -62,6 +63,11 @@ func normalizePurchaseIntent(intent purchaseIntentState) (purchaseIntentState, e
 	intent.OptionCode = strings.TrimSpace(intent.OptionCode)
 	if intent.OptionCode == "" || len(intent.OptionCode) > maxPurchaseOptionCodeBytes || !utf8.ValidString(intent.OptionCode) {
 		return purchaseIntentState{}, fmt.Errorf("%w: invalid option code", ErrPurchaseIntentInvalid)
+	}
+	intent.LookupOptionCode = strings.TrimSpace(intent.LookupOptionCode)
+	if intent.LookupOptionCode != "" &&
+		(len(intent.LookupOptionCode) > maxPurchaseOptionCodeBytes || !utf8.ValidString(intent.LookupOptionCode)) {
+		return purchaseIntentState{}, fmt.Errorf("%w: invalid lookup option code", ErrPurchaseIntentInvalid)
 	}
 
 	method, err := normalizePurchaseMethod(intent.Method)
@@ -132,6 +138,7 @@ func (p *Plugin) preparePurchaseIntent(ctx context.Context, intent purchaseInten
 	if err != nil {
 		return purchaseIntentState{}, purchaseCheckoutPreview{}, err
 	}
+	normalized = canonicalizePurchaseIntent(normalized, resolved.Item.ItemCode)
 	normalized.QuotedPrice = resolved.CanonicalPrice
 	resolved.Intent = normalized
 	resolved.EffectivePrice = normalized.QuotedPrice
@@ -158,6 +165,7 @@ func (p *Plugin) resolvePurchaseIntent(ctx context.Context, intent purchaseInten
 	if err != nil {
 		return resolvedPurchase{}, err
 	}
+	normalized = canonicalizePurchaseIntent(normalized, resolved.Item.ItemCode)
 	if resolved.CanonicalPrice != normalized.QuotedPrice {
 		return resolvedPurchase{}, fmt.Errorf(
 			"%w: quoted=%d current=%d",
@@ -176,12 +184,35 @@ func (p *Plugin) resolvePurchaseIntent(ctx context.Context, intent purchaseInten
 	return resolved, nil
 }
 
-func validatePurchaseOptionEcho(requested, echoed string) error {
-	echoed = strings.TrimSpace(echoed)
-	if echoed != "" && !strings.EqualFold(echoed, strings.TrimSpace(requested)) {
-		return fmt.Errorf("%w: option code changed", ErrPurchaseIntentInvalid)
+func canonicalizePurchaseIntent(intent purchaseIntentState, itemCode string) purchaseIntentState {
+	itemCode = strings.TrimSpace(itemCode)
+	if itemCode == "" || strings.EqualFold(itemCode, intent.OptionCode) {
+		return intent
 	}
-	return nil
+	if intent.LookupOptionCode == "" {
+		intent.LookupOptionCode = intent.OptionCode
+	}
+	intent.OptionCode = itemCode
+	return intent
+}
+
+func purchaseLookupOptionCode(intent purchaseIntentState) string {
+	if lookup := strings.TrimSpace(intent.LookupOptionCode); lookup != "" {
+		return lookup
+	}
+	return strings.TrimSpace(intent.OptionCode)
+}
+
+func resolvePurchaseCanonicalCode(intent purchaseIntentState, echoed string) (string, error) {
+	canonical := strings.TrimSpace(echoed)
+	if canonical == "" {
+		canonical = strings.TrimSpace(intent.OptionCode)
+	}
+	if lookup := strings.TrimSpace(intent.LookupOptionCode); lookup != "" &&
+		!strings.EqualFold(canonical, strings.TrimSpace(intent.OptionCode)) {
+		return "", fmt.Errorf("%w: option code changed", ErrPurchaseIntentInvalid)
+	}
+	return canonical, nil
 }
 
 func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseIntentState) (resolvedPurchase, error) {
@@ -199,14 +230,16 @@ func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseInte
 		return resolvedPurchase{}, fmt.Errorf("%w: account not found", ErrPurchaseIntentInvalid)
 	}
 
-	details, err := p.client.GetPackageDetails(ctx, acc, intent.OptionCode)
+	lookupOptionCode := purchaseLookupOptionCode(intent)
+	details, err := p.client.GetPackageDetails(ctx, acc, lookupOptionCode)
 	if err != nil {
 		return resolvedPurchase{}, fmt.Errorf("resolve purchase package: %w", err)
 	}
 	if details == nil || details.PackageOption == nil {
 		return resolvedPurchase{}, fmt.Errorf("%w: package details incomplete", ErrPurchaseIntentInvalid)
 	}
-	if err := validatePurchaseOptionEcho(intent.OptionCode, details.PackageOption.PackageOptionCode); err != nil {
+	canonicalOptionCode, err := resolvePurchaseCanonicalCode(intent, details.PackageOption.PackageOptionCode)
+	if err != nil {
 		return resolvedPurchase{}, err
 	}
 	token := strings.TrimSpace(details.TokenConfirmation)
@@ -221,15 +254,15 @@ func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseInte
 	price := int64(rawPrice)
 	name := strings.TrimSpace(details.PackageOption.Name)
 	if name == "" {
-		name = intent.OptionCode
+		name = canonicalOptionCode
 	}
 
 	tokenHash := sha256.Sum256([]byte(token))
-	key := fmt.Sprintf("%s:%s:%x", intent.MSISDN, intent.OptionCode, tokenHash[:16])
+	key := fmt.Sprintf("%s:%s:%x", intent.MSISDN, canonicalOptionCode, tokenHash[:16])
 	return resolvedPurchase{
 		Account: acc,
 		Item: PurchaseItem{
-			ItemCode:          intent.OptionCode,
+			ItemCode:          canonicalOptionCode,
 			ItemPrice:         price,
 			ItemName:          name,
 			TokenConfirmation: token,
