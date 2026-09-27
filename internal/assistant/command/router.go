@@ -617,6 +617,17 @@ func (r *Router) dispatch(
 			Level:   perms.Level(senderID),
 		}
 
+		assistantSvc := &assistantServicerAdapter{
+			inter:         inter,
+			groupQuery:    r.groupQuery,
+			groupMutation: r.groupMutation,
+			mutationContext: GroupMutationContext{
+				ActorID: senderID,
+				ChatID:  chat.ID,
+				Kind:    chat.Kind(),
+			},
+		}
+
 		coreCtx := &core.Context{
 			Ctx:           ctx,
 			CorrelationID: fmt.Sprintf("asst-%d-%d", senderID, time.Now().UnixNano()),
@@ -638,23 +649,14 @@ func (r *Router) dispatch(
 				GroupedID:        messageContext.GroupedID,
 				Entities:         append([]tg.MessageEntityClass(nil), messageContext.Entities...),
 			},
-			Sender:     &core.User{ID: senderID},
-			Self:       &core.User{ID: messageContext.Self.ID, Username: messageContext.Self.Username, IsBot: messageContext.Self.IsBot},
-			Chat:       &chat,
-			Perms:      perms,
-			Principal:  principal,
-			GroupRoles: r.groupRoles,
-			Resolver:   r.peerResolver,
-			Svc: &assistantServicerAdapter{
-				inter:         inter,
-				groupQuery:    r.groupQuery,
-				groupMutation: r.groupMutation,
-				mutationContext: GroupMutationContext{
-					ActorID: senderID,
-					ChatID:  chat.ID,
-					Kind:    chat.Kind(),
-				},
-			},
+			Sender:         &core.User{ID: senderID},
+			Self:           &core.User{ID: messageContext.Self.ID, Username: messageContext.Self.Username, IsBot: messageContext.Self.IsBot},
+			Chat:           &chat,
+			Perms:          perms,
+			Principal:      principal,
+			GroupRoles:     r.groupRoles,
+			Resolver:       r.peerResolver,
+			Telegram:       core.TelegramCapabilitiesFrom(assistantSvc),
 			DelayedActions: r.delayedActions,
 		}
 		core.AttachGroupStateStore(coreCtx, r.groupState)

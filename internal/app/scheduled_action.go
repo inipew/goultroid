@@ -20,7 +20,7 @@ import (
 // command rows. The timing-only scheduler never imports Telegram infrastructure.
 type scheduledActionHandler struct {
 	repo     scheduler.Repository
-	service  func() core.TelegramServicer
+	service  func() core.CommandTelegramServicer
 	router   *core.Router
 	perms    *core.Permissions
 	executor *core.CommandExecutor

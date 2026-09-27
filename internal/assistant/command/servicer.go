@@ -58,8 +58,8 @@ type GroupMutationExecutor interface {
 	Execute(context.Context, GroupMutationContext, GroupMutationRequest) (GroupMutationResult, error)
 }
 
-// assistantServicerAdapter adapts Assistant MessageInteraction into core.TelegramServicer
-// so plugin command handlers can transparently use ctx.Reply, ctx.EditOrReply, and ctx.ReplyMarkup.
+// assistantServicerAdapter adapts Assistant MessageInteraction into the command-context
+// Telegram capabilities used by canonical handlers.
 type assistantServicerAdapter struct {
 	core.MockTelegramServicer
 	inter            interaction.MessageInteraction
@@ -70,8 +70,9 @@ type assistantServicerAdapter struct {
 }
 
 var (
-	_ core.TelegramServicer           = (*assistantServicerAdapter)(nil)
-	_ core.ContextualTelegramServicer = (*assistantServicerAdapter)(nil)
+	_ core.CommandTelegramServicer    = (*assistantServicerAdapter)(nil)
+	_ core.ContextualMessageServicer  = (*assistantServicerAdapter)(nil)
+	_ core.ContextualMediaServicer    = (*assistantServicerAdapter)(nil)
 )
 
 func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -199,16 +200,19 @@ func (a *assistantServicerAdapter) executeGroupMutation(
 }
 
 func admitGroupMutationExecution(c *core.Context) {
-	if c == nil || c.Svc == nil {
+	if c == nil {
 		return
 	}
-	adapter, ok := c.Svc.(*assistantServicerAdapter)
+	adapter, ok := c.Telegram.Admin.(*assistantServicerAdapter)
+	if !ok || adapter == nil {
+		adapter, ok = c.Telegram.Messages.(*assistantServicerAdapter)
+	}
 	if !ok || adapter == nil {
 		return
 	}
 	admitted := *adapter
 	admitted.mutationAdmitted = true
-	c.Svc = &admitted
+	c.Telegram = core.TelegramCapabilitiesFrom(&admitted)
 }
 
 func (a *assistantServicerAdapter) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {

@@ -70,7 +70,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	schedEngine.SetPrivilegedChecker(core.perms)
 	if core.jobsManager != nil {
 		actionHandler := scheduledActionHandler{
-			repo: schedRepo, service: tg.client.Service, router: core.router,
+			repo: schedRepo, service: func() core.CommandTelegramServicer { return tg.client.Service() }, router: core.router,
 			perms: core.perms, executor: tg.dispatcher.Executor(), jobs: core.jobsManager,
 			tasks: core.taskEngine,
 		}
