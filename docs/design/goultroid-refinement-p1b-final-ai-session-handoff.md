@@ -2,10 +2,44 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after P2-C acceptance: `89790e517001ee1432a0e91927ac468d36a58a56` — `test(errors): fence indirect diagnostic leaks`
-Purpose: continue refinement from **P2-D** through final **P4 closure** after P2-C closed repo-wide user-facing response/error modernization.
+Current audited implementation baseline after P2-D acceptance: `6261169c07de9c26f60304b0136c14a1e2a85b30` — `refactor(ui): reclaim dead legacy helpers`
+Purpose: continue refinement from **P3-A** through final **P4 closure** after P2-D reclaimed dead callback-era UI compatibility helpers.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+
+## 2026-09-27 P2-D closure update
+
+P2-D is **CLOSED** at implementation baseline `6261169c07de9c26f60304b0136c14a1e2a85b30` (`refactor(ui): reclaim dead legacy helpers`).
+
+Fresh current-source audit classified `internal/ui` into production/pure helpers versus callback-era compatibility. The reclamation removed zero-production-call generalized builders and aliases while preserving the UI values that current Settings/MyXL and ordinary userbot surfaces still consume.
+
+Reclaimed:
+
+- `internal/ui/actions.go`
+- `internal/ui/confirmation.go`
+- `internal/ui/navigator.go`
+- `internal/ui/wizard.go`
+- callback/menu builders such as toggle/stepper/selectors/navigation/action rows
+- presentation-role-to-legacy-button adapters
+- stale tests whose only purpose was exercising those reclaimed helpers
+
+Preserved intentionally:
+
+- `Card` and HTML/value formatters
+- `Screen`
+- `Button` / `ButtonRow` / `Markup` transport-neutral values still used by MyXL presentation
+- `PaginateSlice`, used by Settings
+- `PresentUserError`
+- `internal/ui/render` as a thin adapter that delegates keyboard serialization to canonical `internal/presentation/telegram.EncodeMarkup`
+
+`internal/architecture/ui_helper_reclamation_p2d_test.go` now fences the reclaimed symbol/file set and protects the remaining pure/production helpers plus the single Telegram serializer delegation.
+
+No second callback/runtime/serializer authority was introduced. Presentation remains the common label vocabulary owner.
+
+CI was not inspected. A complete executable checkout is still unavailable from the container, so this session does not claim repository-wide `gofmt`, `go build`, `go vet`, or `go test` execution.
+
+**P2-A/B/C/D are now CLOSED. Current NEXT = P3-A — benchmark current post-refinement source before any optimization.**
 
 ## 2026-09-27 P2-B closure update
 
@@ -1036,30 +1070,33 @@ See `docs/design/goultroid-refinement-p2c-response-error-modernization.md`.
 
 ---
 
-# 16. P2-D — remove dead legacy UI helpers
+# 16. P2-D — remove dead legacy UI helpers — CLOSED
 
-Run only after P1-F is closed, because callback reclamation may make additional UI helpers dead.
+Status: **CLOSED** at `6261169c07de9c26f60304b0136c14a1e2a85b30`.
 
-Classify `internal/ui` helpers:
+The current-source inventory showed that the broad callback-era UI builder surface was test-only/dead after P1-F, while several transport-neutral values and pure render/format helpers remain production dependencies.
 
-```text
-production
-pure formatting/value helper
-compatibility
-test-only
-dead
-```
+Removed zero-production-call compatibility:
 
-Remove only zero-production-call helpers.
+- action-bar/retry/loading callback builders;
+- confirmation/preview callback cards;
+- navigator re-exports and navigation button shims;
+- stateless wizard compatibility renderer;
+- toggle/stepper/selector/duration/nav callback builders;
+- legacy presentation-role button adapters and convenience markup rows.
 
-Preserve useful pure cards/formatters.
+Preserved production/pure helpers:
 
-Acceptance:
+- Card/format/progress helpers;
+- Screen;
+- Button/ButtonRow/Markup values;
+- PaginateSlice;
+- PresentUserError;
+- ui/render -> presentation/telegram encoder delegation.
 
-- smaller UI surface;
-- no callback-only builders after legacy callback removal;
-- no second Telegram serializer;
-- common labels remain owned by presentation vocabulary.
+Architecture acceptance is fenced by `internal/architecture/ui_helper_reclamation_p2d_test.go`.
+
+P2-D did not introduce another callback protocol, interaction runtime, Telegram serializer, or label authority.
 
 ---
 
@@ -1367,7 +1404,7 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. P1-F is CLOSED through P1-F5, P2-A is CLOSED, and P2-B is CLOSED. Continue **P2-C — repo-wide response/error modernization** only. Re-audit current production code for raw internal error exposure rather than trusting historical grep results. Preserve the P0-B typed user-facing error boundary and semantic response helpers; do not change mutation/RPC/resource semantics merely to rewrite copy. Build a temporary exact allowlist for existing unsafe patterns, migrate real production debt to safe semantic messages, shrink the allowlist as debt closes, add architecture/regression coverage that blocks new raw-error exposure, and STOP before P2-D. Run gofmt/build/tests when an executable checkout is available; do not claim commands that did not run. Do not check CI unless explicitly requested.
+> Refresh `test-next` HEAD and current source. P1-F and P2-A/B/C/D are CLOSED. Continue **P3-A — benchmark current post-refinement source before optimization**. Do not optimize from historical suspicion. Measure the current Inline exact/custom paths, a2 lifecycle/hot paths, TaskEngine admission/completion/resource contention, and the documented combined workload. Record ns/op, B/op, allocs/op where applicable plus before/peak/after resource settling. If a real executable checkout/toolchain is unavailable, do not invent benchmark evidence; record the limitation and stop rather than opening P3-C. Do not check CI unless explicitly requested.
 
 Important baseline:
 
@@ -1375,12 +1412,13 @@ Important baseline:
 P1-F: CLOSED
 P2-A: CLOSED
 P2-B: CLOSED
-locale authority: settings ui:locale -> ResolveLocale -> Bind
-fallback locale: en
-built-in locale parity: en/id
-common localized surfaces: Help/Settings/Downloader/Admin/Media/Profile + shared Assistant UX
-presentation localization dependency: none
-NEXT executable phase: P2-C
+P2-C: CLOSED
+P2-D: CLOSED at 6261169c07de9c26f60304b0136c14a1e2a85b30
+legacy callback authority: zero
+dead callback-era UI helper surface: reclaimed
+Telegram keyboard serializer: presentation/telegram EncodeMarkup
+production/pure UI retained: Card/format/Screen/Button values/PaginateSlice/PresentUserError
+NEXT executable phase: P3-A benchmark before optimization
 ```
 
 ---
@@ -1412,6 +1450,7 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-P1-F CLOSED through P1-F5; P2-A CLOSED; P2-B CLOSED at code baseline 0fd0d083 with canonical settings-owned EN/ID localization across common userbot UX.
-NEXT = P2-C response/error modernization only -> STOP before P2-D.
+P1-F CLOSED; P2-A/B/C/D CLOSED at P2-D code baseline 6261169c.
+Dead callback-era UI compatibility helpers reclaimed; pure/production UI values preserved.
+NEXT = P3-A benchmark current source before any optimization.
 ```
