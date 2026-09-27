@@ -176,6 +176,14 @@ func (p *Plugin) resolvePurchaseIntent(ctx context.Context, intent purchaseInten
 	return resolved, nil
 }
 
+func validatePurchaseOptionEcho(requested, echoed string) error {
+	echoed = strings.TrimSpace(echoed)
+	if echoed != "" && !strings.EqualFold(echoed, strings.TrimSpace(requested)) {
+		return fmt.Errorf("%w: option code changed", ErrPurchaseIntentInvalid)
+	}
+	return nil
+}
+
 func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseIntentState) (resolvedPurchase, error) {
 	if p == nil || p.repo == nil || p.client == nil {
 		return resolvedPurchase{}, fmt.Errorf("%w: runtime unavailable", ErrPurchaseIntentInvalid)
@@ -198,9 +206,8 @@ func (p *Plugin) resolvePurchaseDetails(ctx context.Context, intent purchaseInte
 	if details == nil || details.PackageOption == nil {
 		return resolvedPurchase{}, fmt.Errorf("%w: package details incomplete", ErrPurchaseIntentInvalid)
 	}
-	optionCode := strings.TrimSpace(details.PackageOption.PackageOptionCode)
-	if optionCode == "" || !strings.EqualFold(optionCode, intent.OptionCode) {
-		return resolvedPurchase{}, fmt.Errorf("%w: option code changed", ErrPurchaseIntentInvalid)
+	if err := validatePurchaseOptionEcho(intent.OptionCode, details.PackageOption.PackageOptionCode); err != nil {
+		return resolvedPurchase{}, err
 	}
 	token := strings.TrimSpace(details.TokenConfirmation)
 	if token == "" {

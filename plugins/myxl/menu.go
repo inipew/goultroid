@@ -338,24 +338,28 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 		return nil, fmt.Errorf("token konfirmasi tidak ditemukan untuk paket %s", optionCode)
 	}
 
-	pkgName := optionCode
+	canonicalOptionCode := strings.TrimSpace(optionCode)
+	pkgName := canonicalOptionCode
 	var price int64
 	if details.PackageOption != nil {
 		pkgName = details.PackageOption.Name
 		price = int64(details.PackageOption.Price)
+		if returnedCode := strings.TrimSpace(details.PackageOption.PackageOptionCode); returnedCode != "" {
+			canonicalOptionCode = returnedCode
+		}
 	}
 
 	card := ui.NewCard("Detail Paket MyXL").
 		WithIcon("📦").
 		WithHeader("Periksa paket dan pilih metode pembayaran.").
 		AddField("Paket", html.EscapeString(pkgName)).
-		AddField("Option Code", "<code>"+html.EscapeString(optionCode)+"</code>").
+		AddField("Option Code", "<code>"+html.EscapeString(canonicalOptionCode)+"</code>").
 		AddField("Harga Resmi", fmt.Sprintf("Rp %s", formatRupiah(price))).
 		AddField("Token Status", "✅ Tersedia & Siap Transaksi")
 
 	card.WithFooter("<i>Pilih salah satu metode pembayaran di bawah untuk melanjutkan.</i>")
 
-	optKey := m.RegisterOptionCode(optionCode)
+	optKey := m.RegisterOptionCode(canonicalOptionCode)
 
 	screen := ui.NewScreen("myxl:pkg_detail", "", card.Render())
 	screen.AddRow(

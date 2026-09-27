@@ -1229,7 +1229,7 @@ func fallbackErrorResults(err error) []InlineResult {
 		// Don't leak internal details; keep generic msg
 		_ = err
 	}
-	markup := ui.NewMarkup(ui.NewHelpSwitchRow("help"))
+	markup := ui.NewMarkup(ui.ButtonRow{ui.NewSwitchInlineButton(presentation.ButtonLabel(presentation.ButtonRoleHelp), "help", false)})
 	return []InlineResult{{ID: "error", Type: ResultArticle, Title: "Error", Description: msg, Text: msg, Markup: &markup}}
 }
 
@@ -1250,7 +1250,7 @@ func fallbackEmptyResults(query string) []InlineResult {
 	if strings.TrimSpace(query) == "" {
 		text = "🔍 No results.\n\nTry <code>@bot help</code> to see available commands."
 	}
-	markup := ui.NewMarkup(ui.NewHelpSwitchRow("help"))
+	markup := ui.NewMarkup(ui.ButtonRow{ui.NewSwitchInlineButton(presentation.ButtonLabel(presentation.ButtonRoleHelp), "help", false)})
 	return []InlineResult{{ID: "empty_help", Type: ResultArticle, Title: "No results", Description: "Try help or ping", Text: text, Markup: &markup}}
 }
 
