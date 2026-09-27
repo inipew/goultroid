@@ -318,7 +318,7 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	isShutdown := false
 	RegisterUpdateHandlers(&dispatcher, UpdateHandlerDeps{
 		Logger: zap.NewNop(), IsShuttingDown: func() bool { return isShutdown },
-		Interaction: clientInter,
+		Interaction:     clientInter,
 		CallbackDeduper: newCallbackQueryDeduper(),
 	})
 	ctx := context.Background()
@@ -499,4 +499,3 @@ func TestUpdateHandlers_A2DuplicateBypassesTransportRateLimit(t *testing.T) {
 		t.Fatalf("duplicate a2 callback must receive terminal empty ack, got %+v", api.answerReq)
 	}
 }
-

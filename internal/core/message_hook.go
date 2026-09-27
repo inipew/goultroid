@@ -21,13 +21,13 @@ type CanonicalMessageHookHandler = func(ctx context.Context, message *MessageEnv
 // Exactly one of Handler or RawHandler should be set. LegacyRouting exists only
 // for privileged raw compatibility hooks that predate explicit routing.
 type MessageHookRegistration struct {
-	Scope            tasks.ScopeIdentity
-	Priority         int
-	Routing          MessageHookRouting
-	StateGate        func(int64) bool
-	Handler          CanonicalMessageHookHandler
-	RawHandler       RawMessageHookHandler
-	LegacyRouting    bool
+	Scope         tasks.ScopeIdentity
+	Priority      int
+	Routing       MessageHookRouting
+	StateGate     func(int64) bool
+	Handler       CanonicalMessageHookHandler
+	RawHandler    RawMessageHookHandler
+	LegacyRouting bool
 }
 
 // MessageHookLane separates synchronous decision/interception work from

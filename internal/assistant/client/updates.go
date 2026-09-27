@@ -42,25 +42,25 @@ type groupRuleChatClassifier interface {
 }
 
 type UpdateHandlerDeps struct {
-	Logger              *zap.Logger
-	RateLimiter         RateLimiter
-	Resolver            peer.Resolver
-	CmdRouter           *command.Router
-	CallbackDeduper     *callbackQueryDeduper
-	Interaction         *interaction.ClientInteraction
-	CacheEntities       func(e tg.Entities)
-	IsShuttingDown      func() bool
-	InlineEngine        InlineQueryExecutor
-	InlineService       core.TelegramServicer
-	Tasks               tasks.Client
-	InteractionIngress  interactionIngressPort
-	RelayIngress        relayMessageIngress
-	AudienceRegistry    pmrelay.AudienceRegistry
-	GroupEvents         groupServiceIngress
-	GroupRules          groupRuleIngress
-	GroupRuleChats      groupRuleChatClassifier
-	GlobalPrivileged    func(int64) bool
-	SelfID              func() int64
+	Logger             *zap.Logger
+	RateLimiter        RateLimiter
+	Resolver           peer.Resolver
+	CmdRouter          *command.Router
+	CallbackDeduper    *callbackQueryDeduper
+	Interaction        *interaction.ClientInteraction
+	CacheEntities      func(e tg.Entities)
+	IsShuttingDown     func() bool
+	InlineEngine       InlineQueryExecutor
+	InlineService      core.TelegramServicer
+	Tasks              tasks.Client
+	InteractionIngress interactionIngressPort
+	RelayIngress       relayMessageIngress
+	AudienceRegistry   pmrelay.AudienceRegistry
+	GroupEvents        groupServiceIngress
+	GroupRules         groupRuleIngress
+	GroupRuleChats     groupRuleChatClassifier
+	GlobalPrivileged   func(int64) bool
+	SelfID             func() int64
 }
 
 const unknownAssistantCallbackExpiredText = "⌛ Interaction expired. Please reopen it."

@@ -103,7 +103,7 @@ func TestP2BMetricPathsDoNotDependOnLocalization(t *testing.T) {
 func TestP2BCommonUserbotSurfacesUseLocalizedVocabulary(t *testing.T) {
 	root := repositoryRoot(t)
 	checks := map[string]struct {
-		required []string
+		required  []string
 		forbidden []string
 	}{
 		filepath.Join(root, "plugins", "settings", "settings.go"): {

@@ -81,10 +81,10 @@ type Plugin struct {
 // New creates a new settings plugin instance.
 func New(service *settings.Service) *Plugin {
 	return &Plugin{
-		service:  service,
-		logger:   zap.NewNop(),
-		setUC:    &usecase.SetSettingUseCase{Service: service},
-		resetUC:  &usecase.ResetSettingUseCase{Service: service},
+		service: service,
+		logger:  zap.NewNop(),
+		setUC:   &usecase.SetSettingUseCase{Service: service},
+		resetUC: &usecase.ResetSettingUseCase{Service: service},
 	}
 }
 

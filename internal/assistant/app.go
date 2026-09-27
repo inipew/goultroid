@@ -117,7 +117,7 @@ func (a *AssistantApp) SetSavedResponseBindings(bindings *savedresponse.BindingS
 	a.client.SetSavedResponseBindings(bindings, delivery)
 }
 func (a *AssistantApp) SetMetricsCollector(m core.MetricsCollector) { a.client.SetMetricsCollector(m) }
-func (a *AssistantApp) SetInlineEngine(engine *inline.Engine) { a.client.SetInlineEngine(engine) }
+func (a *AssistantApp) SetInlineEngine(engine *inline.Engine)       { a.client.SetInlineEngine(engine) }
 func (a *AssistantApp) SetDeepLinkRouter(router *assistantdeeplink.Router) {
 	a.client.SetDeepLinkRouter(router)
 }

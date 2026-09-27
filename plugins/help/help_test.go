@@ -130,10 +130,10 @@ func TestHelpPlugin(t *testing.T) {
 
 	svc := &mockService{}
 	baseCtx := &core.Context{
-		Ctx:     context.Background(),
-		Source:  core.ExecutionAssistant,
-		Message: &core.Message{ID: 1},
-		Svc:     svc,
+		Ctx:       context.Background(),
+		Source:    core.ExecutionAssistant,
+		Message:   &core.Message{ID: 1},
+		Svc:       svc,
 		PeerID:    &tg.InputPeerSelf{},
 		Localizer: localization.New(localization.LocaleEnglish),
 	}

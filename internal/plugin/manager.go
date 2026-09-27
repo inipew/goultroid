@@ -157,22 +157,22 @@ type Manager struct {
 
 func NewManager(router *core.Router) *Manager {
 	return &Manager{
-		router:           router,
-		plugins:          make(map[string]Plugin),
-		metadata:         make(map[string]Metadata),
-		manifests:        make(map[string]Manifest),
-		scopes:           make(map[string]*Scope),
-		commands:         make(map[string][]core.Command),
-		disabled:         make(map[string]bool),
-		transitions:      make(map[string]string),
-		teardownErrors:   make(map[string]error),
-		registering:      make(map[string]bool),
-		hookCleanups:     make(map[string]func()),
-		featureCleanups:  make(map[string]func()),
-		featureRegistry:  newFeatureRegistry(),
-		savedResponses:   savedresponse.NewRegistry(),
-		list:             make([]Plugin, 0),
-		cleanupExecutor:  runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
+		router:          router,
+		plugins:         make(map[string]Plugin),
+		metadata:        make(map[string]Metadata),
+		manifests:       make(map[string]Manifest),
+		scopes:          make(map[string]*Scope),
+		commands:        make(map[string][]core.Command),
+		disabled:        make(map[string]bool),
+		transitions:     make(map[string]string),
+		teardownErrors:  make(map[string]error),
+		registering:     make(map[string]bool),
+		hookCleanups:    make(map[string]func()),
+		featureCleanups: make(map[string]func()),
+		featureRegistry: newFeatureRegistry(),
+		savedResponses:  savedresponse.NewRegistry(),
+		list:            make([]Plugin, 0),
+		cleanupExecutor: runtime.NewCallbackExecutor(runtime.DefaultLifecycleCallbackConcurrency),
 	}
 }
 

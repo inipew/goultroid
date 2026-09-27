@@ -35,13 +35,13 @@ const (
 )
 
 type assistantState struct {
-	Slots      []string            `json:"slots,omitempty"`
-	Wizard     string              `json:"wizard,omitempty"`
-	MSISDN     string              `json:"msisdn,omitempty"`
-	OptionCode string              `json:"option_code,omitempty"`
-	Method     string              `json:"method,omitempty"`
+	Slots      []string             `json:"slots,omitempty"`
+	Wizard     string               `json:"wizard,omitempty"`
+	MSISDN     string               `json:"msisdn,omitempty"`
+	OptionCode string               `json:"option_code,omitempty"`
+	Method     string               `json:"method,omitempty"`
 	Draft      *purchaseIntentState `json:"draft,omitempty"`
-	Sustain    bool                `json:"sustain,omitempty"`
+	Sustain    bool                 `json:"sustain,omitempty"`
 }
 
 func (p *Plugin) AssistantFeatureID() string { return p.Name() }

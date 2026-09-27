@@ -100,11 +100,11 @@ func TestP2BResolveLocaleUsesCanonicalSettingsHierarchy(t *testing.T) {
 
 	if err := repo.SetSetting(ctx, &settings.SettingItem{
 		ScopeType: string(settings.ScopeUser),
-		ScopeID: 11,
+		ScopeID:   11,
 		Namespace: LocaleSettingNamespace,
-		Key: LocaleSettingKey,
+		Key:       LocaleSettingKey,
 		ValueType: "enum",
-		Value: LocaleIndonesian,
+		Value:     LocaleIndonesian,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,11 +114,11 @@ func TestP2BResolveLocaleUsesCanonicalSettingsHierarchy(t *testing.T) {
 
 	if err := repo.SetSetting(ctx, &settings.SettingItem{
 		ScopeType: string(settings.ScopeChat),
-		ScopeID: 22,
+		ScopeID:   22,
 		Namespace: LocaleSettingNamespace,
-		Key: LocaleSettingKey,
+		Key:       LocaleSettingKey,
 		ValueType: "enum",
-		Value: LocaleEnglish,
+		Value:     LocaleEnglish,
 	}); err != nil {
 		t.Fatal(err)
 	}

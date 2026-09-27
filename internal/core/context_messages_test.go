@@ -225,7 +225,6 @@ func TestP5UserbotSemanticResponseReusesOneAnchor(t *testing.T) {
 	}
 }
 
-
 func TestP0CEditOrReplyPreflightChoosesReplyWithoutEditRPC(t *testing.T) {
 	mock := &mockTelegramServicer{}
 	ctx := &Context{
@@ -356,7 +355,6 @@ func TestP0CDirectEditPreflightFailureIsFallbackSafe(t *testing.T) {
 		t.Fatalf("preflight safety mismatch: committed=%v fallback=%v", MessageEditMayHaveCommitted(err), MessageEditFallbackSafe(err))
 	}
 }
-
 
 type failingDelayedActions struct {
 	err error

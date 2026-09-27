@@ -258,7 +258,7 @@ func TestSendAssetPreservesMediaArgumentOrder(t *testing.T) {
 }
 
 func TestSendAssetRejectsMissingAsset(t *testing.T) {
-	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale),Ctx: context.Background(), PeerID: &tg.InputPeerChat{ChatID: 100}, Svc: &mockService{}}
+	ctx := &core.Context{Localizer: localization.New(localization.DefaultLocale), Ctx: context.Background(), PeerID: &tg.InputPeerChat{ChatID: 100}, Svc: &mockService{}}
 	if err := sendAsset(ctx, "video", nil, ""); err == nil {
 		t.Fatal("expected nil asset to be rejected")
 	}

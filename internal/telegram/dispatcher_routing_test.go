@@ -132,8 +132,8 @@ func TestDispatcher_RegisterMessageHookContract(t *testing.T) {
 	stateGate := func(chatID int64) bool { return chatID == 7 }
 
 	cleanup, err := d.RegisterMessageHook(core.MessageHookRegistration{
-		Scope:     scope,
-		Priority:  PriorityFeature,
+		Scope:    scope,
+		Priority: PriorityFeature,
 		Routing: core.MessageHookRouting{
 			Lane: core.MessageHookEvent,
 			Interests: []core.MessageHookInterest{{

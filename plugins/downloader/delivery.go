@@ -13,8 +13,8 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
-	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/download"
+	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
 )

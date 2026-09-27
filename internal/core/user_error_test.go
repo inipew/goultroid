@@ -59,7 +59,6 @@ func TestContextFailPresentsSafeMessageOnceAndPreservesCause(t *testing.T) {
 	}
 }
 
-
 func TestContextFailAmbiguousEditPresentationFailsClosed(t *testing.T) {
 	transportErr := errors.New("connection reset after error edit")
 	service := &mockTelegramServicer{errToEdit: transportErr}

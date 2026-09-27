@@ -145,4 +145,3 @@ func (b *Bridge) Answer(ctx context.Context, answer presentation.Answer) error {
 	}
 	return b.Service.AnswerCallbackQuery(ctx, answer.QueryID, answer.Text, answer.Alert)
 }
-

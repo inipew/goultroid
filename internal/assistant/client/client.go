@@ -36,8 +36,8 @@ import (
 )
 
 var (
-	ErrBotTokenRequired           = errors.New("assistant/client: BOT_TOKEN is required")
-	ErrAlreadyRunning             = errors.New("assistant/client: client already running")
+	ErrBotTokenRequired = errors.New("assistant/client: BOT_TOKEN is required")
+	ErrAlreadyRunning   = errors.New("assistant/client: client already running")
 )
 
 type Client interface {
@@ -286,13 +286,13 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		Interaction: c.interaction, CacheEntities: c.CacheEntities, IsShuttingDown: c.shuttingDown.Load,
 		InlineEngine: c.inlineEngine, InlineService: inlineQueryService, Tasks: taskClient,
 		InteractionIngress: ingress,
-		RelayIngress:     relayIngress,
-		AudienceRegistry: audience,
-		GroupEvents:      groupEvents,
-		GroupRules:       groupRules,
-		GroupRuleChats:   newManagedGroupRuleChatClassifier(managedAPI),
-		GlobalPrivileged: c.isGlobalPrivileged,
-		SelfID:           c.selfID,
+		RelayIngress:       relayIngress,
+		AudienceRegistry:   audience,
+		GroupEvents:        groupEvents,
+		GroupRules:         groupRules,
+		GroupRuleChats:     newManagedGroupRuleChatClassifier(managedAPI),
+		GlobalPrivileged:   c.isGlobalPrivileged,
+		SelfID:             c.selfID,
 	}
 	RegisterUpdateHandlers(&dispatcher, deps)
 
@@ -580,4 +580,3 @@ func (c *AssistantClient) CacheEntities(e tg.Entities) {
 		c.cache.CacheEntities(e)
 	}
 }
-

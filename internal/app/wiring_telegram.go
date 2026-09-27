@@ -11,14 +11,14 @@ import (
 
 func buildTelegramRuntime(cfg *config.Config, core *coreDependencies, logger *zap.Logger) (*telegramRuntime, error) {
 	dispatcherDeps := telegram.DispatcherDeps{
-		Router:         core.router,
-		Permissions:    core.perms,
-		Service:        nil,
-		Logger:         logger,
-		EventBus:       core.eventBus,
-		Localizer:      core.localizer,
-		InlineEngine:   core.inlineEngine,
-		Tasks:          core.taskEngine,
+		Router:       core.router,
+		Permissions:  core.perms,
+		Service:      nil,
+		Logger:       logger,
+		EventBus:     core.eventBus,
+		Localizer:    core.localizer,
+		InlineEngine: core.inlineEngine,
+		Tasks:        core.taskEngine,
 	}
 	dispatcher, err := telegram.NewDispatcherWithDeps(dispatcherDeps)
 	if err != nil {

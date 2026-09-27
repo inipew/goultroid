@@ -27,7 +27,7 @@ func TestP2BBuiltinEnglishIndonesianCatalogParity(t *testing.T) {
 func TestP2BRepresentativeUserbotUXIsLocalized(t *testing.T) {
 	svc := New(DefaultLocale)
 	tests := []struct {
-		key string
+		key  string
 		args []any
 	}{
 		{key: "settings.cli.updated", args: []any{"ui", "locale", "id"}},

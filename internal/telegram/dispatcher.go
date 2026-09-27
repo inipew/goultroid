@@ -88,15 +88,15 @@ func (d *Dispatcher) resolvePluginScope(owner string) (tasks.ScopeIdentity, bool
 
 // DispatcherDeps specifies dependencies for initializing a Dispatcher via dependency injection.
 type DispatcherDeps struct {
-	Router         *core.Router
-	Permissions    *core.Permissions
-	Service        core.TelegramServicer
-	Logger         *zap.Logger
-	EventBus       *core.EventBus
-	Localizer      core.Localizer
-	InlineEngine   *inline.Engine
-	Resolver       core.PeerResolver
-	Tasks          tasks.Client
+	Router       *core.Router
+	Permissions  *core.Permissions
+	Service      core.TelegramServicer
+	Logger       *zap.Logger
+	EventBus     *core.EventBus
+	Localizer    core.Localizer
+	InlineEngine *inline.Engine
+	Resolver     core.PeerResolver
+	Tasks        tasks.Client
 }
 
 // NewDispatcherWithDeps constructs a Dispatcher with all available dependencies.
