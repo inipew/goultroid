@@ -35,7 +35,6 @@ type taskRecord struct {
 	state            tasks.TaskState
 	permit           *permit
 	dispatchEpoch    uint64
-	poolGeneration   uint64
 	result           tasks.TaskResult
 	done             chan struct{}
 	ticket           *engineTicket
@@ -77,7 +76,6 @@ const (
 	opCancelScope
 	opSnapshot
 	opResult
-	opWorkerIdle
 	opWorkerStarted
 	opWorkerCompleted
 	opCommitAck
@@ -172,6 +170,8 @@ type LaneRuntimeStats struct {
 
 // RuntimeStats is a bounded-cardinality snapshot of execution coordination.
 type RuntimeStats struct {
+	Accepting       bool
+	Quiesced        bool
 	ResultSlotsHeld int
 	ResultCapacity  int
 	ActiveTasks     int
@@ -210,7 +210,6 @@ type Engine struct {
 	workerRunning     map[tasks.PoolID][]bool
 	workerIdleSince   map[tasks.PoolID][]time.Time
 	workerCancels     map[tasks.PoolID][]context.CancelFunc
-	poolGenerations   map[tasks.PoolID]uint64
 	resourceCapacity  map[string]int64
 	resourceUsed      map[string]int64
 	dispatchEpoch     uint64

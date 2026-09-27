@@ -273,8 +273,6 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 			scopeTombstones: len(e.cancelledScopes),
 			pools:           pools, resources: resources,
 		}}
-	case opWorkerIdle:
-		e.markWorkerIdle(req.pool, req.slotID)
 	case opWorkerStarted:
 		e.applyWorkerStarted(req.taskID, req.permit, req.started)
 	case opWorkerCompleted:

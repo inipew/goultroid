@@ -75,7 +75,7 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult, grant *permit) {
 	if grant == nil || rec.permit != grant {
 		return
 	}
-	if grant.generation != rec.poolGeneration || grant.dispatchEpoch != rec.dispatchEpoch {
+	if grant.dispatchEpoch != rec.dispatchEpoch {
 		return
 	}
 	rec.result = res

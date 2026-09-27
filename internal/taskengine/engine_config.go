@@ -205,7 +205,6 @@ func NewEngine(cfg Config) *Engine {
 	workerRunning := make(map[tasks.PoolID][]bool, len(cfg.Pools))
 	workerIdleSince := make(map[tasks.PoolID][]time.Time, len(cfg.Pools))
 	workerCancels := make(map[tasks.PoolID][]context.CancelFunc, len(cfg.Pools))
-	generations := make(map[tasks.PoolID]uint64, len(cfg.Pools))
 
 	maxTerminal := cfg.MaxTerminalRetained
 	if maxTerminal == 0 {
@@ -262,7 +261,6 @@ func NewEngine(cfg Config) *Engine {
 			idleTimeout = 10 * time.Second
 		}
 		idleTimeouts[poolID] = idleTimeout
-		generations[poolID] = 1
 		slots := make([]int, pcfg.Concurrency)
 		// Mailboxes are allocated by spawnWorker per physical generation. Keeping
 		// this slice nil-initialized avoids allocating channels for every maximum
@@ -289,7 +287,6 @@ func NewEngine(cfg Config) *Engine {
 		workerRunning:       workerRunning,
 		workerIdleSince:     workerIdleSince,
 		workerCancels:       workerCancels,
-		poolGenerations:     generations,
 		resourceCapacity:    resourceCapacities,
 		resourceUsed:        make(map[string]int64, len(resourceCapacities)),
 		workerMailboxes:     mailboxes,

@@ -53,11 +53,9 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 		e.idleSlots[pool] = e.idleSlots[pool][1:]
 		e.workerIdleSince[pool][slotID] = time.Time{}
 		e.dispatchEpoch++
-		gen := e.poolGenerations[pool]
-		permit := newPermit(pool, slotID, gen, rec.spec.ID, e.dispatchEpoch, nil)
+		permit := newPermit(pool, slotID, rec.spec.ID, e.dispatchEpoch, nil)
 		rec.permit = permit
 		rec.dispatchEpoch = e.dispatchEpoch
-		rec.poolGeneration = gen
 		rec.state = tasks.StateDispatching
 		e.reserveResources(rec.spec)
 
@@ -297,7 +295,7 @@ func (e *Engine) applyWorkerStarted(id tasks.TaskID, grant *permit, startedAt ti
 	if grant == nil || rec.permit != grant {
 		return
 	}
-	if grant.generation != rec.poolGeneration || grant.dispatchEpoch != rec.dispatchEpoch {
+	if grant.dispatchEpoch != rec.dispatchEpoch {
 		return
 	}
 	rec.state = tasks.StateRunning

@@ -19,7 +19,6 @@ var (
 type permit struct {
 	pool          tasks.PoolID
 	workerID      int
-	generation    uint64
 	taskID        tasks.TaskID
 	dispatchEpoch uint64
 
@@ -28,8 +27,8 @@ type permit struct {
 	once      sync.Once
 }
 
-func newPermit(pool tasks.PoolID, workerID int, generation uint64, taskID tasks.TaskID, epoch uint64, onRelease func()) *permit {
-	return &permit{pool: pool, workerID: workerID, generation: generation, taskID: taskID, dispatchEpoch: epoch, onRelease: onRelease}
+func newPermit(pool tasks.PoolID, workerID int, taskID tasks.TaskID, epoch uint64, onRelease func()) *permit {
+	return &permit{pool: pool, workerID: workerID, taskID: taskID, dispatchEpoch: epoch, onRelease: onRelease}
 }
 
 func (p *permit) use(spec tasks.WorkSpec) error {
