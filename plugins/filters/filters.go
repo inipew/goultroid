@@ -345,7 +345,7 @@ func (p *Plugin) saveReply(ctx *core.Context, chatID int64, keyword string, repl
 			taskCore := uiCtx.WithContext(taskCtx)
 			response, captureErr := p.responses.CaptureReply(taskCore)
 			if captureErr != nil {
-				_ = taskCore.EditOrReply(fmt.Sprintf("⚠️ Could not capture replied response: %v", captureErr))
+				_ = taskCore.Fail(captureErr, "Could not capture replied response.")
 				return captureErr
 			}
 			return p.saveFilterResponseGuarded(taskCore, chatID, keyword, response, writeGuard)
