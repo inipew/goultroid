@@ -17,7 +17,6 @@ type inlineQueryAPI interface {
 }
 
 type assistantInlineQueryServicer struct {
-	unsupportedTelegramServicer
 	api         inlineQueryAPI
 	interaction *interaction.ClientInteraction
 }
@@ -102,126 +101,7 @@ func resolveMessageTarget(base interaction.MessageTarget, peer tg.InputPeerClass
 	return interaction.NewMessageTarget(tPeer, tMsgID, chatID, base.ChatInstance())
 }
 
-// unsupportedTelegramServicer implements core.TelegramServicer by returning core.ErrUnsupported
-// for all unhandled operations to prevent false successes.
-type unsupportedTelegramServicer struct{}
-
-var _ core.TelegramServicer = (*unsupportedTelegramServicer)(nil)
-
-func (u *unsupportedTelegramServicer) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerClass, msgID int, markup tg.ReplyMarkupClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) EditInlineBotMessage(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, text string, markup tg.ReplyMarkupClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) EditInlineBotMessageMarkup(ctx context.Context, inlineID tg.InputBotInlineMessageIDClass, markup tg.ReplyMarkupClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) AnswerCallbackQuery(ctx context.Context, queryID int64, text string, alert bool) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) AnswerInlineQuery(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, nextOffset string, cacheTime int) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) AnswerInlineQueryOptions(ctx context.Context, queryID int64, results []tg.InputBotInlineResultClass, opts core.InlineAnswerOptions) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) React(ctx context.Context, peer tg.InputPeerClass, msgID int, emoji string) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) PinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, silent bool) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) UnpinMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) ForwardMessages(ctx context.Context, fromPeer, toPeer tg.InputPeerClass, msgIDs []int) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) DownloadFile(ctx context.Context, location tg.InputFileLocationClass, dstPath string) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) BanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) UnbanUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) KickUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) MuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, untilDate int) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) UnmuteUser(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) PurgeMessages(ctx context.Context, peer tg.InputPeerClass, topicID int, fromID, toID int) (int, error) {
-	return 0, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) PromoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass, title string) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) DemoteAdmin(ctx context.Context, peer tg.InputPeerClass, user tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) EditChatDefaultBannedRights(ctx context.Context, peer tg.InputPeerClass, rights tg.ChatBannedRights) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) GetFullUser(ctx context.Context, user tg.InputUserClass) (*tg.UsersUserFull, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) ResolveUsername(ctx context.Context, username string) (*tg.ContactsResolvedPeer, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) UpdateProfile(ctx context.Context, firstName, lastName, about *string) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) BlockUser(ctx context.Context, peer tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) UnblockUser(ctx context.Context, peer tg.InputPeerClass) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) UploadProfilePhoto(ctx context.Context, filePath string) error {
-	return core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) DeleteProfilePhotos(ctx context.Context, limit int) (int, error) {
-	return 0, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) GetDialogs(ctx context.Context, limit int) ([]*core.Chat, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) GetContacts(ctx context.Context) ([]*core.User, error) {
-	return nil, core.ErrUnsupported
-}
-func (u *unsupportedTelegramServicer) IsBotSent(msgID int) bool {
-	return false
-}
+var _ inlineservice.TelegramAnswerer = (*assistantInlineQueryServicer)(nil)
 
 type callbackAnswerGuard struct {
 	mu        sync.Mutex
@@ -255,7 +135,6 @@ func (g *callbackAnswerGuard) Do(answer func() error) error {
 // assistantCallbackServicer is the narrow Telegram transport adapter used by
 // canonical core/plugin callback handlers for message-origin callbacks.
 type assistantCallbackServicer struct {
-	unsupportedTelegramServicer
 	queryID     int64
 	target      interaction.MessageTarget
 	interaction interaction.MessageInteraction
@@ -345,7 +224,6 @@ func (s *assistantCallbackServicer) SendMedia(ctx context.Context, peer tg.Input
 // assistantInlineCallbackServicer is the narrow Telegram transport adapter used
 // by canonical core/plugin callback handlers for inline-origin callbacks.
 type assistantInlineCallbackServicer struct {
-	unsupportedTelegramServicer
 	queryID     int64
 	target      interaction.InlineTarget
 	interaction interaction.InlineInteraction
@@ -355,6 +233,29 @@ type assistantInlineCallbackServicer struct {
 func newAssistantInlineCallbackServicer(queryID int64, target interaction.InlineTarget, inter interaction.InlineInteraction) *assistantInlineCallbackServicer {
 	return &assistantInlineCallbackServicer{queryID: queryID, target: target, interaction: inter}
 }
+
+type assistantMessageCallbackTransport interface {
+	AnswerCallbackQuery(context.Context, int64, string, bool) error
+	EditMessage(context.Context, tg.InputPeerClass, int, string) error
+	EditMessageMarkup(context.Context, tg.InputPeerClass, int, string, tg.ReplyMarkupClass) error
+	EditMessageMarkupOnly(context.Context, tg.InputPeerClass, int, tg.ReplyMarkupClass) error
+	DeleteMessage(context.Context, tg.InputPeerClass, []int) error
+	GetMessage(context.Context, tg.InputPeerClass, int) (*tg.Message, error)
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	SendMessageWithMarkup(context.Context, tg.InputPeerClass, string, tg.ReplyMarkupClass) (*tg.Message, error)
+	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
+}
+
+type assistantInlineCallbackTransport interface {
+	AnswerCallbackQuery(context.Context, int64, string, bool) error
+	EditInlineBotMessage(context.Context, tg.InputBotInlineMessageIDClass, string, tg.ReplyMarkupClass) error
+	EditInlineBotMessageMarkup(context.Context, tg.InputBotInlineMessageIDClass, tg.ReplyMarkupClass) error
+}
+
+var (
+	_ assistantMessageCallbackTransport = (*assistantCallbackServicer)(nil)
+	_ assistantInlineCallbackTransport  = (*assistantInlineCallbackServicer)(nil)
+)
 
 func (s *assistantInlineCallbackServicer) AnswerCallbackQuery(ctx context.Context, _ int64, text string, alert bool) error {
 	if s == nil || s.interaction == nil || s.queryID == 0 {

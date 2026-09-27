@@ -100,9 +100,10 @@ func (s *assistantAudienceTargetSource) Next(
 }
 
 type assistantAudienceBroadcastServicer struct {
-	unsupportedTelegramServicer
 	client *AssistantClient
 }
+
+var _ broadcastsvc.Sender = (*assistantAudienceBroadcastServicer)(nil)
 
 func (s *assistantAudienceBroadcastServicer) resolve(
 	ctx context.Context,

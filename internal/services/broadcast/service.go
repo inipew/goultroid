@@ -41,10 +41,16 @@ type BroadcastReport struct {
 
 type ProgressCallback func(report BroadcastReport)
 
+// Sender is the broadcast consumer-owned Telegram delivery boundary.
+type Sender interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
+}
+
 type BroadcastRequest struct {
 	Targets      []tg.InputPeerClass
 	TargetSource TargetSource
-	Sender       core.TelegramServicer
+	Sender       Sender
 	Response     savedresponse.Response
 	Vars         savedresponse.TemplateVars
 
@@ -64,8 +70,8 @@ type BroadcastRequest struct {
 }
 
 type Service struct {
-	svc       core.TelegramServicer
-	svcFunc   func() core.TelegramServicer
+	svc       Sender
+	svcFunc   func() Sender
 	logger    *zap.Logger
 	tasks     tasks.Client
 	responses *savedresponse.Service
@@ -84,10 +90,14 @@ func NewService(svc any, logger *zap.Logger) *Service {
 	s := &Service{logger: logger}
 	s.SetResponses(savedresponse.NewService(nil))
 	switch v := svc.(type) {
-	case core.TelegramServicer:
+	case Sender:
 		s.svc = v
-	case func() core.TelegramServicer:
+	case func() Sender:
 		s.svcFunc = v
+	case func() core.TelegramServicer:
+		// Temporary source compatibility for legacy factories. The returned
+		// aggregate is immediately narrowed to Sender.
+		s.svcFunc = func() Sender { return v() }
 	}
 	return s
 }
@@ -119,7 +129,7 @@ func (s *Service) CaptureReply(ctx *core.Context) (savedresponse.Response, error
 	return responses.CaptureReply(ctx)
 }
 
-func (s *Service) getService() core.TelegramServicer {
+func (s *Service) getService() Sender {
 	if s.svc != nil {
 		return s.svc
 	}

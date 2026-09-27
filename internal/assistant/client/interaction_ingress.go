@@ -276,7 +276,6 @@ func inlineBindingID(messageID tg.InputBotInlineMessageIDClass) string {
 }
 
 type interactionPresentationServicer struct {
-	unsupportedTelegramServicer
 	interaction *assistantinteraction.ClientInteraction
 
 	mu       sync.Mutex
@@ -289,6 +288,8 @@ func newInteractionPresentationServicer(interaction *assistantinteraction.Client
 		answered:    make(map[int64]struct{}),
 	}
 }
+
+var _ presentationtelegram.BridgeService = (*interactionPresentationServicer)(nil)
 
 func (s *interactionPresentationServicer) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	if s == nil || s.interaction == nil {
@@ -310,6 +311,19 @@ func (s *interactionPresentationServicer) EditMessageMarkup(ctx context.Context,
 	}
 	target := assistantinteraction.NewMessageTarget(peer, msgID, extractChatIDFromInputPeer(peer), 0)
 	return s.interaction.Edit(ctx, target, text, markup)
+}
+
+func (s *interactionPresentationServicer) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
+	if s == nil || s.interaction == nil {
+		return ErrInteractionUnavailable
+	}
+	for _, msgID := range msgIDs {
+		target := assistantinteraction.NewMessageTarget(peer, msgID, extractChatIDFromInputPeer(peer), 0)
+		if err := s.interaction.Delete(ctx, target); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *interactionPresentationServicer) SendMessageContext(

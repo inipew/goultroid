@@ -298,16 +298,10 @@ func TestCallbackServicers_FailClosed(t *testing.T) {
 	if err := msgSvc.AnswerCallbackQuery(ctx, 1, "test", false); !errors.Is(err, core.ErrInternal) {
 		t.Fatalf("message answer err=%v", err)
 	}
-	if err := msgSvc.EditInlineBotMessage(ctx, nil, "text", nil); !errors.Is(err, core.ErrUnsupported) {
-		t.Fatalf("message inline edit err=%v", err)
-	}
 
 	inlineSvc := &assistantInlineCallbackServicer{}
 	if err := inlineSvc.AnswerCallbackQuery(ctx, 1, "test", false); !errors.Is(err, core.ErrInternal) {
 		t.Fatalf("inline answer err=%v", err)
-	}
-	if err := inlineSvc.DeleteMessage(ctx, nil, []int{1}); !errors.Is(err, core.ErrUnsupported) {
-		t.Fatalf("inline delete err=%v", err)
 	}
 }
 
