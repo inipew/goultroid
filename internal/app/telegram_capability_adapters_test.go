@@ -7,6 +7,7 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/telegram"
+	"go.uber.org/zap"
 )
 
 type moduleTelegramRecorder struct {
@@ -110,5 +111,35 @@ func TestM2ModuleTelegramRuntimeForwardsThroughNarrowProviders(t *testing.T) {
 			recorder.mediaSends,
 			recorder.originCalls,
 		)
+	}
+}
+
+func TestM2ModuleTelegramRuntimeBindsConcreteDispatcherCapabilities(t *testing.T) {
+	service := &telegram.Service{}
+	dispatcher := telegram.NewDispatcher(
+		core.NewRouter("."),
+		core.NewPermissions(1, nil),
+		service,
+		zap.NewNop(),
+	)
+	runtime := newModuleTelegramRuntime(dispatcher)
+
+	if got := runtime.MessageService(); got != service {
+		t.Fatalf("message provider = %T %p, want concrete service %p", got, got, service)
+	}
+	if got := runtime.AdminService(); got != service {
+		t.Fatalf("admin provider = %T %p, want concrete service %p", got, got, service)
+	}
+	if got := runtime.MediaService(); got != service {
+		t.Fatalf("media provider = %T %p, want concrete service %p", got, got, service)
+	}
+	if got := runtime.ContextualMessageService(); got != service {
+		t.Fatalf("contextual message provider = %T %p, want concrete service %p", got, got, service)
+	}
+	if got := runtime.ContextualMediaService(); got != service {
+		t.Fatalf("contextual media provider = %T %p, want concrete service %p", got, got, service)
+	}
+	if got := runtime.OriginTracker(); got != service {
+		t.Fatalf("origin provider = %T %p, want concrete service %p", got, got, service)
 	}
 }

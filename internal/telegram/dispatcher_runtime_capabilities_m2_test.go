@@ -20,24 +20,24 @@ func TestM2RuntimeServiceKeepsNarrowCapabilitiesWithoutCompatAggregate(t *testin
 	if dispatcher.Service() != nil {
 		t.Fatal("runtime service unexpectedly populated compatibility Dispatcher.Service")
 	}
-	if dispatcher.MessageService() == nil {
-		t.Fatal("runtime message capability is nil")
+	if got := dispatcher.MessageService(); got != service {
+		t.Fatalf("runtime message capability = %T %p, want service %p", got, got, service)
 	}
-	if dispatcher.AdminService() == nil {
-		t.Fatal("runtime admin capability is nil")
+	if got := dispatcher.AdminService(); got != service {
+		t.Fatalf("runtime admin capability = %T %p, want service %p", got, got, service)
 	}
-	if dispatcher.MediaService() == nil {
-		t.Fatal("runtime media capability is nil")
+	if got := dispatcher.MediaService(); got != service {
+		t.Fatalf("runtime media capability = %T %p, want service %p", got, got, service)
 	}
-	if dispatcher.OriginTracker() == nil {
-		t.Fatal("runtime origin tracker is nil")
+	if got := dispatcher.OriginTracker(); got != service {
+		t.Fatalf("runtime origin tracker = %T %p, want service %p", got, got, service)
 	}
-	if dispatcher.SelfInlineTransport() == nil {
-		t.Fatal("runtime self-inline transport is nil")
+	if got := dispatcher.SelfInlineTransport(); got != service {
+		t.Fatalf("runtime self-inline transport = %T %p, want service %p", got, got, service)
 	}
 
 	client := &Client{dispatcher: dispatcher}
-	if client.SelfInlineTransport() == nil {
-		t.Fatal("client self-inline transport is nil")
+	if got := client.SelfInlineTransport(); got != service {
+		t.Fatalf("client self-inline transport = %T %p, want service %p", got, got, service)
 	}
 }
