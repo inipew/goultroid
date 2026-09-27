@@ -2,10 +2,52 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline for the P3-A high-cardinality benchmark harness: `aeae302d125bf1e5ac39df9671c0ea6b026bd10e` — `bench(refinement): add p3-a high-cardinality probes`
-Purpose: execute and record **P3-A benchmark measurements** before any optimization. P2-D remains closed; P3-A is NOT CLOSED until real benchmark numbers are captured.
+Current audited implementation baseline after P3-B completion-drain refinement: `440c9ba977ecaa95da4cf9ce232305915f2a3936` — `refactor(taskengine): make completion drain event-driven`
+Purpose: finish **P3-A benchmark measurements** before any P3-C optimization. P3-B is CLOSED; P3-A remains OPEN until real benchmark numbers are captured.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+
+## 2026-09-27 P3-B closure update
+
+P3-B is **CLOSED** at `440c9ba977ecaa95da4cf9ce232305915f2a3936` (`refactor(taskengine): make completion drain event-driven`).
+
+Fresh source audit confirmed the historical issue still existed specifically in `internal/taskengine/delivery.go`: `completionDelivery.drain()` polled `pending`, `active`, and queue length with a 1 ms `time.NewTicker`. The main TaskEngine admitted-task drain was already event-driven through `drainDone`; only completion callback settlement still polled.
+
+The completion delivery lane now uses a generation-scoped broadcast drain channel:
+
+```text
+first callback enqueue in a drained generation
+  -> markBusy()
+  -> fresh open drainCh
+
+pending/active callback transition to zero
+  -> signalDrained()
+  -> close(drainCh)
+  -> broadcast to every concurrent drain waiter
+
+Drain(ctx)
+  -> wait on drainCh OR ctx.Done()
+```
+
+Properties preserved:
+
+- no permanent drain worker or ticker;
+- lazy completion workers remain unchanged;
+- callback queue ordering/concurrency semantics remain unchanged;
+- multiple concurrent drain waiters receive the same close broadcast;
+- caller context/deadline remains the hard upper bound;
+- graceful `Stop(ctx)` still uses the existing global shutdown context;
+- forced stop behavior and callback reservation/backpressure semantics remain unchanged.
+
+Regression coverage:
+
+- `internal/taskengine/delivery_drain_test.go` verifies active callbacks block drain, concurrent drain waiters all wake, and deadline cancellation wins;
+- `internal/architecture/taskengine_completion_drain_p3b_test.go` rejects `time.NewTicker`, `time.Sleep`, and `time.After` inside `completionDelivery.drain()` and requires the event-driven drain signal boundary.
+
+All changed Go files were run through local `gofmt` before commit. CI was not inspected. A complete executable checkout/module cache is still unavailable in this environment, so this closure does **not** claim `go test`, `go test -race`, `go vet`, or full repository build execution.
+
+**P3-B is CLOSED. P3-A measurements remain OPEN, therefore P3-C is still blocked on measurement evidence.**
 
 
 ## 2026-09-27 P3-A high-cardinality benchmark harness update
@@ -1238,26 +1280,46 @@ Do not advance to P3-C until these measurements exist. Do not claim benchmark nu
 
 ---
 
-# 18. P3-B — event-driven TaskEngine completion drain if polling still exists
+# 18. P3-B — event-driven TaskEngine completion drain — CLOSED
 
-Refresh source first. Historical audit mentioned short polling in completion drain/shutdown; it may already be changed.
+Status: **CLOSED** at `440c9ba977ecaa95da4cf9ce232305915f2a3936`.
 
-Only if current source still polls:
+Current-source audit found one remaining polling drain:
 
 ```text
-pending/active transition
- -> drained signal/channel/condition
+completionDelivery.drain()
+  -> time.NewTicker(1ms)
+  -> poll pending / active / queue
 ```
 
-Constraints:
+The admitted-task coordinator path was already event-driven with `drainDone`, so P3-B changed only completion callback settlement.
 
-- no permanent worker;
-- no deadlock;
-- global shutdown deadline wins;
-- completion ordering preserved;
-- shutdown idempotent.
+Current design:
 
-If no polling remains, record P3-B as intentionally skipped/already satisfied.
+```text
+enqueue callback
+  -> mark current drain generation busy
+
+last pending/active callback settles
+  -> close generation drainCh
+
+Drain(ctx)
+  -> wait on drainCh or ctx.Done()
+```
+
+Closing the generation channel broadcasts to all current waiters and avoids a one-consumer wakeup race. A later callback generation installs a new open channel before publishing pending work.
+
+Acceptance:
+
+- no polling ticker/sleep/after in `completionDelivery.drain()`;
+- no permanent drain goroutine;
+- multiple waiters are supported;
+- callback ordering and bounded delivery queue are unchanged;
+- shutdown deadline/context still wins;
+- existing lazy-worker retirement behavior is unchanged;
+- architecture regression fence prevents polling reintroduction.
+
+Verification limitation: source/diff acceptance plus local `gofmt` only; no claim of executed repository tests/race/build in the current container.
 
 ---
 
@@ -1456,21 +1518,20 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. P1-F and P2-A/B/C/D are CLOSED. P3-A high-cardinality benchmark harness is committed at `aeae302d125bf1e5ac39df9671c0ea6b026bd10e`, but P3-A is still OPEN because no real benchmark results have been recorded in this environment. On a real checkout, run the Inline/cache and generic rate-limiter P3-A commands from `docs/design/goultroid-refinement-p3a-high-cardinality-benchmark.md`, record environment plus `ns/op`, `B/op`, `allocs/op`, and only then decide whether any hotspot merits P3-C optimization. Do not optimize from historical suspicion. Do not inspect CI unless explicitly requested.
+> Refresh `test-next` HEAD and current source. P1-F and P2-A/B/C/D are CLOSED. P3-B completion drain is CLOSED at `440c9ba977ecaa95da4cf9ce232305915f2a3936` with event-driven generation-channel broadcast and no polling in `completionDelivery.drain()`. P3-A high-cardinality benchmark harness is present, but P3-A measurements are still OPEN. Continue by executing and recording the P3-A Inline/cache/generic-limiter benchmark results on a real checkout. Do not start P3-C optimization until those measurements exist. Do not inspect CI unless explicitly requested.
 
 Important baseline:
 
 ```text
 P1-F: CLOSED
 P2-A/B/C/D: CLOSED
-P3-A benchmark harness: IMPLEMENTED
+P3-A harness: IMPLEMENTED
 P3-A measurements: OPEN
-benchmark harness baseline: aeae302d125bf1e5ac39df9671c0ea6b026bd10e
-inline cardinality: through 4096 handlers
-inline cache hard cap: 500 entries
-generic limiter hard cap: 4096 buckets
-production changes in P3-A harness commit: none
-NEXT: execute P3-A benchmarks and capture real measurements
+P3-B: CLOSED at 440c9ba977ecaa95da4cf9ce232305915f2a3936
+TaskEngine admitted-task drain: drainDone channel
+TaskEngine completion drain: event-driven drainCh generation broadcast
+completion drain polling: zero
+P3-C: BLOCKED on P3-A measurements
 ```
 
 ---
@@ -1502,7 +1563,7 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-P1-F and P2-A/B/C/D CLOSED.
-P3-A high-cardinality Inline/cache/generic-limiter benchmark harness committed at aeae302d.
-Measurements are still OPEN; run and record them before any P3-C optimization.
+P1-F and P2-A/B/C/D CLOSED; P3-B CLOSED at 440c9ba9 with event-driven completion drain.
+P3-A benchmark harness exists but measurements remain OPEN.
+NEXT = execute/capture P3-A measurements; P3-C stays blocked until evidence exists.
 ```
