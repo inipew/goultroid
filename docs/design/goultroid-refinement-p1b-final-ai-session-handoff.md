@@ -2,10 +2,30 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after the P3-A production-cardinality benchmark update: `f265c010a1515a3e6b730622e23dc7c8c00d61e9` — `bench(inline): add production matcher cardinality`
+Current audited implementation baseline after the P3-A lifecycle-active cache benchmark update: `da3527163d6078f0fb250893c902fee299709dab` — `bench(inline): cover active cache churn`
 Purpose: finish **P3-A real-checkout benchmark measurements** before any P3-C optimization. P3-B is CLOSED; P3-A remains OPEN.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+
+## 2026-09-27 P3-A lifecycle-active cache diagnostic update
+
+Production wiring confirms `inlineEngine.Cache()` is registered into the application runtime, so its prune coordinator is active in normal operation.
+
+The P3-A suite now includes `BenchmarkCacheStartedSaturatedChurnP3A` at `da3527163d6078f0fb250893c902fee299709dab` (`bench(inline): cover active cache churn`).
+
+Five-run source-isolated medians with lifecycle active:
+
+```text
+working-set 501   ~32.6 µs/op
+working-set 4096  ~40.9 µs/op
+```
+
+The earlier 500-entry expiry scan diagnostic was ~7.2 µs/op. At the cache's source-derived saturation threshold (~16.7 new distinct Wikipedia keys/s over the 30-second local TTL), caller-side churn is only ~0.068% of one core; even adding one full expiry scan per insert as a conservative upper bound is ~0.080% of one core.
+
+Therefore current evidence does **not** justify a cache data-structure optimization. Combined with production custom matcher cardinality = 2, no current P3-C candidate has material diagnostic evidence.
+
+P3-A remains formally OPEN solely because the handoff acceptance gate requires real-complete-checkout measurements. If those measurements confirm the current order of magnitude, P3-C should be explicitly skipped rather than optimized.
 
 
 ## 2026-09-27 P3-A production-cardinality update

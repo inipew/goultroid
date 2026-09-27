@@ -46,6 +46,7 @@ Benchmarks:
 
 - `BenchmarkCacheHighCardinalityP3A`
 - `BenchmarkCacheSaturatedChurnP3A`
+- `BenchmarkCacheStartedSaturatedChurnP3A`
 - `BenchmarkCacheNextExpiry500P3A`
 
 Current production bounds:
@@ -62,7 +63,8 @@ Matrix:
 |---|---|
 | GetScoped hit | 1, 16, 64, 256, 500 |
 | fill from empty | 1, 16, 64, 256, 500 |
-| saturated churn | 501, 4096 |
+| saturated churn, cache lifecycle inactive | 501, 4096 |
+| saturated churn, cache lifecycle active | 501, 4096 |
 | next-expiry scan | 500 |
 
 The churn benchmark pre-fills the cache to the production hard cap, then rotates a working set larger than capacity so inserts exercise bounded eviction instead of a steady-state overwrite.
@@ -314,10 +316,69 @@ inline exact lookup          -> NO optimization evidence
 inline custom matcher scan   -> NO current production optimization evidence (cardinality = 2)
 inline cache hit             -> NO optimization evidence
 limiter forced sweep         -> bounded diagnostic cost; no action
-inline cache saturated churn -> ONLY remaining confirmation candidate
+inline cache saturated churn -> bounded diagnostic cost; no preemptive optimization
 ```
 
 This further narrows P3-C, but does not close P3-A: a real checkout benchmark is still required by the refinement gate.
+
+---
+
+## 6.6 Production-lifecycle cache churn diagnostic
+
+A second source audit confirmed that the Inline cache **is** started in production. `internal/app/app.go` registers `inlineEngine.Cache()` as a runtime component, so the deadline-driven prune coordinator is active during normal application lifecycle.
+
+The original churn proxy measured `SetScoped` without `Cache.Start()`. P3-A therefore added a lifecycle-active benchmark at:
+
+`da3527163d6078f0fb250893c902fee299709dab` — `bench(inline): cover active cache churn`.
+
+Source-isolated lifecycle-active median of five runs:
+
+| Case | median ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| started churn / working-set 501 | 32,640 | ~436 | 2 |
+| started churn / working-set 4096 | 40,942 | ~457 | 2 |
+
+This includes caller-visible lock/wakeup contention with the prune coordinator active. It still does not claim full-repository benchmark acceptance.
+
+For context, the separately measured 500-entry `nextExpiry()` scan was ~7.2 µs/op. Treating the 4096 working-set caller cost plus a full expiry scan on **every** distinct insert as a deliberately conservative upper-bound approximation gives ~48.2 µs of CPU work per insert.
+
+At the source-derived saturation threshold:
+
+```text
+500 unique cacheable keys / 30 s
+≈ 16.7 distinct inserts/s
+```
+
+the diagnostic CPU budget is approximately:
+
+```text
+40.9 µs * 16.7/s ≈ 0.68 ms CPU/s ≈ 0.068% of one core
+(40.9 + 7.2) µs * 16.7/s ≈ 0.80 ms CPU/s ≈ 0.080% of one core
+```
+
+For scale only, not as assumed traffic:
+
+```text
+100 distinct inserts/s  -> ~0.41% one core caller-side
+1000 distinct inserts/s -> ~4.09% one core caller-side
+```
+
+These figures are diagnostic arithmetic, not observed production traffic.
+
+### Updated optimization decision
+
+Current evidence no longer identifies a measured-enough hotspot worth opening P3-C:
+
+```text
+generic limiter hot path     -> NO optimization evidence
+inline exact lookup          -> NO optimization evidence
+inline custom matcher scan   -> NO current production evidence; cardinality = 2
+inline cache hit             -> NO optimization evidence
+inline cache started churn   -> bounded absolute cost; NO preemptive optimization
+limiter forced sweep         -> bounded / gated; NO preemptive optimization
+```
+
+P3-A remains formally OPEN only because the refinement acceptance contract requires execution against a real complete checkout. P3-C must still not start before that gate, but current diagnostics indicate that P3-C may ultimately be **intentionally skipped** if real-checkout numbers confirm the same order of magnitude.
 
 ---
 
