@@ -61,7 +61,6 @@ type GroupMutationExecutor interface {
 // assistantServicerAdapter adapts Assistant MessageInteraction into the command-context
 // Telegram capabilities used by canonical handlers.
 type assistantServicerAdapter struct {
-	core.MockTelegramServicer
 	inter            interaction.MessageInteraction
 	groupQuery       GroupQueryReader
 	groupMutation    GroupMutationExecutor
@@ -79,21 +78,21 @@ func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.Inpu
 	if a.inter != nil {
 		return a.inter.SendMessage(ctx, peer, text, nil)
 	}
-	return a.MockTelegramServicer.SendMessage(ctx, peer, text)
+	return nil, fmt.Errorf("%w: assistant message interaction is unavailable", core.ErrUnavailable)
 }
 
 func (a *assistantServicerAdapter) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
 	if a.inter != nil {
 		return a.inter.SendMessage(ctx, peer, text, markup)
 	}
-	return a.MockTelegramServicer.SendMessageWithMarkup(ctx, peer, text, markup)
+	return nil, fmt.Errorf("%w: assistant message interaction is unavailable", core.ErrUnavailable)
 }
 
 func (a *assistantServicerAdapter) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType string, filePath string, caption string) (*tg.Message, error) {
 	if a.inter != nil {
 		return a.inter.SendMedia(ctx, peer, mediaType, filePath, caption)
 	}
-	return a.MockTelegramServicer.SendMedia(ctx, peer, mediaType, filePath, caption)
+	return nil, fmt.Errorf("%w: assistant media interaction is unavailable", core.ErrUnavailable)
 }
 
 func (a *assistantServicerAdapter) SendMessageContext(
@@ -141,7 +140,7 @@ func (a *assistantServicerAdapter) EditMessage(ctx context.Context, peer tg.Inpu
 		chatID := extractChatIDFromInputPeer(peer)
 		return a.inter.Edit(ctx, interaction.NewMessageTarget(peer, msgID, chatID, 0), text, nil)
 	}
-	return a.MockTelegramServicer.EditMessage(ctx, peer, msgID, text)
+	return fmt.Errorf("%w: assistant message interaction is unavailable", core.ErrUnavailable)
 }
 
 func (a *assistantServicerAdapter) EditMessageMarkup(ctx context.Context, peer tg.InputPeerClass, msgID int, text string, markup tg.ReplyMarkupClass) error {
@@ -149,7 +148,7 @@ func (a *assistantServicerAdapter) EditMessageMarkup(ctx context.Context, peer t
 		chatID := extractChatIDFromInputPeer(peer)
 		return a.inter.Edit(ctx, interaction.NewMessageTarget(peer, msgID, chatID, 0), text, markup)
 	}
-	return a.MockTelegramServicer.EditMessageMarkup(ctx, peer, msgID, text, markup)
+	return fmt.Errorf("%w: assistant message interaction is unavailable", core.ErrUnavailable)
 }
 
 func (a *assistantServicerAdapter) EditMessageMarkupOnly(ctx context.Context, peer tg.InputPeerClass, msgID int, markup tg.ReplyMarkupClass) error {
@@ -157,18 +156,20 @@ func (a *assistantServicerAdapter) EditMessageMarkupOnly(ctx context.Context, pe
 		chatID := extractChatIDFromInputPeer(peer)
 		return a.inter.EditMarkup(ctx, interaction.NewMessageTarget(peer, msgID, chatID, 0), markup)
 	}
-	return a.MockTelegramServicer.EditMessageMarkupOnly(ctx, peer, msgID, markup)
+	return fmt.Errorf("%w: assistant message interaction is unavailable", core.ErrUnavailable)
 }
 
 func (a *assistantServicerAdapter) DeleteMessage(ctx context.Context, peer tg.InputPeerClass, msgIDs []int) error {
-	if a.inter != nil {
-		chatID := extractChatIDFromInputPeer(peer)
-		for _, id := range msgIDs {
-			_ = a.inter.Delete(ctx, interaction.NewMessageTarget(peer, id, chatID, 0))
-		}
-		return nil
+	if a.inter == nil {
+		return fmt.Errorf("%w: assistant message interaction is unavailable", core.ErrUnavailable)
 	}
-	return a.MockTelegramServicer.DeleteMessage(ctx, peer, msgIDs)
+	chatID := extractChatIDFromInputPeer(peer)
+	for _, id := range msgIDs {
+		if err := a.inter.Delete(ctx, interaction.NewMessageTarget(peer, id, chatID, 0)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *assistantServicerAdapter) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
@@ -176,7 +177,7 @@ func (a *assistantServicerAdapter) GetMessage(ctx context.Context, peer tg.Input
 		chatID := extractChatIDFromInputPeer(peer)
 		return a.inter.GetMessage(ctx, interaction.NewMessageTarget(peer, msgID, chatID, 0))
 	}
-	return a.MockTelegramServicer.GetMessage(ctx, peer, msgID)
+	return nil, fmt.Errorf("%w: assistant message interaction is unavailable", core.ErrUnavailable)
 }
 
 func (a *assistantServicerAdapter) GetFullChat(ctx context.Context, peer tg.InputPeerClass) (*tg.MessagesChatFull, error) {
@@ -184,6 +185,54 @@ func (a *assistantServicerAdapter) GetFullChat(ctx context.Context, peer tg.Inpu
 		return nil, ErrGroupQueryUnavailable
 	}
 	return a.groupQuery.GetFullChat(ctx, peer)
+}
+
+func (*assistantServicerAdapter) React(context.Context, tg.InputPeerClass, int, string) error {
+	return core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) ForwardMessages(context.Context, tg.InputPeerClass, tg.InputPeerClass, []int) error {
+	return core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) DownloadFile(context.Context, tg.InputFileLocationClass, string) error {
+	return core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) GetFullUser(context.Context, tg.InputUserClass) (*tg.UsersUserFull, error) {
+	return nil, core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) ResolveUsername(context.Context, string) (*tg.ContactsResolvedPeer, error) {
+	return nil, core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) BlockUser(context.Context, tg.InputPeerClass) error {
+	return core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) UnblockUser(context.Context, tg.InputPeerClass) error {
+	return core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) UpdateProfile(context.Context, *string, *string, *string) error {
+	return core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) UploadProfilePhoto(context.Context, string) error {
+	return core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) DeleteProfilePhotos(context.Context, int) (int, error) {
+	return 0, core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) GetDialogs(context.Context, int) ([]*core.Chat, error) {
+	return nil, core.ErrUnsupported
+}
+
+func (*assistantServicerAdapter) GetContacts(context.Context) ([]*core.User, error) {
+	return nil, core.ErrUnsupported
 }
 
 func (a *assistantServicerAdapter) executeGroupMutation(
