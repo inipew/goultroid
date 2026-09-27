@@ -208,7 +208,11 @@ func (c *Client) API() *tg.Client {
 	return c.raw.API()
 }
 
-// Service returns the TelegramServicer instance.
+// Service returns the legacy aggregate configured through the compatibility
+// dispatcher injection path.
+//
+// Deprecated: production composition must use capability-sized dispatcher or
+// presentation accessors instead.
 func (c *Client) Service() core.TelegramServicer {
 	if c == nil || c.dispatcher == nil {
 		return nil

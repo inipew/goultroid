@@ -876,7 +876,7 @@ func (p *Plugin) deliverResponse(
 	}
 	_, err := p.delivery.DeliverCompiled(ctx, response, template, vars, savedresponse.DeliverySink{
 		SendMedia: func(mediaType, path, caption string) error {
-			if contextual, ok := svc.(core.ContextualTelegramServicer); ok {
+			if contextual, ok := svc.(core.ContextualMediaServicer); ok {
 				_, sendErr := contextual.SendMediaContext(ctx, peer, mediaType, path, caption, sendContext)
 				return sendErr
 			}
@@ -887,7 +887,7 @@ func (p *Plugin) deliverResponse(
 			return sendErr
 		},
 		SendText: func(text string) error {
-			if contextual, ok := svc.(core.ContextualTelegramServicer); ok {
+			if contextual, ok := svc.(core.ContextualMessageServicer); ok {
 				_, sendErr := contextual.SendMessageContext(ctx, peer, text, nil, sendContext)
 				return sendErr
 			}
