@@ -49,7 +49,7 @@ func (t InlineTarget) TargetBinding() (interaction.TargetBinding, bool) {
 }
 
 type Bridge struct {
-	Service core.TelegramServicer
+	Service BridgeService
 }
 
 var _ presentation.Port = (*Bridge)(nil)
@@ -57,7 +57,7 @@ var _ presentation.MediaDeliverer = (*Bridge)(nil)
 var _ presentation.SessionTarget = MessageTarget{}
 var _ presentation.SessionTarget = InlineTarget{}
 
-func NewBridge(service core.TelegramServicer) *Bridge {
+func NewBridge(service BridgeService) *Bridge {
 	return &Bridge{Service: service}
 }
 
@@ -116,7 +116,7 @@ func (b *Bridge) DeliverMedia(ctx context.Context, target presentation.Target, m
 		if t.Peer == nil || t.ChatID == 0 || t.MessageID <= 0 {
 			return ErrInvalidTarget
 		}
-		if contextual, ok := b.Service.(core.ContextualTelegramServicer); ok {
+		if contextual, ok := b.Service.(core.ContextualMediaServicer); ok {
 			_, err := contextual.SendMediaContext(ctx, t.Peer, media.Type, media.Path, media.Caption, core.MessageSendContext{ReplyToID: t.MessageID})
 			return err
 		}

@@ -785,12 +785,12 @@ func (e *Engine) Cache() *Cache {
 }
 
 // Execute processes an incoming inline query and answers Telegram via the provided service.
-func (e *Engine) Execute(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string) error {
+func (e *Engine) Execute(ctx context.Context, svc TelegramAnswerer, queryID int64, userID int64, rawQuery string, offset string) error {
 	return e.ExecuteWithPeerType(ctx, svc, queryID, userID, rawQuery, offset, nil)
 }
 
 // ExecuteWithPeerType processes an incoming inline query with peer context and answers Telegram.
-func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass) error {
+func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc TelegramAnswerer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass) error {
 	if e != nil && e.dynamic != nil {
 		if prepared, err := e.PrepareContext(ctx, rawQuery); err == nil {
 			return e.executeWithPeerType(ctx, svc, queryID, userID, prepared.query, offset, peerType, &prepared.resolved)
@@ -803,11 +803,11 @@ func (e *Engine) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServi
 
 // ExecutePreparedWithPeerType executes an admission-time match and rejects it if
 // plugin lifecycle replaced or removed the registration before execution.
-func (e *Engine) ExecutePreparedWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, prepared PreparedQuery, offset string, peerType tg.InlineQueryPeerTypeClass) error {
+func (e *Engine) ExecutePreparedWithPeerType(ctx context.Context, svc TelegramAnswerer, queryID int64, userID int64, prepared PreparedQuery, offset string, peerType tg.InlineQueryPeerTypeClass) error {
 	return e.executeWithPeerType(ctx, svc, queryID, userID, prepared.query, offset, peerType, &prepared.resolved)
 }
 
-func (e *Engine) executeWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass, prepared *Resolved) error {
+func (e *Engine) executeWithPeerType(ctx context.Context, svc TelegramAnswerer, queryID int64, userID int64, rawQuery string, offset string, peerType tg.InlineQueryPeerTypeClass, prepared *Resolved) error {
 	start := time.Now()
 	trimmed := strings.TrimSpace(rawQuery)
 	correlationID := fmt.Sprintf("inline-%d-%d", queryID, time.Now().UnixNano())
@@ -1174,7 +1174,7 @@ var defaultSerializers = NewSerializerRegistry()
 
 func (e *Engine) serializeResultsForAnswer(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc TelegramAnswerer,
 	results []InlineResult,
 ) ([]tg.InputBotInlineResultClass, error) {
 	if !hasLocalMedia(results) {

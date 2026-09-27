@@ -51,7 +51,7 @@ type UpdateHandlerDeps struct {
 	CacheEntities      func(e tg.Entities)
 	IsShuttingDown     func() bool
 	InlineEngine       InlineQueryExecutor
-	InlineService      core.TelegramServicer
+	InlineService      inlineservice.TelegramAnswerer
 	Tasks              tasks.Client
 	InteractionIngress interactionIngressPort
 	RelayIngress       relayMessageIngress
@@ -372,8 +372,8 @@ func submitAssistantGroupRules(
 // InlineQueryExecutor is the Assistant-facing subset of the shared inline engine.
 type InlineQueryExecutor interface {
 	Prepare(string) (inlineservice.PreparedQuery, error)
-	ExecuteWithPeerType(context.Context, core.TelegramServicer, int64, int64, string, string, tg.InlineQueryPeerTypeClass) error
-	ExecutePreparedWithPeerType(context.Context, core.TelegramServicer, int64, int64, inlineservice.PreparedQuery, string, tg.InlineQueryPeerTypeClass) error
+	ExecuteWithPeerType(context.Context, inlineservice.TelegramAnswerer, int64, int64, string, string, tg.InlineQueryPeerTypeClass) error
+	ExecutePreparedWithPeerType(context.Context, inlineservice.TelegramAnswerer, int64, int64, inlineservice.PreparedQuery, string, tg.InlineQueryPeerTypeClass) error
 }
 
 type assistantGroupServiceChat struct {

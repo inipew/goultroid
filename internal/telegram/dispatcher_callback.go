@@ -167,7 +167,7 @@ func (d *Dispatcher) dispatchNativeInteraction(ctx context.Context, event *core.
 		if !rootinteraction.OwnsCallbackData(event.Data) {
 			return false
 		}
-		if svc := d.getService(); svc != nil {
+		if svc := d.getCallbackAnswerer(); svc != nil {
 			_ = svc.AnswerCallbackQuery(ctx, event.QueryID, "Interaction service unavailable.", false)
 		}
 		return true
@@ -192,7 +192,7 @@ func (d *Dispatcher) answerUnknownCallback(ctx context.Context, event *core.Call
 	if string(event.Data) == "noop" {
 		text = ""
 	}
-	if svc := d.getService(); svc != nil {
+	if svc := d.getCallbackAnswerer(); svc != nil {
 		_ = svc.AnswerCallbackQuery(ctx, event.QueryID, text, false)
 	}
 }
@@ -214,7 +214,7 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 				zap.Int64("query_id", update.QueryID),
 				zap.Error(claimErr),
 			)
-			if svc := d.getService(); svc != nil {
+			if svc := d.getCallbackAnswerer(); svc != nil {
 				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
 			}
 			return nil
@@ -256,7 +256,7 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 				zap.Int64("query_id", update.QueryID),
 				zap.Error(claimErr),
 			)
-			if svc := d.getService(); svc != nil {
+			if svc := d.getCallbackAnswerer(); svc != nil {
 				_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
 			}
 			return nil
@@ -305,7 +305,7 @@ func (d *Dispatcher) OnBotInlineQuery(ctx context.Context, e tg.Entities, update
 			OrderingKey:      fmt.Sprintf("inline:%d", update.QueryID),
 			ExecutionTimeout: 5 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				return engine.ExecuteWithPeerType(taskCtx, d.getService(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
+				return engine.ExecuteWithPeerType(taskCtx, d.getInlineAnswerer(), update.QueryID, update.UserID, update.Query, update.Offset, update.PeerType)
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
 		})

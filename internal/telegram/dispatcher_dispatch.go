@@ -55,12 +55,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 
 	origin := core.ExecutionInteractive
 	if msg.Out {
-		svc := d.getService()
+		svc := d.getOriginTracker()
 		if svc != nil {
-			type peerAwareBotSent interface {
-				IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool
-			}
-			if tracker, ok := svc.(peerAwareBotSent); ok {
+			if tracker, ok := svc.(peerAwareBotOriginTracker); ok {
 				if tracker.IsBotSentForPeer(msg.PeerID, msg.ID, d.getSelfID()) {
 					origin = core.ExecutionAutomation
 				}
@@ -230,7 +227,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		Chat:      chat,
 		Sender:    sender,
 		Perms:     d.perms,
-		Telegram:  core.TelegramCapabilitiesFrom(d.getService()),
+		Telegram:  core.TelegramCapabilitiesFrom(d.getCommandService()),
 		PeerID:    peerInput,
 		Resolver:  d.getResolver(),
 		Localizer: localizer,

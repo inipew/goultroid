@@ -279,7 +279,7 @@ func (failingInlineExecutor) Prepare(string) (inlineservice.PreparedQuery, error
 
 func (failingInlineExecutor) ExecuteWithPeerType(
 	context.Context,
-	core.TelegramServicer,
+	inlineservice.TelegramAnswerer,
 	int64,
 	int64,
 	string,
@@ -291,7 +291,7 @@ func (failingInlineExecutor) ExecuteWithPeerType(
 
 func (failingInlineExecutor) ExecutePreparedWithPeerType(
 	context.Context,
-	core.TelegramServicer,
+	inlineservice.TelegramAnswerer,
 	int64,
 	int64,
 	inlineservice.PreparedQuery,

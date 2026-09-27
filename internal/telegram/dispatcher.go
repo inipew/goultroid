@@ -26,7 +26,7 @@ type NativeInteractionDispatcher interface {
 type Dispatcher struct {
 	router             *core.Router
 	perms              *core.Permissions
-	svc                core.TelegramServicer
+	svc                DispatcherService
 	logger             *zap.Logger
 	cooldown           *core.CooldownTracker
 	executor           *core.CommandExecutor
@@ -90,7 +90,7 @@ func (d *Dispatcher) resolvePluginScope(owner string) (tasks.ScopeIdentity, bool
 type DispatcherDeps struct {
 	Router       *core.Router
 	Permissions  *core.Permissions
-	Service      core.TelegramServicer
+	Service      DispatcherService
 	Logger       *zap.Logger
 	EventBus     *core.EventBus
 	Localizer    core.Localizer
@@ -133,7 +133,7 @@ func NewDispatcherWithDeps(deps DispatcherDeps) (*Dispatcher, error) {
 func NewDispatcher(
 	router *core.Router,
 	perms *core.Permissions,
-	svc core.TelegramServicer,
+	svc DispatcherService,
 	logger *zap.Logger,
 ) *Dispatcher {
 	if logger == nil {

@@ -165,7 +165,7 @@ type recordingInlineExecutor struct {
 	peerType tg.InlineQueryPeerTypeClass
 }
 
-func (e *recordingInlineExecutor) ExecuteWithPeerType(ctx context.Context, svc core.TelegramServicer, queryID, userID int64, query, offset string, peerType tg.InlineQueryPeerTypeClass) error {
+func (e *recordingInlineExecutor) ExecuteWithPeerType(ctx context.Context, svc inlineservice.TelegramAnswerer, queryID, userID int64, query, offset string, peerType tg.InlineQueryPeerTypeClass) error {
 	e.called, e.queryID, e.userID, e.query, e.offset, e.peerType = true, queryID, userID, query, offset, peerType
 	return svc.AnswerInlineQueryOptions(ctx, queryID, []tg.InputBotInlineResultClass{
 		&tg.InputBotInlineResult{ID: "result-1", Type: "article", Title: "Result"},
@@ -178,7 +178,7 @@ func (e *recordingInlineExecutor) Prepare(string) (inlineservice.PreparedQuery, 
 
 func (e *recordingInlineExecutor) ExecutePreparedWithPeerType(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc inlineservice.TelegramAnswerer,
 	queryID, userID int64,
 	prepared inlineservice.PreparedQuery,
 	offset string,

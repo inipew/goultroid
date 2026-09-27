@@ -58,7 +58,7 @@ func (d *Dispatcher) getRootContext() context.Context {
 }
 
 // SetService updates the TelegramServicer instance (e.g. once client is connected).
-func (d *Dispatcher) SetService(svc core.TelegramServicer) {
+func (d *Dispatcher) SetService(svc DispatcherService) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.svc = svc
@@ -95,14 +95,30 @@ func (d *Dispatcher) getSelfID() int64 {
 	return d.selfID
 }
 
-func (d *Dispatcher) getService() core.TelegramServicer {
+func (d *Dispatcher) getService() DispatcherService {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.svc
 }
 
 // Service returns the configured TelegramServicer.
-func (d *Dispatcher) Service() core.TelegramServicer {
+func (d *Dispatcher) Service() DispatcherService {
+	return d.getService()
+}
+
+func (d *Dispatcher) getCommandService() core.CommandTelegramServicer {
+	return d.getService()
+}
+
+func (d *Dispatcher) getCallbackAnswerer() callbackQueryAnswerer {
+	return d.getService()
+}
+
+func (d *Dispatcher) getInlineAnswerer() inline.TelegramAnswerer {
+	return d.getService()
+}
+
+func (d *Dispatcher) getOriginTracker() botOriginTracker {
 	return d.getService()
 }
 

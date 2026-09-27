@@ -32,7 +32,7 @@ const (
 type p1SelfInlineBroker struct {
 	ctx       context.Context
 	engine    *inlineservice.Engine
-	assistant core.TelegramServicer
+	assistant inlineservice.TelegramAnswerer
 	ownerID   int64
 
 	querySeq int64
