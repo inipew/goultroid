@@ -522,6 +522,7 @@ Closed behavior/boundary work:
 - Broadcast request delivery was narrowed to `broadcast.Sender` (text + media) so Assistant audience broadcast no longer needs a fake full Telegram service.
 - Assistant canonical command Context uses the capability container, including mutation-admission rebinding.
 - Architecture tests fence the migrated production surfaces against reintroducing `core.TelegramServicer`, broad `Context.Svc`, or `unsupportedTelegramServicer`.
+- Follow-up architecture fence `122b4f8d18006b1882df34838c976e31d7bb9030` prevents production `core.Context` literals from binding deprecated `Svc` and restricts direct `.Svc` reads inside `internal/core` to the compatibility adapter only.
 
 Compatibility intentionally retained:
 
