@@ -459,7 +459,7 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 		}
 	}
 	if pendingQRIS {
-		card.WithRaw("ℹ️ <i>Menghapus tagihan QRIS dari bot hanya menghapus salinan tersimpan di Goultroid; itu tidak membatalkan pembayaran atau tagihan di operator.</i>")
+		card.WithFooter("<i>ℹ️ Menghapus tagihan QRIS dari bot hanya menghapus salinan tersimpan di Goultroid; itu tidak membatalkan pembayaran atau tagihan di operator.</i>")
 	}
 
 	screen := ui.NewScreen("myxl:result", "", card.Render())
@@ -517,7 +517,7 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 		}
 		card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 	}
-	card.WithRaw("ℹ️ <i>Hapus dari Bot hanya menghapus tagihan tersimpan di Goultroid. Tidak ada API pembatalan operator yang dijalankan.</i>")
+	card.WithFooter("<i>ℹ️ Hapus dari Bot hanya menghapus tagihan tersimpan di Goultroid; tindakan ini tidak membatalkan pembayaran atau tagihan di operator karena tidak ada API pembatalan operator yang dijalankan.</i>")
 
 	screen := ui.NewScreen("myxl:pending_qris", "", card.Render())
 	qrKey := ""

@@ -194,12 +194,12 @@ func (p *Plugin) executeResolvedPurchase(ctx context.Context, resolved resolvedP
 
 	if err != nil {
 		out.Kind = purchaseOutcomeUnknown
-		p.persistPurchaseOutcome(ctx, resolved.IdempotencyKey, "UNKNOWN", "", err.Error())
+		_ = p.persistPurchaseOutcome(ctx, resolved.IdempotencyKey, "UNKNOWN", "", err.Error())
 		return out, nil
 	}
 	if result == nil {
 		out.Kind = purchaseOutcomeUnknown
-		p.persistPurchaseOutcome(ctx, resolved.IdempotencyKey, "UNKNOWN", "", "empty settlement result")
+		_ = p.persistPurchaseOutcome(ctx, resolved.IdempotencyKey, "UNKNOWN", "", "empty settlement result")
 		return out, nil
 	}
 
