@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1/M2 CLOSED; M3 NEXT**
+Status: **IN PROGRESS — M1 CLOSED; M2 REOPENED FOR REGRESSION/BORDER FIXES**
 
 Audit baseline:
 
@@ -498,7 +498,7 @@ Gate:
 
 ### M2 — Migrate Context and Telegram callers
 
-Status: **CLOSED**
+Status: **REOPENED — runtime regressions fixed; composition boundary cleanup still open**
 
 Implementation commits:
 
@@ -507,6 +507,8 @@ Implementation commits:
 - `c23948e691df644620e196a6a3f3574b8199f185` — `refactor(assistant): remove broad telegram fallback servicer`
 - `054343d1a15e9a0c1b5539e46359263dce9be11d` — `refactor(core): migrate command contexts off broad telegram service`
 - `cd6e96a1e2b8e0e8e466d5d7b13c2e32eeb04581` — `test(architecture): fence telegram capability migration`
+- `a062f4d636d0472e3cb6474d88bfa297b2810340` — `fix(m2): route production contexts through capabilities`
+- `b671f09fe66fee3cf0ba140b1533c6a107fb4a3a` — `fix(assistant): fail closed for unsupported telegram capabilities`
 
 Closed behavior/boundary work:
 
@@ -524,11 +526,29 @@ Closed behavior/boundary work:
 - Architecture tests fence the migrated production surfaces against reintroducing `core.TelegramServicer`, broad `Context.Svc`, or `unsupportedTelegramServicer`.
 - Follow-up architecture fence `122b4f8d18006b1882df34838c976e31d7bb9030` prevents production `core.Context` literals from binding deprecated `Svc` and restricts direct `.Svc` reads inside `internal/core` to the compatibility adapter only.
 
+Regression audit / reopened findings:
+
+- fixed core edit delivery that still read `Context.Svc`, restoring capability-backed `Edit`, `EditOrReply`, and semantic responses;
+- fixed delayed response deletion so `AutoDeleteDelay` resolves the message capability rather than gating on `Svc`;
+- migrated native downloader child Contexts and plugin command paths away from direct `ctx.Svc` reads;
+- migrated broadcast/profile/clone/quote/userlog and self-inline cleanup paths to narrow capability accessors;
+- removed production Assistant embedding of `MockTelegramServicer`; unsupported command capabilities now fail closed with `core.ErrUnsupported`;
+- Assistant message deletion now propagates transport errors instead of discarding them;
+- full plugin production sweep after the fixes found no remaining direct `ctx.Svc` reads.
+
 Compatibility intentionally retained:
 
 - the legacy `core.TelegramServicer` type still exists for older composition/test factories;
-- `core.Context.Svc` remains as a deprecated, narrower command-only fallback so direct legacy Context literals are not broken in this phase;
+- `core.Context.Svc` remains as a deprecated, narrower command-only fallback, but direct production callers must not read or bind it;
 - compatibility assertions/adapters may mention the legacy aggregate, but migrated production execution surfaces may not depend on it.
+
+Still open before M2 can close again:
+
+- replace the still-wide `DispatcherService` storage/injection aggregate with capability-specific composition;
+- remove the `Client.Service() core.TelegramServicer` compatibility assertion from production composition;
+- narrow `module.TelegramRuntime.TelegramService` and downstream service/module providers by actual consumer need;
+- retire `CommandTelegramServicer` from production scheduler/executor composition where capability bundles can be passed directly;
+- once production broad-provider callers reach zero, remove `Context.Svc` compatibility fallback and legacy aggregate surfaces.
 
 Tasks:
 

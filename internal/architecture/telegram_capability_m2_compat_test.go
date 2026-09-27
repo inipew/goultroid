@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,5 +100,57 @@ func TestM2CoreOnlyCompatibilityAdapterReadsContextSvc(t *testing.T) {
 			t.Errorf("core code bypasses TelegramCapabilities via Context.Svc at %s", position)
 			return true
 		})
+	}
+}
+
+// Production handlers must never read the deprecated Context.Svc field
+// directly. Compatibility fallback belongs exclusively to core's capability
+// adapter so callers cannot silently break when production Contexts bind only
+// TelegramCapabilities.
+func TestM2ProductionHandlersDoNotReadContextSvc(t *testing.T) {
+	root := repositoryRoot(t)
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			name := entry.Name()
+			if name == ".git" || name == "vendor" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		if filepath.Base(path) == "context_telegram.go" {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(raw), "ctx.Svc") {
+			t.Errorf("production code reads deprecated Context.Svc in %s", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Production Assistant command transport must never regain MockTelegramServicer
+// embedding. Missing capabilities must fail closed instead of returning mock
+// success for an RPC that never happened.
+func TestM2AssistantCommandTransportDoesNotEmbedTelegramMock(t *testing.T) {
+	root := repositoryRoot(t)
+	path := filepath.Join(root, "internal", "assistant", "command", "servicer.go")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "MockTelegramServicer") {
+		t.Fatal("Assistant command transport embeds MockTelegramServicer")
 	}
 }
