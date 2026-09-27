@@ -1,6 +1,7 @@
 package inline
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -93,5 +94,34 @@ func BenchmarkCacheNextExpiry500P3A(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		p3aCacheExpiry, p3aCacheOK = cache.nextExpiry()
+	}
+}
+
+func BenchmarkCacheStartedSaturatedChurnP3A(b *testing.B) {
+	fixture := p3aCacheFixture()
+	for _, workingSet := range []int{maxInlineCacheEntries + 1, 4096} {
+		b.Run(fmt.Sprintf("working-set/%d", workingSet), func(b *testing.B) {
+			cache := NewCache(time.Hour)
+			keys := p3aCacheKeys(workingSet)
+			for i := 0; i < maxInlineCacheEntries; i++ {
+				cache.SetScoped(keys[i], fixture, time.Hour)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			if err := cache.Start(ctx); err != nil {
+				b.Fatal(err)
+			}
+			b.Cleanup(func() {
+				cancel()
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+				defer stopCancel()
+				_ = cache.Stop(stopCtx)
+			})
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				key := keys[(maxInlineCacheEntries+i)%workingSet]
+				cache.SetScoped(key, fixture, time.Hour)
+			}
+		})
 	}
 }
