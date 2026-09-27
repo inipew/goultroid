@@ -101,8 +101,9 @@ type engineRequest struct {
 	slotID   int
 	permit   *permit
 	result   tasks.TaskResult
-	started  time.Time
-	decision *submitCell
+	started         time.Time
+	decision        *submitCell
+	controlDecision *controlCell
 	// commitSeq + ackErr carry the fenced durability acknowledgement.
 	commitSeq        uint64
 	ackErr           error

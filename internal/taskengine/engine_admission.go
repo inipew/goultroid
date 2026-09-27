@@ -184,11 +184,88 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 }
 
 
-// SetOwnerLimits sets quota and weight limits for an owner.
-func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimits) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_, _ = e.sendControl(ctx, engineRequest{op: opSetOwnerLimits, owner: owner, limits: limits})
+type controlDecisionState uint32
+
+const (
+	controlDecisionPending controlDecisionState = iota
+	controlDecisionApplied
+	controlDecisionCancelled
+)
+
+type controlCell struct {
+	state atomic.Uint32
+}
+
+func (c *controlCell) decide(next controlDecisionState) bool {
+	if c == nil {
+		return false
+	}
+	return c.state.CompareAndSwap(uint32(controlDecisionPending), uint32(next))
+}
+
+func (e *Engine) sendOwnerLimitsControl(ctx context.Context, owner tasks.OwnerID, limits admission.OwnerLimits) error {
+	e.mu.Lock()
+	rootCtx := e.rootCtx
+	timeout := e.decisionTimeout
+	e.mu.Unlock()
+	if rootCtx == nil {
+		return tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	decision := &controlCell{}
+	reply := make(chan engineReply, 1)
+	req := engineRequest{
+		op: opSetOwnerLimits, ctx: ctx, owner: owner, limits: limits,
+		controlDecision: decision, reply: reply,
+	}
+	queued := e.acquireRequest(req)
+	if err := e.enqueueRequest(ctx, queued); err != nil {
+		e.releaseRequest(queued)
+		return err
+	}
+
+	ctxDone := ctx.Done()
+	rootDone := rootCtx.Done()
+	for {
+		select {
+		case rep := <-reply:
+			return rep.err
+		case <-ctxDone:
+			if decision.decide(controlDecisionCancelled) {
+				return ctx.Err()
+			}
+			ctxDone = nil
+		case <-rootDone:
+			if decision.decide(controlDecisionCancelled) {
+				return tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+			}
+			rootDone = nil
+		}
+	}
+}
+
+// SetOwnerLimits sets quota and weight limits for an owner. A nil error means
+// the coordinator claimed and applied the update.
+func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimits) error {
+	return e.SetOwnerLimitsContext(context.Background(), owner, limits)
+}
+
+// SetOwnerLimitsContext is the caller-bounded owner-limit control surface. If
+// cancellation wins before the coordinator claims the request, the update is
+// fenced out and the returned error guarantees it was not applied.
+func (e *Engine) SetOwnerLimitsContext(ctx context.Context, owner tasks.OwnerID, limits admission.OwnerLimits) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return e.sendOwnerLimitsControl(ctx, owner, limits)
 }
 
 type submitDecisionState uint32

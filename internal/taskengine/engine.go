@@ -293,6 +293,12 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 			req.reply <- engineReply{}
 		}
 	case opSetOwnerLimits:
+		if req.controlDecision != nil && !req.controlDecision.decide(controlDecisionApplied) {
+			if req.reply != nil {
+				req.reply <- engineReply{err: context.Canceled}
+			}
+			break
+		}
 		e.adm.SetOwnerLimits(req.owner, req.limits)
 		if req.reply != nil {
 			req.reply <- engineReply{}
