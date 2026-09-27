@@ -1073,5 +1073,6 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 		return ctx.Answer("❌ Pembelian selesai dengan status gagal.", true)
 	}
 }
+
 var _ assistantinteraction.FeatureDriver = (*Plugin)(nil)
 var _ interface{ FeatureSpec() feature.Spec } = (*Plugin)(nil)
