@@ -120,7 +120,7 @@ The production Telegram hierarchical RPC limiter already has dedicated cardinali
 
 ## 5. Canonical real-checkout evidence runner
 
-The final P3-A gate now has a repo-local runner:
+The final P3-A gate now has a repo-local runner (current repaired tooling baseline `5b98caf389dce7af6adc7ab454843f9de0345842`):
 
 ```bash
 tools/bench-p3a.sh
@@ -153,7 +153,7 @@ summary.md
 README.txt
 ```
 
-After the three benchmark groups complete, the runner invokes the stdlib-only reviewer at `tools/p3areview`. The reviewer verifies clean-checkout metadata, optional exact HEAD matching, presence of all benchmark families, and exactly five samples per benchmark, then writes median `ns/op`, `B/op`, and `allocs/op` to `summary.md`. It deliberately does **not** apply a performance threshold or decide P3-C automatically.
+After the three benchmark groups complete, the runner invokes the stdlib-only reviewer at `tools/p3areview`. Reviewer integration is `641dffe7e8a4216cd1d78d44fe8dcdf4cc8dadeb`; the exact runner repair after immediate diff acceptance is `5b98caf389dce7af6adc7ab454843f9de0345842`. The reviewer verifies clean-checkout metadata, optional exact HEAD matching, presence of all benchmark families, and exactly five samples per benchmark, then writes median `ns/op`, `B/op`, and `allocs/op` to `summary.md`. It deliberately does **not** apply a performance threshold or decide P3-C automatically.
 
 For formal closure, preserve the complete bundle, require `Evidence shape: **COMPLETE**` in `summary.md`, verify `dirty=no`, and then perform the human/source-aware optimization decision described below.
 

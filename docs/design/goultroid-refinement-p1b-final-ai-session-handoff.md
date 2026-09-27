@@ -2,7 +2,7 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after the P3-A lifecycle-active cache benchmark update: `da3527163d6078f0fb250893c902fee299709dab` — `bench(inline): cover active cache churn`
+Current audited P3-A tooling baseline after evidence reviewer integration and runner repair: `5b98caf389dce7af6adc7ab454843f9de0345842` — `fix(tooling): restore p3-a benchmark runner`
 Purpose: run/review the canonical **P3-A real-checkout evidence bundle** via `tools/bench-p3a.sh` and its `tools/p3areview` median/evidence validator. P3-B is CLOSED; P3-C is PREPARED/BLOCKED with a current no-optimization decision; P4 remains blocked.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
@@ -28,7 +28,7 @@ The script was syntax-checked with `bash -n` before commit. It does not inspect 
 
 P3-A is still formally OPEN until this runner is executed on a complete checkout and the resulting bundle is reviewed. P3-C remains PREPARED/BLOCKED and P4 remains blocked.
 
-`tools/p3areview` now performs mechanical evidence validation and median aggregation after the runner completes. It rejects dirty/incomplete bundles by default and writes `summary.md`. It does not encode performance thresholds or auto-close P3-A/P3-C. The reviewer source was passed through `gofmt`; its stdlib-only package was verified locally with `GO111MODULE=off go test` and `GO111MODULE=off go vet` before commit.
+`tools/p3areview` now performs mechanical evidence validation and median aggregation after the runner completes. It rejects dirty/incomplete bundles by default and writes `summary.md`. It does not encode performance thresholds or auto-close P3-A/P3-C. The reviewer landed at `641dffe7e8a4216cd1d78d44fe8dcdf4cc8dadeb`. Its source was passed through `gofmt`; the stdlib-only package was verified locally with `GO111MODULE=off go test` and `GO111MODULE=off go vet`. An integration-generation error briefly corrupted `tools/bench-p3a.sh` in that commit; the runner was restored from a separately `bash -n`-validated exact script at `5b98caf389dce7af6adc7ab454843f9de0345842`. Current branch source contains the repaired runner.
 
 
 ## 2026-09-27 P3-C decision preflight
