@@ -2,10 +2,37 @@
 
 Date: 2026-09-27
 Branch: `test-next`
-Current audited implementation baseline after P2-D acceptance: `6261169c07de9c26f60304b0136c14a1e2a85b30` — `refactor(ui): reclaim dead legacy helpers`
-Purpose: continue refinement from **P3-A** through final **P4 closure** after P2-D reclaimed dead callback-era UI compatibility helpers.
+Current audited implementation baseline for the P3-A high-cardinality benchmark harness: `aeae302d125bf1e5ac39df9671c0ea6b026bd10e` — `bench(refinement): add p3-a high-cardinality probes`
+Purpose: execute and record **P3-A benchmark measurements** before any optimization. P2-D remains closed; P3-A is NOT CLOSED until real benchmark numbers are captured.
 
 Authority rule: **always refresh current HEAD and current source first. Source/tests win over this handoff if the branch has moved.**
+
+
+## 2026-09-27 P3-A high-cardinality benchmark harness update
+
+P3-A measurement infrastructure is **IMPLEMENTED but NOT YET CLOSED** at `aeae302d125bf1e5ac39df9671c0ea6b026bd10e` (`bench(refinement): add p3-a high-cardinality probes`).
+
+This slice intentionally adds benchmark coverage only; it does **not** optimize or modify production behavior.
+
+High-cardinality benchmark matrix now includes:
+
+- Inline registry exact/custom resolution at 1 / 16 / 64 / 256 / 1024 / 4096 handlers.
+- Inline cache hit/fill at 1 / 16 / 64 / 256 / 500 entries.
+- Inline cache saturated churn with working sets 501 and 4096 against the production hard cap of 500.
+- Inline cache next-expiry scan at 500 retained entries.
+- Generic rate limiter hot/insert paths at 1 / 16 / 64 / 256 / 4096 buckets.
+- Generic rate limiter saturated fail-closed lookup at 4096 buckets without a capacity sweep.
+- Generic rate limiter forced capacity sweep at the 4096-bucket ceiling.
+
+Existing Telegram hierarchical RPC limiter benchmarks already cover cardinality up to the production bucket ceiling, so P3-A does not duplicate that suite.
+
+All changed Go benchmark files were run through local `gofmt` before commit. CI was not inspected.
+
+The current execution environment still cannot resolve github.com and has no complete checkout/module cache, so this session cannot honestly record benchmark numbers from the real repository. **Do not interpret the existence of the benchmark harness as performance acceptance.** P3-A stays open until a real checkout runs the suite and records `ns/op`, `B/op`, and `allocs/op`.
+
+See `docs/design/goultroid-refinement-p3a-high-cardinality-benchmark.md`.
+
+**Current NEXT remains P3-A measurement execution and result capture. Do not start P3-C optimization from historical assumptions.**
 
 
 ## 2026-09-27 P2-D closure update
@@ -1100,89 +1127,114 @@ P2-D did not introduce another callback protocol, interaction runtime, Telegram 
 
 ---
 
-# 17. P3-A — benchmark before optimization
+# 17. P3-A — benchmark before optimization — HARNESS READY / MEASUREMENTS OPEN
 
-Status: NOT YET RUN for current post-P1-F/P2 code.
+Status: benchmark harness committed at `aeae302d125bf1e5ac39df9671c0ea6b026bd10e`; real measurement results are still required before P3-A can close.
 
-Do not optimize based on historical suspicion.
+Current high-cardinality matrix:
 
-Required measurements when a real executable checkout/toolchain is available:
-
-## Inline
+## Inline registry
 
 ```text
 exact/1
 exact/16
 exact/64
 exact/256
+exact/1024
+exact/4096
+
 custom/1
 custom/16
 custom/64
 custom/256
+custom/1024
+custom/4096
 ```
 
-Record:
+## Inline cache
 
 ```text
+hit/1
+hit/16
+hit/64
+hit/256
+hit/500
+
+fill/1
+fill/16
+fill/64
+fill/256
+fill/500
+
+saturated churn working-set/501
+saturated churn working-set/4096
+next-expiry scan/500
+```
+
+The cache remains bounded by current production constants: 500 entries, 8 MiB total, 256 KiB per entry.
+
+## Generic rate limiter
+
+```text
+hot/1
+hot/16
+hot/64
+hot/256
+hot/4096
+
+insert/1
+insert/16
+insert/64
+insert/256
+insert/4096
+
+saturated capacity lookup at 4096
+forced capacity sweep at 4096
+```
+
+The generic limiter remains fail-closed at its current 4096-bucket cap.
+
+## Existing related benchmark coverage
+
+`internal/telegram/benchmarks_test.go` already measures the hierarchical RPC limiter at production-scale cardinality. Do not create another limiter implementation or duplicate that authority merely for P3-A.
+
+## Commands for a real checkout
+
+```bash
+go test -run=^$ -bench='BenchmarkRegistryResolveOwnedExplicitP0D|BenchmarkCache.*P3A' \
+  -benchmem -benchtime=1s -count=5 ./internal/services/inline
+
+go test -run=^$ -bench='BenchmarkLimiter.*P3A' \
+  -benchmem -benchtime=1s -count=5 ./internal/services/ratelimit
+```
+
+Record environment alongside results:
+
+```text
+HEAD
+Go version
+OS/arch
+CPU
+GOMAXPROCS
+benchmark command
 ns/op
 B/op
 allocs/op
+custom metrics (handlers / entries/op / keys/op / buckets/op)
 ```
 
-## a2 runtime
+Interpretation rules:
 
-Measure:
+- exact inline lookup should be evaluated for cardinality independence;
+- custom inline matcher cost is expected to grow with matcher cardinality, but optimize only if absolute measured cost is material;
+- cache hit cost should be separated from bounded clone cost;
+- cache churn specifically measures the eviction path once working set exceeds the 500-entry cap;
+- cache next-expiry measures the deadline coordinator's bounded 500-entry scan;
+- limiter hot path should be compared across resident cardinalities;
+- limiter forced capacity sweep intentionally isolates the bounded 4096-bucket scan;
+- a bounded O(N) path is not automatically a defect if measured absolute cost is acceptable and invocation frequency is low.
 
-- create;
-- callback prepare/dispatch;
-- transition;
-- terminate;
-- expiry;
-- 1 / 64 / 512 / 4096 sessions;
-- memory/session;
-- reload cancellation;
-- close settling.
-
-## TaskEngine
-
-Measure:
-
-- cold admission;
-- warm admission;
-- completion delivery;
-- resource contention;
-- drain/shutdown.
-
-## Combined workload
-
-```text
-normal userbot command
-Assistant navigation
-inline exact query
-inline custom query
-a2 callback burst
-Settings mutation
-MyXL refresh
-MyXL purchase confirmation without real charge
-downloader long op/cancel path
-plugin reload
-shutdown
-```
-
-Observe before/peak/after settling:
-
-```text
-goroutines
-heap/RSS when practical
-TaskEngine active/pending
-a2 sessions
-Inline cache
-RPC limiter buckets
-resource usage
-completion state
-```
-
-Create a benchmark/acceptance document. Do not claim optimization benefits without before/after evidence.
+Do not advance to P3-C until these measurements exist. Do not claim benchmark numbers that were not run.
 
 ---
 
@@ -1404,21 +1456,21 @@ internal/taskengine/
 
 Start with:
 
-> Refresh `test-next` HEAD and current source. P1-F and P2-A/B/C/D are CLOSED. Continue **P3-A — benchmark current post-refinement source before optimization**. Do not optimize from historical suspicion. Measure the current Inline exact/custom paths, a2 lifecycle/hot paths, TaskEngine admission/completion/resource contention, and the documented combined workload. Record ns/op, B/op, allocs/op where applicable plus before/peak/after resource settling. If a real executable checkout/toolchain is unavailable, do not invent benchmark evidence; record the limitation and stop rather than opening P3-C. Do not check CI unless explicitly requested.
+> Refresh `test-next` HEAD and current source. P1-F and P2-A/B/C/D are CLOSED. P3-A high-cardinality benchmark harness is committed at `aeae302d125bf1e5ac39df9671c0ea6b026bd10e`, but P3-A is still OPEN because no real benchmark results have been recorded in this environment. On a real checkout, run the Inline/cache and generic rate-limiter P3-A commands from `docs/design/goultroid-refinement-p3a-high-cardinality-benchmark.md`, record environment plus `ns/op`, `B/op`, `allocs/op`, and only then decide whether any hotspot merits P3-C optimization. Do not optimize from historical suspicion. Do not inspect CI unless explicitly requested.
 
 Important baseline:
 
 ```text
 P1-F: CLOSED
-P2-A: CLOSED
-P2-B: CLOSED
-P2-C: CLOSED
-P2-D: CLOSED at 6261169c07de9c26f60304b0136c14a1e2a85b30
-legacy callback authority: zero
-dead callback-era UI helper surface: reclaimed
-Telegram keyboard serializer: presentation/telegram EncodeMarkup
-production/pure UI retained: Card/format/Screen/Button values/PaginateSlice/PresentUserError
-NEXT executable phase: P3-A benchmark before optimization
+P2-A/B/C/D: CLOSED
+P3-A benchmark harness: IMPLEMENTED
+P3-A measurements: OPEN
+benchmark harness baseline: aeae302d125bf1e5ac39df9671c0ea6b026bd10e
+inline cardinality: through 4096 handlers
+inline cache hard cap: 500 entries
+generic limiter hard cap: 4096 buckets
+production changes in P3-A harness commit: none
+NEXT: execute P3-A benchmarks and capture real measurements
 ```
 
 ---
@@ -1450,7 +1502,7 @@ At that point Goultroid returns to ordinary product development instead of archi
 ## One-line handoff
 
 ```text
-P1-F CLOSED; P2-A/B/C/D CLOSED at P2-D code baseline 6261169c.
-Dead callback-era UI compatibility helpers reclaimed; pure/production UI values preserved.
-NEXT = P3-A benchmark current source before any optimization.
+P1-F and P2-A/B/C/D CLOSED.
+P3-A high-cardinality Inline/cache/generic-limiter benchmark harness committed at aeae302d.
+Measurements are still OPEN; run and record them before any P3-C optimization.
 ```
