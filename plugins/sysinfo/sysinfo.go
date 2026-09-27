@@ -19,11 +19,12 @@ import (
 
 // Plugin provides rich system, hardware, network, and bot runtime metrics.
 type Plugin struct {
-	startTime  time.Time
-	collector  *Collector
-	resources  *resource.Manager
-	eventBus   *core.EventBus
-	taskEngine *taskengine.Engine
+	startTime           time.Time
+	collector           *Collector
+	resources           *resource.Manager
+	eventBus            *core.EventBus
+	taskEngine          *taskengine.Engine
+	diagnosticsProvider func() ResourceSnapshot
 }
 
 // New creates a new Sysinfo plugin instance.
@@ -399,6 +400,17 @@ func (p *Plugin) handleBotInfo(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
+	return ctx.Result(p.renderDiagnostics(ctx.Ctx))
+}
+
+func (p *Plugin) renderDiagnostics(ctx context.Context) string {
+	if snapshot, ok := p.ResourceSnapshot(); ok {
+		return p.renderResourceSnapshot(snapshot)
+	}
+	return p.renderLegacyDiagnostics(ctx)
+}
+
+func (p *Plugin) renderLegacyDiagnostics(ctx context.Context) string {
 	card := ui.NewCard("GoUltroid Runtime Diagnostics & Quotas").WithIcon("🔬")
 
 	// 1. Tracked Resources & Leaks
@@ -430,7 +442,7 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 
 	// 2. EventBus
 	if p.taskEngine != nil {
-		statsCtx, cancel := context.WithTimeout(ctx.Ctx, 200*time.Millisecond)
+		statsCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		stats, err := p.taskEngine.Stats(statsCtx)
 		cancel()
 		if err == nil {
@@ -470,7 +482,7 @@ func (p *Plugin) handleDiagnostics(ctx *core.Context) error {
 	}
 
 	card.WithFooter("<i>Telemetry aggregated across task execution, resources, and eventbus.</i>")
-	return ctx.Result(card.Render())
+	return card.Render()
 }
 
 func formatPoolRuntimeStats(name string, pool taskengine.PoolRuntimeStats) string {

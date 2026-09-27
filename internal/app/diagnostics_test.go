@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/plugins/sysinfo"
 )
 
 func TestApp_DiagnosticsCentralizedMetrics(t *testing.T) {
@@ -46,6 +47,24 @@ func TestApp_DiagnosticsCentralizedMetrics(t *testing.T) {
 	}
 
 	diag := app.Diagnostics()
+	registered, ok := app.plugins.Find("sysinfo")
+	if !ok {
+		t.Fatal("sysinfo plugin was not registered")
+	}
+	sysinfoPlugin, ok := registered.(*sysinfo.Plugin)
+	if !ok {
+		t.Fatalf("sysinfo plugin type = %T", registered)
+	}
+	operatorSnapshot, ok := sysinfoPlugin.ResourceSnapshot()
+	if !ok || operatorSnapshot.ProcessMemory.NumGoroutine < 1 {
+		t.Fatalf("sysinfo provider unavailable: %+v", operatorSnapshot)
+	}
+	if operatorSnapshot.EventBus.Published != diag.EventBus.Published ||
+		operatorSnapshot.Jobs.Definitions != diag.Jobs.Definitions ||
+		operatorSnapshot.ResolverCacheCount != diag.ResolverCacheCount ||
+		operatorSnapshot.TaskEngineAvailable != diag.TaskEngineSnapshotOK {
+		t.Fatalf("operator snapshot differs from app diagnostics: operator=%+v app=%+v", operatorSnapshot, diag)
+	}
 	if diag.ProcessMemory.NumGoroutine < 1 || diag.ProcessMemory.Sys < diag.ProcessMemory.HeapAlloc {
 		t.Fatalf("process memory diagnostics = %+v", diag.ProcessMemory)
 	}
@@ -110,6 +129,27 @@ func TestApp_DiagnosticsCentralizedMetrics(t *testing.T) {
 	// Verify shutdown report exists
 	_ = diag.LastShutdownReport
 	_ = time.Now()
+}
+
+func TestApp_SysinfoSnapshotUnavailable(t *testing.T) {
+	engine := taskengine.NewEngine(taskengine.NewDefaultConfig())
+	a := &App{taskEngine: engine}
+	got := a.sysinfoResourceSnapshot()
+	if got.TaskEngineAvailable || got.ProcessMemory.NumGoroutine < 1 || got.ProcessMemory.Sys < got.ProcessMemory.HeapAlloc {
+		t.Fatalf("partial app operator snapshot = %+v", got)
+	}
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.sysinfoResourceSnapshot(); !got.TaskEngineAvailable {
+		t.Fatalf("running engine snapshot unavailable: %+v", got)
+	}
+	if err := engine.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.sysinfoResourceSnapshot(); got.TaskEngineAvailable {
+		t.Fatalf("stopped engine snapshot reported available: %+v", got)
+	}
 }
 
 func TestApp_DiagnosticsUnavailableComponents(t *testing.T) {

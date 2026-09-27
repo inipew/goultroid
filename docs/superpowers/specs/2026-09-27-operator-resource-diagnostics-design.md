@@ -6,7 +6,7 @@ The `.diagnostics` card in `plugins/sysinfo` currently reads TaskEngine and Even
 
 ## Boundary and source of truth
 
-`plugins/sysinfo` cannot import `internal/app` because the app imports builtin plugins. Keep `App.Diagnostics()` canonical. Define a small, immutable `sysinfo.ResourceSnapshot` presentation DTO containing only bounded numeric diagnostics needed by the command. After `App` is constructed and builtin modules are registered, app wiring finds the sysinfo plugin and injects `func() sysinfo.ResourceSnapshot`. The closure calls `App.Diagnostics()` once per command and maps its values to the DTO. It is installed before the runtime starts; the plugin never holds an `*app.App` reference.
+`plugins/sysinfo` cannot import `internal/app` because the app imports builtin plugins. Keep `App.Diagnostics()` canonical. Define a small `sysinfo.ResourceSnapshot` presentation DTO containing only bounded numeric diagnostics needed by the command. Copy the TaskEngine pool/resource maps into the DTO so the plugin receives a detached snapshot. After `App` is constructed and builtin modules are registered, app wiring finds the sysinfo plugin and injects `func() sysinfo.ResourceSnapshot`. The closure calls `App.Diagnostics()` once per command and maps its values to the DTO. It is installed before the runtime starts; the plugin never holds an `*app.App` reference.
 
 The bridge must not copy payloads, owner maps, goroutine stacks, or arbitrary error strings. A missing provider keeps the existing direct TaskEngine/EventBus card useful in isolated plugin tests or partial compositions. A provider snapshot that marks TaskEngine unavailable shows an explicit unavailable status rather than zero workers.
 
@@ -21,7 +21,7 @@ Preserve existing Task Pools, Execution Resources, Task Memory, resource leak in
 - Interaction sessions, input claims, and retained state bytes; Inline cache entries and bytes; ResourceManager active and leaked totals.
 - DB open/in-use/idle connections and Telegram resolver/peer cache counts plus bounded RPC metrics already in `App.Diagnostics()`.
 
-Use the existing `ui.Card` renderer and HTML escaping for any dynamic labels. The provider-backed card contains only fixed-cardinality fields and must stay below 3,500 rendered characters with maximum-width numeric values used in tests. Do not truncate a value silently. The `.botinfo` command continues to provide extended host details.
+Use the existing `ui.Card` renderer and HTML escaping for any dynamic labels. Start with at most five sorted TaskEngine pools and five sorted execution resources, shorten displayed names after 24 Unicode code points with an ellipsis, and show the exact number of additional entries omitted. If the rendered card exceeds 3,500 bytes, reduce the displayed resource and then pool rows until it fits; keep omission counts visible. Do not truncate a value silently. The `.botinfo` command continues to provide extended host details.
 
 ## Collection and lifecycle
 

@@ -492,7 +492,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, fmt.Errorf("register plugins component: %w", err)
 	}
 
-	return &App{
+	app := &App{
 		cfg:                       cfg,
 		logger:                    logger,
 		db:                        coreDeps.db,
@@ -527,7 +527,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		runtime:                   rt,
 		supervisor:                supervisor,
 		shutdownDone:              make(chan struct{}),
-	}, nil
+	}
+	app.wireSysinfoDiagnostics()
+	return app, nil
 }
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
