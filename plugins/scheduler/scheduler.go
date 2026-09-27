@@ -220,7 +220,7 @@ func (p *Plugin) handleList(ctx *core.Context) error {
 		}
 		fmt.Fprintf(&sb, "• <b>#%d</b> [%s | %s | %s] <code>%s</code>\n  └ <i>Due in:</i> <code>%s</code>\n", j.ID, mode, j.ActionType, status, html.EscapeString(payloadSnippet), remaining)
 		if j.LastError != "" {
-			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last Error (%d/%d attempts):</i> <code>%s</code>\n", j.AttemptCount, j.MaxAttempts, html.EscapeString(j.LastError))
+			fmt.Fprintf(&sb, "  └ ⚠️ <i>Last execution failed (%d/%d attempts).</i>\n", j.AttemptCount, j.MaxAttempts)
 		}
 	}
 	return ctx.Result(sb.String())
@@ -280,11 +280,7 @@ func (p *Plugin) handleSchedHistory(ctx *core.Context) error {
 		if !e.Success {
 			icon = "❌"
 			if e.ErrorMsg != "" {
-				snippet := e.ErrorMsg
-				if len(snippet) > 60 {
-					snippet = snippet[:57] + "..."
-				}
-				errPart = fmt.Sprintf("\n  └ <i>Error:</i> <code>%s</code>", html.EscapeString(snippet))
+				errPart = "\n  └ <i>Error:</i> <code>Execution failed.</code>"
 			}
 		}
 		fmt.Fprintf(&sb, "%s <code>%s</code> — <i>%dms</i>%s\n", icon, e.RanAt.UTC().Format("2006-01-02 15:04:05"), e.DurationMs, errPart)
