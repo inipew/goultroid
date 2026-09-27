@@ -89,6 +89,23 @@ func TestRetainedBudgetRejectsAdmission(t *testing.T) {
 	}
 }
 
+func TestRetainedBudgetCountsWorkSpecMetadata(t *testing.T) {
+	e := boundedTestEngine(t, Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general": {Concurrency: 1, BacklogLimit: 4, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity: 4, MaxRetainedBytes: 1024,
+	})
+	_, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "metadata-budget", QuotaOwner: "owner", Pool: "general",
+		OrderingKey: strings.Repeat("k", 2048),
+		Handler:     func(context.Context) error { return nil },
+	})
+	if !errors.Is(err, tasks.ErrRetainedBudget) {
+		t.Fatalf("metadata-heavy submit error = %v, want ErrRetainedBudget", err)
+	}
+}
+
 // B3: failure text is truncated to the configured cap.
 func TestFailureMessageTruncated(t *testing.T) {
 	e := boundedTestEngine(t, Config{
@@ -180,6 +197,7 @@ func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
 			"p": {Concurrency: 1, BacklogLimit: 4, PayloadBudget: 1 << 20},
 		},
 		ResultCapacity: 4, MaxTerminalRetained: 4,
+		ResourceCapacities: map[string]int64{"process": 1},
 	})
 	if err := e.Start(context.Background()); err != nil {
 		t.Fatal(err)
@@ -189,22 +207,38 @@ func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
 	payload := make([]byte, 256<<10)
 	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
 		ID: "drop-runtime-refs", Pool: "p", QuotaOwner: "owner", Input: payload,
+		OrderingKey: "chat:retained", HandlerRef: "resolved-handler",
+		Job:        &tasks.OccurrenceRef{AttemptID: "attempt-1"},
+		Resources:  []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
 		Handler:    func(context.Context) error { _ = payload; return nil },
 		OnComplete: func(tasks.TaskResult) { _ = payload },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ticket.Wait(context.Background()); err != nil {
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if res.AttemptID != "attempt-1" {
+		t.Fatalf("attempt id = %q, want attempt-1", res.AttemptID)
 	}
 
 	rec := e.registry["drop-runtime-refs"]
 	if rec == nil {
 		t.Fatal("terminal record was not retained")
 	}
+	if rec.spec.Input != nil || rec.spec.Job != nil || rec.spec.Resources != nil {
+		t.Fatalf("terminal record retained owned spec graphs: %+v", rec.spec)
+	}
+	if rec.spec.OrderingKey != "" || rec.spec.HandlerRef != "" {
+		t.Fatalf("terminal record retained transient metadata: %+v", rec.spec)
+	}
 	if rec.spec.Handler != nil || rec.spec.Commit != nil || rec.spec.OnComplete != nil {
 		t.Fatalf("terminal record retained execution references: %+v", rec.spec)
+	}
+	if rec.cancelFunc != nil || rec.permit != nil {
+		t.Fatal("terminal record retained execution lifecycle references")
 	}
 }
 

@@ -3,6 +3,7 @@ package taskengine
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -29,6 +30,9 @@ const (
 	taskOverheadBytes int64 = 512
 	// jobRefBytes charges the fixed-size durable occurrence reference.
 	jobRefBytes int64 = 128
+	// resourceRequirementBytes conservatively charges the backing storage of
+	// each copied resource requirement; variable-size names are charged below.
+	resourceRequirementBytes int64 = 32
 
 	// DefaultMaxRetainedBytes caps admitted-but-unevicted memory per engine.
 	DefaultMaxRetainedBytes int64 = 256 << 20 // 256 MB
@@ -39,6 +43,65 @@ const (
 	// DefaultDeliveryConcurrency is the fixed completion-callback worker count.
 	DefaultDeliveryConcurrency = 4
 )
+
+// workSpecMetadataBytes charges variable-size metadata and copied backing
+// storage that remains reachable from an admitted WorkSpec. Input is accounted
+// separately by payloadSize.
+func workSpecMetadataBytes(spec tasks.WorkSpec) int64 {
+	bytes := int64(
+		len(spec.ID) +
+			len(spec.Scope.Owner) +
+			len(spec.QuotaOwner) +
+			len(spec.Pool) +
+			len(spec.Class) +
+			len(spec.OrderingKey) +
+			len(spec.HandlerRef),
+	)
+	if spec.Job != nil {
+		bytes += jobRefBytes + int64(
+			len(spec.Job.JobID)+
+				len(spec.Job.OccurrenceID)+
+				len(spec.Job.AttemptID),
+		)
+	}
+	bytes += int64(len(spec.Resources)) * resourceRequirementBytes
+	for _, requirement := range spec.Resources {
+		bytes += int64(len(requirement.Name))
+	}
+	return bytes
+}
+
+// freezeWorkSpecMetadata gives the engine exact-size string/backing ownership
+// after the retained-memory budget has accepted the measured charge.
+func freezeWorkSpecMetadata(spec *tasks.WorkSpec) {
+	if spec == nil {
+		return
+	}
+	spec.ID = tasks.TaskID(strings.Clone(string(spec.ID)))
+	spec.Scope.Owner = strings.Clone(spec.Scope.Owner)
+	spec.QuotaOwner = tasks.OwnerID(strings.Clone(string(spec.QuotaOwner)))
+	spec.Pool = tasks.PoolID(strings.Clone(string(spec.Pool)))
+	spec.Class = tasks.PriorityClass(strings.Clone(string(spec.Class)))
+	spec.OrderingKey = strings.Clone(spec.OrderingKey)
+	spec.HandlerRef = strings.Clone(spec.HandlerRef)
+	if spec.Job != nil {
+		ref := *spec.Job
+		ref.JobID = strings.Clone(ref.JobID)
+		ref.OccurrenceID = tasks.OccurrenceID(strings.Clone(string(ref.OccurrenceID)))
+		ref.AttemptID = tasks.AttemptID(strings.Clone(string(ref.AttemptID)))
+		spec.Job = &ref
+	}
+	if len(spec.Resources) == 0 {
+		spec.Resources = nil
+		return
+	}
+	resources := make([]tasks.ResourceRequirement, len(spec.Resources))
+	copy(resources, spec.Resources)
+	for index := range resources {
+		resources[index].Name = strings.Clone(resources[index].Name)
+	}
+	spec.Resources = resources
+}
 
 // payloadSize validates that Input has deterministic immutable/copy semantics
 // and returns its variable-size retained charge without allocating a copy.
@@ -77,6 +140,15 @@ func freezePayload(input any) (any, error) {
 	}
 	rv := reflect.ValueOf(input)
 	rt := rv.Type()
+	if rv.Kind() == reflect.String {
+		cloned := strings.Clone(rv.String())
+		if rt == reflect.TypeOf("") {
+			return cloned, nil
+		}
+		copyValue := reflect.New(rt).Elem()
+		copyValue.SetString(cloned)
+		return copyValue.Interface(), nil
+	}
 	if rv.Kind() == reflect.Slice && rt.Elem().Kind() == reflect.Uint8 {
 		copyValue := reflect.MakeSlice(rt, rv.Len(), rv.Len())
 		reflect.Copy(copyValue, rv)
@@ -104,9 +176,9 @@ func capOutput(output any, maxBytes int64) (any, int64) {
 		return stored, limit
 	case string:
 		if maxBytes > 0 && int64(len(v)) > maxBytes {
-			return v[:maxBytes], maxBytes
+			return strings.Clone(v[:maxBytes]), maxBytes
 		}
-		return v, int64(len(v))
+		return strings.Clone(v), int64(len(v))
 	default:
 		// Opaque output has no immutable/accountable ownership contract. Drop it
 		// rather than retaining a caller-owned mutable object graph.
@@ -118,10 +190,10 @@ func capOutput(output any, maxBytes int64) (any, int64) {
 // operators can distinguish a clipped message from a complete one.
 func truncateField(s string, max int) string {
 	if max <= 0 || len(s) <= max {
-		return s
+		return strings.Clone(s)
 	}
 	if max <= len("...(truncated)") {
-		return s[:max]
+		return strings.Clone(s[:max])
 	}
-	return s[:max-len("...(truncated)")] + "...(truncated)"
+	return strings.Clone(s[:max-len("...(truncated)")]) + "...(truncated)"
 }

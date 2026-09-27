@@ -14,6 +14,7 @@ func (e *Engine) syncActiveTasks(delta int) { e.activeTasks += delta }
 func (e *Engine) boundResult(res tasks.TaskResult) (tasks.TaskResult, int64) {
 	out, outBytes := capOutput(res.Output, e.maxOutputBytes)
 	res.Output = out
+	res.Failure.Code = truncateField(res.Failure.Code, e.maxFailureBytes)
 	res.Failure.Message = truncateField(res.Failure.Message, e.maxFailureBytes)
 	res.Failure.Detail = truncateField(res.Failure.Detail, e.maxFailureBytes)
 	return res, outBytes + int64(len(res.Disposition)+len(res.Failure.Code)+len(res.Failure.Message)+len(res.Failure.Detail))
@@ -21,6 +22,9 @@ func (e *Engine) boundResult(res tasks.TaskResult) (tasks.TaskResult, int64) {
 
 // settleTerminal performs the shared terminal tail for every completion path.
 func (e *Engine) settleTerminal(rec *taskRecord) {
+	if rec.result.AttemptID == "" && rec.spec.Job != nil {
+		rec.result.AttemptID = rec.spec.Job.AttemptID
+	}
 	if e.resultSlotsHeld > 0 {
 		e.resultSlotsHeld--
 	}
@@ -31,9 +35,18 @@ func (e *Engine) settleTerminal(rec *taskRecord) {
 	// Terminal records retain only diagnostic identity and bounded results.
 	// Execution closures may capture arbitrarily large object graphs and must
 	// not remain reachable for the terminal retention window.
+	rec.spec.Input = nil
+	rec.spec.Job = nil
+	rec.spec.Resources = nil
+	rec.spec.OrderingKey = ""
+	rec.spec.HandlerRef = ""
+	rec.spec.QueueDeadline = time.Time{}
+	rec.spec.ExecutionTimeout = 0
 	rec.spec.Handler = nil
 	rec.spec.Commit = nil
 	rec.spec.OnComplete = nil
+	rec.cancelFunc = nil
+	rec.permit = nil
 	rec.pendingResult = tasks.TaskResult{}
 	close(rec.done)
 	e.onTaskSettled(rec)

@@ -158,25 +158,43 @@ func TestEngineCopiesAdmittedPayloadAndOccurrence(t *testing.T) {
 	e := auditEngine(t)
 	payload := []byte("original")
 	ref := &tasks.OccurrenceRef{AttemptID: "original"}
-	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{ID: "copy", Pool: "a", QuotaOwner: "owner", Input: payload, Job: ref, Handler: func(context.Context) error { return nil }})
+	release := make(chan struct{})
+	started := make(chan struct{})
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "copy", Pool: "a", QuotaOwner: "owner", Input: payload, Job: ref,
+		Handler: func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("task did not start")
+	}
 	payload[0] = 'X'
 	ref.AttemptID = "changed"
-	result := waitAuditTicket(t, ticket)
-	if result.AttemptID != "original" {
-		t.Fatal("caller changed admitted attempt identity")
-	}
-	// The ticket's record pointer is stable from admission; after Wait the
-	// done-close edge makes the immutable spec bytes safe to read without
-	// touching the runLoop-owned registry map.
 	et, ok := ticket.(*engineTicket)
 	if !ok {
 		t.Fatal("expected engine ticket")
 	}
-	if string(et.rec.spec.Input.([]byte)) != "original" {
-		t.Fatal("caller changed admitted payload")
+	if got := string(et.rec.spec.Input.([]byte)); got != "original" {
+		t.Fatalf("frozen input = %q, want original", got)
+	}
+	if et.rec.spec.Job == nil || et.rec.spec.Job.AttemptID != "original" {
+		t.Fatalf("frozen occurrence = %+v", et.rec.spec.Job)
+	}
+	close(release)
+	result := waitAuditTicket(t, ticket)
+	if result.AttemptID != "original" {
+		t.Fatal("caller changed admitted attempt identity")
+	}
+	if et.rec.spec.Input != nil || et.rec.spec.Job != nil || et.rec.spec.Resources != nil {
+		t.Fatalf("terminal record retained owned spec graphs: %+v", et.rec.spec)
 	}
 }
 

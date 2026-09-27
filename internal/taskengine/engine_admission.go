@@ -98,12 +98,13 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 		return nil, tasks.NewAdmissionError(tasks.ReasonResultBackpressure, tasks.ErrResultBackpressure)
 	}
 
-	payloadBytes, err := payloadSize(spec.Input)
+	inputBytes, err := payloadSize(spec.Input)
 	if err != nil {
 		return nil, tasks.NewAdmissionError(tasks.ReasonUnsupportedPayload, err)
 	}
+	admissionBytes := inputBytes
 	if spec.Job != nil {
-		payloadBytes += jobRefBytes
+		admissionBytes += jobRefBytes
 	}
 	for _, requirement := range spec.Resources {
 		capacity, configured := e.resourceCapacity[requirement.Name]
@@ -111,10 +112,10 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 			return nil, tasks.NewAdmissionError(tasks.ReasonResourceUnavailable, tasks.ErrResourceUnavailable)
 		}
 	}
-	if err := e.adm.CanAdmit(spec, payloadBytes); err != nil {
+	if err := e.adm.CanAdmit(spec, admissionBytes); err != nil {
 		return nil, err
 	}
-	retainedCharge := taskOverheadBytes + payloadBytes
+	retainedCharge := taskOverheadBytes + inputBytes + workSpecMetadataBytes(spec)
 	if e.maxRetainedBytes > 0 && e.retainedBytes+retainedCharge > e.maxRetainedBytes {
 		return nil, tasks.NewAdmissionError(tasks.ReasonRetainedBudget, tasks.ErrRetainedBudget)
 	}
@@ -125,11 +126,7 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 		return nil, tasks.NewAdmissionError(tasks.ReasonUnsupportedPayload, err)
 	}
 	spec.Input = frozenInput
-	if spec.Job != nil {
-		ref := *spec.Job
-		spec.Job = &ref
-	}
-	spec.Resources = append([]tasks.ResourceRequirement(nil), spec.Resources...)
+	freezeWorkSpecMetadata(&spec)
 
 	// Final caller-state check before any completion-delivery reservation or
 	// published admission decision.
@@ -178,7 +175,7 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	e.retainedBytes += retainedCharge
 	e.syncActiveTasks(1)
 	rec.state = tasks.StateQueued
-	e.adm.Enqueue(&admission.QueueEntry{Spec: spec, EnqueuedAt: now, PayloadSize: payloadBytes})
+	e.adm.Enqueue(&admission.QueueEntry{Spec: spec, EnqueuedAt: now, PayloadSize: admissionBytes})
 	e.tryDispatch(spec.Pool)
 	return ticket, nil
 }
