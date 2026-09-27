@@ -604,6 +604,8 @@ Implementation commits:
 - `2fc271d7ce6d035ac1e8ecfc60860b89093384b0` — `refactor(taskengine): split config and state declarations`
 - `11431fdb96aa25fab3f96b3741c689110c74369d` — `refactor(taskengine): split coordinator responsibilities`
 - `4449a1ded52ac0c280d4b9db6877f1e21f0235de` — `test(maint): fence taskengine m3 ownership`
+- `f3aba7842be22b76fbe011b0438b3fbe6ebdc102` — `fix(taskengine): harden lifecycle shutdown boundary`
+- `d41718f2319d4fc49a719a043093030ae68d4851` — `fix(taskengine): decouple shutdown enqueue gate`
 
 Implemented structure:
 
@@ -621,7 +623,7 @@ The structural audit at `4449a1ded52ac0c280d4b9db6877f1e21f0235de` compared the 
 
 Current-code audit findings to resolve before M3 closure (these were preserved by the mechanical split; no causal attribution to the split):
 
-1. **Lifecycle and control after root cancellation.** `runLoop` returns after `applyStopFinalize()`, but that function does not call `checkDrained()` after finalizing records. If no active task can subsequently settle, `drainDone` can remain open. The generic `sendControl` path is already bounded by caller/default timeout and observes `rootCtx.Done()`; do not re-fix that path blindly. The remaining risks are the coordinator-exit race where a producer may enqueue into a now-unconsumed inbox, APIs that bypass `sendControl` (notably `SetOwnerLimits`), and `Health`, whose enqueue/wait path does not observe `rootCtx.Done()` directly. The inbox is fixed-capacity, so the concern is bounded retained/dead requests and inconsistent post-stop semantics rather than unbounded channel growth.
+1. **Lifecycle and control after root cancellation — M3-H1 IMPLEMENTED.** `applyStopFinalize()` now performs a final `checkDrained()`, so root cancellation settles `drainDone` even when no record transition can trigger `onTaskSettled`. Control producers now publish through one lifecycle-gated enqueue path. Coordinator exit takes the exclusive side of that gate, unpublishes the inbox, then drains queued pooled envelopes, preventing a producer from racing a send into an already-unconsumed inbox. The gate is a dedicated `RWMutex`, so blocked control sends do not hold `Engine.mu` and therefore do not extend unrelated lifecycle-handle lock acquisition. `Health` now uses the bounded shared control path and directly resolves root-stop semantics; `SetOwnerLimits` also uses that bounded path while intentionally retaining its legacy no-result API until M3-H3. Focused regression source covers parent cancellation followed by `Drain`/`Stop` and repeated post-stop control calls. Full M3 local acceptance remains pending; this H1 implementation does not close M3.
 2. **Live pool bounds and validation.** `applyPoolConfig` changes the configured maximum without preventing excess existing workers from taking replacement tasks after a shrink. Already running tasks may finish, but later dispatch must converge to the new maximum. Startup treats `MinConcurrency=0, ZeroIdle=false` as a fixed-size minimum, while live configuration changes it to one. Live `BacklogLimit` and `PayloadBudget` are passed through without the startup non-negative validation; zero/negative values disable those admission checks. Startup validation also permits `Concurrency=0` with a minimum above the effective default of four, and does not reject negative `MaxTerminalRetained` before defaulting it.
 3. **Owner fairness and control admission.** `SetOwnerLimits` changes `ownerLimits` but does not refresh the quantum cached for an owner whose DRR queue is active. `Engine.SetOwnerLimits` has no caller context or error result, and its initial inbox send can wait indefinitely if the coordinator cannot receive. The later two-second acknowledgement wait does not bound this initial send.
 4. **Retention and accounting.** `settleTerminal` clears execution callbacks but leaves `spec.Input`, `spec.Resources`, and `spec.Job` on the record. A retained `engineTicket` holds that record even after registry eviction, so a large input can remain reachable while `retainedBytes` decreases. Admission charges fixed task overhead plus declared payload bytes, without bounding variable-size identity and metadata strings. Audit how the recorded payload size relates to actual `Input` memory before claiming a strict byte bound.
@@ -632,7 +634,7 @@ Next-session execution contract:
 
 - audited source baseline before this documentation update: `93501939cb64a44f6fd314ad778b1ab36b167227` on `test-next`; refresh HEAD and re-read the touched TaskEngine files before editing because later commits may have advanced the branch;
 - **do not redo the mechanical M3 split** and do not create a second Engine, coordinator, queue, registry, worker authority, or execution path;
-- start with **M3-H1**, then H2 → H3 → H4 → H5 unless fresh source evidence proves a later issue blocks an earlier phase;
+- **M3-H1 is implemented at current HEAD lineage; continue with M3-H2 next**, then H3 → H4 → H5 unless fresh source evidence proves a later issue blocks an earlier phase;
 - treat the six audit findings as hypotheses to reconfirm against current code before patching; several are pre-existing behavior defects, not regressions caused by the structural split;
 - keep each hardening commit narrow and behavior-focused, add a focused regression test with the fix, and run `gofmt` before every Go-changing commit;
 - preserve the user's standing rule: **do not inspect or poll CI unless explicitly requested**;
@@ -641,7 +643,7 @@ Next-session execution contract:
 
 Hardening sequence:
 
-- **M3-H1 — lifecycle/shutdown:** settle `drainDone` on every root-cancellation/finalization path; reject or resolve post-stop control requests promptly; cover parent cancellation followed by graceful `Stop` and repeated post-stop API calls.
+- **M3-H1 — lifecycle/shutdown — IMPLEMENTED:** settle `drainDone` on every root-cancellation/finalization path; reject or resolve post-stop control requests promptly; cover parent cancellation followed by graceful `Stop` and repeated post-stop API calls. Implemented in `f3aba784...` with the enqueue-gate refinement in `d41718f2...`. Focused regression source was added; full M3 local acceptance is still required before final closure.
 - **M3-H2 — live pool/admission:** enforce the new maximum for replacement dispatch after shrink; align startup/live minimum semantics; validate effective startup bounds and live backlog/payload limits; cover a busy 8-to-2 shrink with persistent backlog.
 - **M3-H3 — fairness/control:** update active-owner DRR quantum when weight changes; make owner-limit control admission bounded and report whether the update was applied.
 - **M3-H4 — memory/durability:** detach terminal records from unneeded input/job/resource graphs while preserving ticket results; account for or bound variable-size metadata; remove the direct-fallback record capture; turn direct-commit panic into an explicit uncertain/failure acknowledgement; release resources on forced cancellation.
