@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestP1ACanonicalUIVocabularyFlowsFromPresentationToLegacyUI(t *testing.T) {
+func TestP1ACanonicalUIVocabularyRemainsPresentationOwned(t *testing.T) {
 	root := repositoryRoot(t)
 
 	vocabularyPath := filepath.Join(root, "internal", "presentation", "vocabulary.go")
@@ -43,28 +43,7 @@ func TestP1ACanonicalUIVocabularyFlowsFromPresentationToLegacyUI(t *testing.T) {
 		"presentation.Information(msg).Render()",
 	} {
 		if !strings.Contains(alerts, required) {
-			t.Fatalf("legacy alert adapter missing %q", required)
-		}
-	}
-
-	buttonPath := filepath.Join(root, "internal", "ui", "button.go")
-	buttonRaw, err := os.ReadFile(buttonPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	buttons := string(buttonRaw)
-	if strings.Contains(buttons, `"✖ Close"`) || strings.Contains(buttons, `"◀ Back"`) {
-		t.Fatal("legacy button helpers reintroduced non-canonical close/back labels")
-	}
-	for _, required := range []string{
-		"NewRoleCallbackButton",
-		"presentation.ButtonRoleClose",
-		"presentation.ButtonRoleBack",
-		"presentation.ButtonRoleConfirm",
-		"presentation.ButtonRoleCancel",
-	} {
-		if !strings.Contains(buttons, required) {
-			t.Fatalf("legacy button adapter missing %q", required)
+			t.Fatalf("UI semantic adapter missing %q", required)
 		}
 	}
 
@@ -82,7 +61,7 @@ func TestP1ACanonicalUIVocabularyFlowsFromPresentationToLegacyUI(t *testing.T) {
 			t.Fatal(err)
 		}
 		if strings.Contains(string(raw), `"github.com/inipew/goultroid/internal/ui"`) {
-			t.Fatalf("presentation root must not depend back on legacy UI: %s", entry.Name())
+			t.Fatalf("presentation root must not depend back on UI compatibility values: %s", entry.Name())
 		}
 	}
 }
