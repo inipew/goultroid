@@ -68,14 +68,13 @@ func (e *Engine) stopEngine(ctx context.Context, graceful bool) error {
 		req := engineRequest{op: opStopFinalize, reply: reply}
 		queued := e.acquireRequest(req)
 		sent := false
-		select {
-		case inbox <- queued:
+		if err := e.enqueueRequest(ctx, queued); err != nil {
+			e.releaseRequest(queued)
+			if ctx.Err() != nil {
+				errs = append(errs, fmt.Errorf("taskengine force-finalize enqueue: %w", ctx.Err()))
+			}
+		} else {
 			sent = true
-		case <-ctx.Done():
-			e.releaseRequest(queued)
-			errs = append(errs, fmt.Errorf("taskengine force-finalize enqueue: %w", ctx.Err()))
-		case <-rootCtx.Done():
-			e.releaseRequest(queued)
 		}
 		if sent {
 			select {

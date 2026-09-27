@@ -13,11 +13,10 @@ import (
 
 func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (engineReply, error) {
 	e.mu.Lock()
-	inbox := e.inbox
 	rootCtx := e.rootCtx
 	timeout := e.decisionTimeout
 	e.mu.Unlock()
-	if inbox == nil || rootCtx == nil {
+	if rootCtx == nil {
 		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
 	if timeout <= 0 {
@@ -32,14 +31,9 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 	reply := make(chan engineReply, 1)
 	req := engineRequest{op: opSubmit, ctx: ctx, spec: spec, decision: decision, reply: reply}
 	queued := e.acquireRequest(req)
-	select {
-	case inbox <- queued:
-	case <-ctx.Done():
+	if err := e.enqueueRequest(ctx, queued); err != nil {
 		e.releaseRequest(queued)
-		return engineReply{}, ctx.Err()
-	case <-rootCtx.Done():
-		e.releaseRequest(queued)
-		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+		return engineReply{}, err
 	}
 
 	ctxDone := ctx.Done()
@@ -192,25 +186,9 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 
 // SetOwnerLimits sets quota and weight limits for an owner.
 func (e *Engine) SetOwnerLimits(owner tasks.OwnerID, limits admission.OwnerLimits) {
-	e.mu.Lock()
-	inbox := e.inbox
-	rootCtx := e.rootCtx
-	e.mu.Unlock()
-	if inbox == nil || rootCtx == nil {
-		return
-	}
-	reply := make(chan engineReply, 1)
-	queued := e.acquireRequest(engineRequest{op: opSetOwnerLimits, owner: owner, limits: limits, reply: reply})
-	select {
-	case inbox <- queued:
-		select {
-		case <-reply:
-		case <-time.After(2 * time.Second):
-		case <-rootCtx.Done():
-		}
-	case <-rootCtx.Done():
-		e.releaseRequest(queued)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = e.sendControl(ctx, engineRequest{op: opSetOwnerLimits, owner: owner, limits: limits})
 }
 
 type submitDecisionState uint32

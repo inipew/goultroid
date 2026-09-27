@@ -105,12 +105,40 @@ func (e *Engine) releaseQueuedRequests(inbox <-chan *engineRequest) {
 	}
 }
 
+func (e *Engine) finishCoordinator(inbox <-chan *engineRequest) {
+	e.mu.Lock()
+	e.inbox = nil
+	e.mu.Unlock()
+	e.releaseQueuedRequests(inbox)
+}
+
+func (e *Engine) enqueueRequest(ctx context.Context, queued *engineRequest) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	inbox := e.inbox
+	rootCtx := e.rootCtx
+	if inbox == nil || rootCtx == nil || rootCtx.Err() != nil {
+		return tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+	}
+	select {
+	case inbox <- queued:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-rootCtx.Done():
+		return tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+	}
+}
+
 // runLoop is the sole writer of execution state.
 func (e *Engine) runLoop(ctx context.Context, inbox <-chan *engineRequest) {
 	// Once the coordinator exits no queued control request can be processed.
 	// Clear pooled envelopes eagerly so their contexts/specs/results do not stay
 	// reachable through the Engine's retained channel after shutdown.
-	defer e.releaseQueuedRequests(inbox)
+	defer e.finishCoordinator(inbox)
 	sweepTimer := time.NewTimer(time.Hour)
 	if !sweepTimer.Stop() {
 		select {
@@ -328,17 +356,8 @@ func (e *Engine) releaseRequest(req *engineRequest) {
 
 // sendInternal delivers worker-originated events to the control loop.
 func (e *Engine) sendInternal(req engineRequest) {
-	e.mu.Lock()
-	inbox := e.inbox
-	rootCtx := e.rootCtx
-	e.mu.Unlock()
-	if inbox == nil || rootCtx == nil {
-		return
-	}
 	queued := e.acquireRequest(req)
-	select {
-	case inbox <- queued:
-	case <-rootCtx.Done():
+	if err := e.enqueueRequest(context.Background(), queued); err != nil {
 		e.releaseRequest(queued)
 	}
 }
@@ -348,11 +367,10 @@ func (e *Engine) sendInternal(req engineRequest) {
 // not hide an admission decision.
 func (e *Engine) sendControl(ctx context.Context, req engineRequest) (engineReply, error) {
 	e.mu.Lock()
-	inbox := e.inbox
 	rootCtx := e.rootCtx
 	timeout := e.decisionTimeout
 	e.mu.Unlock()
-	if inbox == nil || rootCtx == nil {
+	if rootCtx == nil {
 		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
 	if timeout <= 0 {
@@ -366,14 +384,9 @@ func (e *Engine) sendControl(ctx context.Context, req engineRequest) (engineRepl
 	req.ctx = ctx
 	req.reply = make(chan engineReply, 1)
 	queued := e.acquireRequest(req)
-	select {
-	case inbox <- queued:
-	case <-ctx.Done():
+	if err := e.enqueueRequest(ctx, queued); err != nil {
 		e.releaseRequest(queued)
-		return engineReply{}, ctx.Err()
-	case <-rootCtx.Done():
-		e.releaseRequest(queued)
-		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+		return engineReply{}, err
 	}
 	select {
 	case rep := <-req.reply:
@@ -397,33 +410,11 @@ func (e *Engine) Quiesce(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	e.mu.Lock()
-	inbox := e.inbox
-	rootCtx := e.rootCtx
-	e.mu.Unlock()
-	if inbox == nil || rootCtx == nil {
+	_, err := e.sendControl(ctx, engineRequest{op: opQuiesce})
+	if errors.Is(err, tasks.ErrEngineQuiescing) {
 		return nil
 	}
-	reply := make(chan engineReply, 1)
-	req := engineRequest{op: opQuiesce, reply: reply}
-	queued := e.acquireRequest(req)
-	select {
-	case inbox <- queued:
-		select {
-		case <-reply:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-rootCtx.Done():
-			return nil
-		}
-	case <-ctx.Done():
-		e.releaseRequest(queued)
-		return ctx.Err()
-	case <-rootCtx.Done():
-		e.releaseRequest(queued)
-		return nil
-	}
+	return err
 }
 
 // Drain waits until all admitted tasks and completion callbacks settle.

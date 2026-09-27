@@ -214,6 +214,7 @@ func (e *Engine) applyStopFinalize() {
 			e.abandonPending(rec, "shutdown")
 		}
 	}
+	e.checkDrained()
 }
 
 // forceCancelInFlight is used only after graceful drain has failed (or

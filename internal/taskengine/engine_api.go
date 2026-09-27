@@ -2,6 +2,7 @@ package taskengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -53,61 +54,40 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	e.mu.Lock()
-	inbox := e.inbox
-	rootCtx := e.rootCtx
-	e.mu.Unlock()
-	if inbox == nil || rootCtx == nil {
-		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine not running"}
-	}
-	reply := make(chan engineReply, 1)
-	queued := e.acquireRequest(engineRequest{op: opStats, reply: reply})
-	select {
-	case inbox <- queued:
-		timeout := 200 * time.Millisecond
-		if dl, ok := ctx.Deadline(); ok {
-			if d := time.Until(dl); d < timeout {
-				timeout = d
-			}
-		}
-		if timeout <= 0 {
-			timeout = 200 * time.Millisecond
-		}
-		select {
-		case rep := <-reply:
-			if rep.stats.resultCapacity > 0 && rep.stats.resultSlotsHeld >= rep.stats.resultCapacity {
-				return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("result capacity saturated (%d/%d)", rep.stats.resultSlotsHeld, rep.stats.resultCapacity)}
-			}
-			if rep.stats.retainedCap > 0 && rep.stats.retainedBytes >= rep.stats.retainedCap {
-				return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("retained memory saturated (%d/%d bytes)", rep.stats.retainedBytes, rep.stats.retainedCap)}
-			}
-			if rep.stats.deliveryCap > 0 && rep.stats.deliveryQueued >= rep.stats.deliveryCap {
-				return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("completion delivery saturated (%d/%d)", rep.stats.deliveryQueued, rep.stats.deliveryCap)}
-			}
-			if rep.stats.deliveryFailed > 0 {
-				return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("completion delivery invariant failures: %d", rep.stats.deliveryFailed)}
-			}
-			if rep.stats.durabilityCap > 0 && rep.stats.durabilityQueue >= rep.stats.durabilityCap {
-				return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("durability acknowledgement lane saturated (%d/%d)", rep.stats.durabilityQueue, rep.stats.durabilityCap)}
-			}
-			if rep.stats.durabilityFail > 0 {
-				return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("durability lane failures: %d", rep.stats.durabilityFail)}
-			}
-			return runtime.ComponentHealth{Status: runtime.HealthHealthy}
-		case <-time.After(timeout):
-			return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine control loop unresponsive"}
-		case <-ctx.Done():
-			return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "health check cancelled"}
-		}
-	case <-ctx.Done():
-		e.releaseRequest(queued)
-		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "health check cancelled"}
-	default:
-		e.releaseRequest(queued)
-		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine inbox saturated"}
-	}
-}
+	healthCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
 
+	rep, err := e.sendControl(healthCtx, engineRequest{op: opStats})
+	if err != nil {
+		switch {
+		case ctx.Err() != nil:
+			return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "health check cancelled"}
+		case errors.Is(err, tasks.ErrEngineQuiescing):
+			return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine not running"}
+		default:
+			return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "task engine control loop unresponsive"}
+		}
+	}
+	if rep.stats.resultCapacity > 0 && rep.stats.resultSlotsHeld >= rep.stats.resultCapacity {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("result capacity saturated (%d/%d)", rep.stats.resultSlotsHeld, rep.stats.resultCapacity)}
+	}
+	if rep.stats.retainedCap > 0 && rep.stats.retainedBytes >= rep.stats.retainedCap {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("retained memory saturated (%d/%d bytes)", rep.stats.retainedBytes, rep.stats.retainedCap)}
+	}
+	if rep.stats.deliveryCap > 0 && rep.stats.deliveryQueued >= rep.stats.deliveryCap {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("completion delivery saturated (%d/%d)", rep.stats.deliveryQueued, rep.stats.deliveryCap)}
+	}
+	if rep.stats.deliveryFailed > 0 {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("completion delivery invariant failures: %d", rep.stats.deliveryFailed)}
+	}
+	if rep.stats.durabilityCap > 0 && rep.stats.durabilityQueue >= rep.stats.durabilityCap {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("durability acknowledgement lane saturated (%d/%d)", rep.stats.durabilityQueue, rep.stats.durabilityCap)}
+	}
+	if rep.stats.durabilityFail > 0 {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: fmt.Sprintf("durability lane failures: %d", rep.stats.durabilityFail)}
+	}
+	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+}
 // Cancel cancels an execution attempt by ID.
 func (e *Engine) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceipt, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), e.decisionTimeoutOrDefault())
