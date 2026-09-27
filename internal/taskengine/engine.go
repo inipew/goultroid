@@ -72,11 +72,11 @@ type Config struct {
 func newDefaultConfig() Config {
 	return Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{
-			"general":       {Concurrency: 8, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 30 * time.Second, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
-			"interactive":   {Concurrency: 32, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 30 * time.Second, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
-			"download":      {Concurrency: 3, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 45 * time.Second, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
-			"media-process": {Concurrency: 2, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: time.Minute, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
-			"scheduler":     {Concurrency: 4, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: time.Minute, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
+			"general":       {Concurrency: 8, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 10 * time.Second, BacklogLimit: 200, PayloadBudget: 100 * 1024 * 1024},
+			"interactive":   {Concurrency: 32, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 10 * time.Second, BacklogLimit: 128, PayloadBudget: 50 * 1024 * 1024},
+			"download":      {Concurrency: 3, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 15 * time.Second, BacklogLimit: 50, PayloadBudget: 200 * 1024 * 1024},
+			"media-process": {Concurrency: 2, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 20 * time.Second, BacklogLimit: 20, PayloadBudget: 200 * 1024 * 1024},
+			"scheduler":     {Concurrency: 4, MinConcurrency: 0, ZeroIdle: true, IdleTimeout: 30 * time.Second, BacklogLimit: 100, PayloadBudget: 50 * 1024 * 1024},
 		},
 		ResultCapacity:      1000,
 		MaxTerminalRetained: 1000,
@@ -500,7 +500,7 @@ func NewEngine(cfg Config) *Engine {
 		minimums[poolID] = minimum
 		idleTimeout := pcfg.IdleTimeout
 		if idleTimeout <= 0 {
-			idleTimeout = 30 * time.Second
+			idleTimeout = 10 * time.Second
 		}
 		idleTimeouts[poolID] = idleTimeout
 		generations[poolID] = 1
@@ -1355,7 +1355,7 @@ func (e *Engine) sweepIdleWorkers(now time.Time) {
 		minWorkers := e.poolMinWorkers[poolID]
 		idleTimeout := e.poolIdleTimeouts[poolID]
 		if idleTimeout <= 0 {
-			idleTimeout = 30 * time.Second
+			idleTimeout = 10 * time.Second
 		}
 		running := runningCount(e.workerRunning[poolID])
 		if running <= minWorkers {
@@ -1383,7 +1383,7 @@ func (e *Engine) earliestRetirementDeadline(now time.Time) (time.Time, bool) {
 		minWorkers := e.poolMinWorkers[poolID]
 		idleTimeout := e.poolIdleTimeouts[poolID]
 		if idleTimeout <= 0 {
-			idleTimeout = 30 * time.Second
+			idleTimeout = 10 * time.Second
 		}
 		running := runningCount(e.workerRunning[poolID])
 		if running <= minWorkers {

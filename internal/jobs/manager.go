@@ -136,7 +136,7 @@ type trackedOccurrence struct {
 const (
 	retryQueueCap    = 256
 	retryWorkers     = 4
-	retryIdleTimeout = 30 * time.Second
+	retryIdleTimeout = 10 * time.Second
 
 	// Automatic recovery is deliberately low-frequency as a safety scan; fast
 	// convergence comes from bounded wake signals emitted on monitor overflow or

@@ -84,7 +84,7 @@ func NewPersistencePump(concurrency int, queueCap int) *PersistencePump {
 	return &PersistencePump{
 		concurrency:      concurrency,
 		queueCap:         queueCap,
-		idleTimeout:      30 * time.Second,
+		idleTimeout:      10 * time.Second,
 		maxRetainedBytes: DefaultPersistenceRetainedBytes,
 	}
 }
@@ -165,7 +165,7 @@ func (p *PersistencePump) Start(parent context.Context) error {
 	p.running = true
 	p.accepting = true
 	if p.idleTimeout <= 0 {
-		p.idleTimeout = 30 * time.Second
+		p.idleTimeout = 10 * time.Second
 	}
 	return nil
 }

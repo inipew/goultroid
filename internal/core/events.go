@@ -460,7 +460,7 @@ const (
 	priorityQueueSize      = 256
 	eventWorkers           = 8
 	orderedPartitions      = 4
-	defaultEventWorkerIdle = 30 * time.Second
+	defaultEventWorkerIdle = 10 * time.Second
 )
 
 func partitionIndex(key string, n int) int {

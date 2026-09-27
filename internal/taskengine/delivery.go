@@ -9,7 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-const defaultLaneIdleTimeout = 30 * time.Second
+const defaultLaneIdleTimeout = 10 * time.Second
 
 // Bounded completion-callback delivery (Phase B5).
 //
