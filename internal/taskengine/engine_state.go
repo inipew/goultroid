@@ -113,7 +113,6 @@ type engineRequest struct {
 	resourceName     string
 	resourceCapacity int64
 	reply            chan engineReply
-
 }
 
 type engineReply struct {
