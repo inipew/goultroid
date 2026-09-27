@@ -3,10 +3,16 @@ package afk
 import (
 	"context"
 
+	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
 )
+
+type runtimeTelegramService struct {
+	core.MessageServicer
+	module.BotOriginTracker
+}
 
 type ModuleType struct{}
 
@@ -29,7 +35,17 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilDatabase
 	}
 	repo := NewSQLiteRepository(rt.DB)
-	p := New(repo, rt.OwnerID, rt.TelegramService)
+	p := NewWithService(repo, rt.OwnerID, func() TelegramService {
+		if rt.MessageService == nil || rt.OriginTracker == nil {
+			return nil
+		}
+		messages := rt.MessageService()
+		origin := rt.OriginTracker()
+		if messages == nil || origin == nil {
+			return nil
+		}
+		return &runtimeTelegramService{MessageServicer: messages, BotOriginTracker: origin}
+	})
 	if rt.Logger != nil {
 		p.SetLogger(rt.Logger)
 	}

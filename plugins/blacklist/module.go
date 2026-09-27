@@ -29,7 +29,12 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilDatabase
 	}
 	repo := NewSQLiteRepository(rt.DB)
-	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, rt.TelegramService))
+	return rt.RegisterPlugin(ctx, m.Manifest(), NewWithMessageDeleter(repo, func() MessageDeleter {
+		if rt.MessageService == nil {
+			return nil
+		}
+		return rt.MessageService()
+	}))
 }
 
 func (ModuleType) Migrations() []database.Migration {

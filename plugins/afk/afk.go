@@ -59,11 +59,18 @@ type afkState struct {
 	since  time.Time
 }
 
+type TelegramService interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	DeleteMessage(context.Context, tg.InputPeerClass, []int) error
+	GetMessage(context.Context, tg.InputPeerClass, int) (*tg.Message, error)
+	IsBotSent(int) bool
+}
+
 type Plugin struct {
 	db                 Repository
 	ownerID            int64
 	ownerUsername      string
-	svcFunc            func() core.TelegramServicer
+	svcFunc            func() TelegramService
 	resolver           core.PeerResolver
 	logger             *zap.Logger
 	welcomePrivateOnly bool
@@ -80,6 +87,14 @@ type Plugin struct {
 }
 
 func New(db Repository, ownerID int64, svcFunc func() core.TelegramServicer) *Plugin {
+	var service func() TelegramService
+	if svcFunc != nil {
+		service = func() TelegramService { return svcFunc() }
+	}
+	return NewWithService(db, ownerID, service)
+}
+
+func NewWithService(db Repository, ownerID int64, svcFunc func() TelegramService) *Plugin {
 	p := &Plugin{
 		db:                 db,
 		ownerID:            ownerID,
@@ -123,7 +138,7 @@ func (p *Plugin) replyTemplate(
 
 func (p *Plugin) sendTemplate(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc TelegramService,
 	peer tg.InputPeerClass,
 	response savedresponse.Response,
 	compiled *savedresponse.CompiledTemplate,
@@ -503,7 +518,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	}
 	return nil
 }
-func (p *Plugin) deleteWelcomeAfter(svc core.TelegramServicer, peer tg.InputPeerClass, messageID int) {
+func (p *Plugin) deleteWelcomeAfter(svc TelegramService, peer tg.InputPeerClass, messageID int) {
 	delay := p.getWelcomeDeleteDelay()
 	if delay <= 0 || svc == nil || peer == nil || messageID <= 0 {
 		return

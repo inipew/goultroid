@@ -30,7 +30,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 		return module.ErrNilDatabase
 	}
 	repo := NewSQLiteRepository(rt.DB)
-	return rt.RegisterPlugin(ctx, m.Manifest(), New(repo, rt.TelegramService, savedresponse.NewService(rt.Storage, rt.DB)))
+	return rt.RegisterPlugin(ctx, m.Manifest(), NewWithCapabilities(repo, rt.TelegramRuntime.CapabilitySnapshot, savedresponse.NewService(rt.Storage, rt.DB)))
 }
 
 func (ModuleType) Migrations() []database.Migration {

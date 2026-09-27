@@ -41,10 +41,44 @@ type CoreRuntime struct {
 	Metrics     core.MetricsCollector
 }
 
-// TelegramRuntime contains Telegram-facing capabilities shared by modules.
+// BotOriginTracker identifies messages emitted by the userbot transport.
+type BotOriginTracker interface {
+	IsBotSent(int) bool
+}
+
+// TelegramRuntime contains late-bound Telegram capabilities shared by modules.
+// Each provider exposes one consumer-sized surface instead of the legacy
+// TelegramServicer aggregate.
 type TelegramRuntime struct {
-	TelegramService func() core.TelegramServicer
-	Resolver        core.PeerResolver
+	MessageService           func() core.MessageServicer
+	AdminService             func() core.AdminServicer
+	MediaService             func() core.MediaServicer
+	ContextualMessageService func() core.ContextualMessageServicer
+	ContextualMediaService   func() core.ContextualMediaServicer
+	OriginTracker            func() BotOriginTracker
+	Resolver                 core.PeerResolver
+}
+
+// CapabilitySnapshot resolves the currently connected command-delivery
+// capabilities without exposing the legacy aggregate service.
+func (r TelegramRuntime) CapabilitySnapshot() core.TelegramCapabilities {
+	var caps core.TelegramCapabilities
+	if r.MessageService != nil {
+		caps.Messages = r.MessageService()
+	}
+	if r.AdminService != nil {
+		caps.Admin = r.AdminService()
+	}
+	if r.MediaService != nil {
+		caps.Media = r.MediaService()
+	}
+	if r.ContextualMessageService != nil {
+		caps.ContextualMessages = r.ContextualMessageService()
+	}
+	if r.ContextualMediaService != nil {
+		caps.ContextualMedia = r.ContextualMediaService()
+	}
+	return caps
 }
 
 // ServiceRuntime contains reusable cross-feature services. Feature-owned

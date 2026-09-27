@@ -38,9 +38,13 @@ type compiledBlacklistSet struct {
 	lastUsed atomic.Uint64
 }
 
+type MessageDeleter interface {
+	DeleteMessage(context.Context, tg.InputPeerClass, []int) error
+}
+
 type Plugin struct {
 	db            Repository
-	svcFunc       func() core.TelegramServicer
+	svcFunc       func() MessageDeleter
 	featureState  core.ChatFeatureSnapshot
 	revisionSeq   atomic.Uint64
 	cacheClock    atomic.Uint64
@@ -51,6 +55,14 @@ type Plugin struct {
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
+	var deleter func() MessageDeleter
+	if svcFunc != nil {
+		deleter = func() MessageDeleter { return svcFunc() }
+	}
+	return NewWithMessageDeleter(db, deleter)
+}
+
+func NewWithMessageDeleter(db Repository, svcFunc func() MessageDeleter) *Plugin {
 	return &Plugin{
 		db: db, svcFunc: svcFunc,
 		chatRevision:  make(map[int64]uint64),
@@ -259,7 +271,7 @@ func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEn
 
 func (p *Plugin) ApplyAssistantRule(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc MessageDeleter,
 	message *core.MessageEnvelope,
 ) (bool, error) {
 	if message == nil || message.ChatID == 0 {

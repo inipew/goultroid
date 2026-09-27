@@ -31,7 +31,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	}
 
 	repo := NewSQLiteWarningRepository(rt.DB)
-	moderationService := moderationSvc.NewService(repo, rt.TelegramService, rt.Logger)
+	moderationService := moderationSvc.NewService(repo, rt.AdminService, rt.Logger)
 	return rt.RegisterPlugin(ctx, m.Manifest(), New(moderationService))
 }
 

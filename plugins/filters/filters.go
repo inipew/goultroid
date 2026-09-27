@@ -55,9 +55,63 @@ type compiledFilterSet struct {
 	lastUsed atomic.Uint64
 }
 
+type TelegramService interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	SendMedia(context.Context, tg.InputPeerClass, string, string, string) (*tg.Message, error)
+}
+
+type capabilityTelegramService struct {
+	messages           core.MessageServicer
+	media              core.MediaServicer
+	contextualMessages core.ContextualMessageServicer
+	contextualMedia    core.ContextualMediaServicer
+}
+
+func (s *capabilityTelegramService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	return s.messages.SendMessage(ctx, peer, text)
+}
+
+func (s *capabilityTelegramService) SendMedia(ctx context.Context, peer tg.InputPeerClass, mediaType, path, caption string) (*tg.Message, error) {
+	return s.media.SendMedia(ctx, peer, mediaType, path, caption)
+}
+
+func (s *capabilityTelegramService) SendMessageContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	text string,
+	markup tg.ReplyMarkupClass,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if s.contextualMessages != nil {
+		return s.contextualMessages.SendMessageContext(ctx, peer, text, markup, send)
+	}
+	if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: filter transport cannot preserve forum topic %d", core.ErrUnavailable, send.TopicID)
+	}
+	if markup != nil {
+		return s.messages.SendMessageWithMarkup(ctx, peer, text, markup)
+	}
+	return s.messages.SendMessage(ctx, peer, text)
+}
+
+func (s *capabilityTelegramService) SendMediaContext(
+	ctx context.Context,
+	peer tg.InputPeerClass,
+	mediaType, path, caption string,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
+	if s.contextualMedia != nil {
+		return s.contextualMedia.SendMediaContext(ctx, peer, mediaType, path, caption, send)
+	}
+	if send.TopicID > 0 {
+		return nil, fmt.Errorf("%w: filter transport cannot preserve forum topic %d", core.ErrUnavailable, send.TopicID)
+	}
+	return s.media.SendMedia(ctx, peer, mediaType, path, caption)
+}
+
 type Plugin struct {
 	db           Repository
-	svcFunc      func() core.TelegramServicer
+	svcFunc      func() TelegramService
 	responses    *savedresponse.Service
 	delivery     *savedresponse.ResponseDelivery
 	tasks        tasks.Client
@@ -73,6 +127,33 @@ type Plugin struct {
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*savedresponse.Service) *Plugin {
+	var service func() TelegramService
+	if svcFunc != nil {
+		service = func() TelegramService { return svcFunc() }
+	}
+	return newPlugin(db, service, responses...)
+}
+
+func NewWithCapabilities(db Repository, provider func() core.TelegramCapabilities, responses ...*savedresponse.Service) *Plugin {
+	var service func() TelegramService
+	if provider != nil {
+		service = func() TelegramService {
+			caps := provider()
+			if caps.Messages == nil || caps.Media == nil {
+				return nil
+			}
+			return &capabilityTelegramService{
+				messages:           caps.Messages,
+				media:              caps.Media,
+				contextualMessages: caps.ContextualMessages,
+				contextualMedia:    caps.ContextualMedia,
+			}
+		}
+	}
+	return newPlugin(db, service, responses...)
+}
+
+func newPlugin(db Repository, svcFunc func() TelegramService, responses ...*savedresponse.Service) *Plugin {
 	responseService := savedresponse.NewService(nil)
 	if len(responses) > 0 && responses[0] != nil {
 		responseService = responses[0]
@@ -683,7 +764,7 @@ func (p *Plugin) MatchAssistantRule(ctx context.Context, message *core.MessageEn
 
 func (p *Plugin) ApplyAssistantRule(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc TelegramService,
 	message *core.MessageEnvelope,
 ) (bool, error) {
 	if message == nil || message.ChatID == 0 {
@@ -749,7 +830,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 
 func (p *Plugin) submitDelivery(
 	admissionCtx context.Context,
-	svc core.TelegramServicer,
+	svc TelegramService,
 	peer tg.InputPeerClass,
 	chatID int64,
 	topicID int,
@@ -783,7 +864,7 @@ func (p *Plugin) submitDelivery(
 
 func (p *Plugin) deliverResponse(
 	ctx context.Context,
-	svc core.TelegramServicer,
+	svc TelegramService,
 	peer tg.InputPeerClass,
 	response savedresponse.Response,
 	template *savedresponse.CompiledTemplate,

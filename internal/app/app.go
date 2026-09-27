@@ -305,8 +305,45 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 			Metrics:     coreDeps.metrics,
 		},
 		TelegramRuntime: module.TelegramRuntime{
-			TelegramService: tgRuntime.client.Service,
-			Resolver:        tgRuntime.dispatcher.Resolver(),
+			MessageService: func() core.MessageServicer {
+				if tgRuntime == nil || tgRuntime.dispatcher == nil {
+					return nil
+				}
+				return tgRuntime.dispatcher.Service()
+			},
+			AdminService: func() core.AdminServicer {
+				if tgRuntime == nil || tgRuntime.dispatcher == nil {
+					return nil
+				}
+				return tgRuntime.dispatcher.Service()
+			},
+			MediaService: func() core.MediaServicer {
+				if tgRuntime == nil || tgRuntime.dispatcher == nil {
+					return nil
+				}
+				return tgRuntime.dispatcher.Service()
+			},
+			ContextualMessageService: func() core.ContextualMessageServicer {
+				if tgRuntime == nil || tgRuntime.dispatcher == nil {
+					return nil
+				}
+				service, _ := tgRuntime.dispatcher.Service().(core.ContextualMessageServicer)
+				return service
+			},
+			ContextualMediaService: func() core.ContextualMediaServicer {
+				if tgRuntime == nil || tgRuntime.dispatcher == nil {
+					return nil
+				}
+				service, _ := tgRuntime.dispatcher.Service().(core.ContextualMediaServicer)
+				return service
+			},
+			OriginTracker: func() module.BotOriginTracker {
+				if tgRuntime == nil || tgRuntime.dispatcher == nil {
+					return nil
+				}
+				return tgRuntime.dispatcher.Service()
+			},
+			Resolver: tgRuntime.dispatcher.Resolver(),
 		},
 		ServiceRuntime: module.ServiceRuntime{
 			Storage:          domServices.storage,
