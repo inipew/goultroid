@@ -128,8 +128,7 @@ func NewController(poolConfigs map[tasks.PoolID]PoolConfig) *Controller {
 	return c
 }
 
-// SetOwnerLimits updates quotas for a specific owner.
-func (c *Controller) SetOwnerLimits(owner tasks.OwnerID, limits OwnerLimits) {
+func normalizeOwnerLimits(limits OwnerLimits) OwnerLimits {
 	if limits.MaxWaiting <= 0 {
 		limits.MaxWaiting = DefaultOwnerLimits.MaxWaiting
 	}
@@ -142,7 +141,25 @@ func (c *Controller) SetOwnerLimits(owner tasks.OwnerID, limits OwnerLimits) {
 	if limits.MaxPayloadByte <= 0 {
 		limits.MaxPayloadByte = DefaultOwnerLimits.MaxPayloadByte
 	}
+	return limits
+}
+
+// SetOwnerLimits updates quotas for a specific owner. If the owner is already
+// active in a DRR queue, refresh its cached quantum and discard credit that was
+// accumulated under the old weight so the new weight takes effect immediately.
+func (c *Controller) SetOwnerLimits(owner tasks.OwnerID, limits OwnerLimits) {
+	limits = normalizeOwnerLimits(limits)
 	c.ownerLimits[owner] = limits
+	for _, state := range c.pools {
+		for class, quantums := range state.ownerQuantums {
+			previous, active := quantums[owner]
+			if !active || previous == limits.Weight {
+				continue
+			}
+			quantums[owner] = limits.Weight
+			state.ownerDeficits[class][owner] = 0
+		}
+	}
 }
 
 func (c *Controller) getOwnerLimits(owner tasks.OwnerID) OwnerLimits {

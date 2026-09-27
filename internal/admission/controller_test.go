@@ -315,3 +315,59 @@ func TestP7LChatQuotaBoundsHighCardinalityTopics(t *testing.T) {
 		ctrl.OnTaskTerminal(spec)
 	}
 }
+
+func TestControllerOwnerWeightChangeRefreshesActiveQuantum(t *testing.T) {
+	ctrl := NewController(map[tasks.PoolID]PoolConfig{
+		"general": {BacklogLimit: 32, PayloadBudget: 1 << 20},
+	})
+	ctrl.SetOwnerLimits("heavy", OwnerLimits{Weight: 4})
+	for i := 0; i < 8; i++ {
+		ctrl.Enqueue(&QueueEntry{Spec: tasks.WorkSpec{
+			ID: tasks.TaskID(fmt.Sprintf("heavy-%d", i)), Pool: "general",
+			Class: tasks.PriorityNormal, QuotaOwner: "heavy",
+		}})
+		ctrl.Enqueue(&QueueEntry{Spec: tasks.WorkSpec{
+			ID: tasks.TaskID(fmt.Sprintf("light-%d", i)), Pool: "general",
+			Class: tasks.PriorityNormal, QuotaOwner: "light",
+		}})
+	}
+
+	first, err := ctrl.SelectCandidate("general")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Spec.QuotaOwner != "heavy" {
+		t.Fatalf("first owner = %s, want heavy", first.Spec.QuotaOwner)
+	}
+	ctrl.OnTaskTerminal(first.Spec)
+
+	pool := ctrl.pools["general"]
+	if got := pool.ownerQuantums[tasks.PriorityNormal]["heavy"]; got != 4 {
+		t.Fatalf("initial cached quantum = %d, want 4", got)
+	}
+	if got := pool.ownerDeficits[tasks.PriorityNormal]["heavy"]; got != 3 {
+		t.Fatalf("initial cached deficit = %d, want 3", got)
+	}
+
+	ctrl.SetOwnerLimits("heavy", OwnerLimits{Weight: 1})
+	if got := pool.ownerQuantums[tasks.PriorityNormal]["heavy"]; got != 1 {
+		t.Fatalf("updated cached quantum = %d, want 1", got)
+	}
+	if got := pool.ownerDeficits[tasks.PriorityNormal]["heavy"]; got != 0 {
+		t.Fatalf("stale deficit survived weight change: %d", got)
+	}
+
+	second, err := ctrl.SelectCandidate("general")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrl.OnTaskTerminal(second.Spec)
+	third, err := ctrl.SelectCandidate("general")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Spec.QuotaOwner != "heavy" || third.Spec.QuotaOwner != "light" {
+		t.Fatalf("post-update owners = %s, %s; want heavy then light", second.Spec.QuotaOwner, third.Spec.QuotaOwner)
+	}
+}
+
