@@ -53,7 +53,7 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 		e.idleSlots[pool] = e.idleSlots[pool][1:]
 		e.workerIdleSince[pool][slotID] = time.Time{}
 		e.dispatchEpoch++
-		permit := newPermit(pool, slotID, rec.spec.ID, e.dispatchEpoch, nil)
+		permit := newPermit(pool, rec.spec.ID, e.dispatchEpoch, nil)
 		rec.permit = permit
 		rec.dispatchEpoch = e.dispatchEpoch
 		rec.state = tasks.StateDispatching

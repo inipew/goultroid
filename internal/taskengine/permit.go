@@ -18,7 +18,6 @@ var (
 // producer, which prevents a caller from forging or transferring a grant.
 type permit struct {
 	pool          tasks.PoolID
-	workerID      int
 	taskID        tasks.TaskID
 	dispatchEpoch uint64
 
@@ -27,8 +26,8 @@ type permit struct {
 	once      sync.Once
 }
 
-func newPermit(pool tasks.PoolID, workerID int, taskID tasks.TaskID, epoch uint64, onRelease func()) *permit {
-	return &permit{pool: pool, workerID: workerID, taskID: taskID, dispatchEpoch: epoch, onRelease: onRelease}
+func newPermit(pool tasks.PoolID, taskID tasks.TaskID, epoch uint64, onRelease func()) *permit {
+	return &permit{pool: pool, taskID: taskID, dispatchEpoch: epoch, onRelease: onRelease}
 }
 
 func (p *permit) use(spec tasks.WorkSpec) error {

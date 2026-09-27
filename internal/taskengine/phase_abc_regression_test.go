@@ -114,8 +114,8 @@ func TestCompletionDeliverySaturationBackpressuresAdmission(t *testing.T) {
 // not by TaskID or an inert pool-wide generation counter.
 func TestStaleWorkerCompletionCannotMutateReusedTaskID(t *testing.T) {
 	e := NewEngine(Config{Pools: map[tasks.PoolID]PoolEngineConfig{"p": {Concurrency: 1, BacklogLimit: 8}}})
-	current := newPermit("p", 0, "same-id", 20, nil)
-	foreign := newPermit("p", 0, "same-id", 20, nil)
+	current := newPermit("p", "same-id", 20, nil)
+	foreign := newPermit("p", "same-id", 20, nil)
 	rec := &taskRecord{
 		spec:  tasks.WorkSpec{ID: "same-id", Pool: "p", QuotaOwner: "owner"},
 		state: tasks.StateRunning, permit: current, dispatchEpoch: 20,
@@ -190,8 +190,8 @@ func TestDurabilityLaneIndependentFromCompletionCallbacks(t *testing.T) {
 
 func TestWorkerStartedRequiresExactPermitAndEpoch(t *testing.T) {
 	e := NewEngine(Config{Pools: map[tasks.PoolID]PoolEngineConfig{"p": {Concurrency: 1, BacklogLimit: 8}}})
-	current := newPermit("p", 0, "same-id", 20, nil)
-	foreign := newPermit("p", 0, "same-id", 20, nil)
+	current := newPermit("p", "same-id", 20, nil)
+	foreign := newPermit("p", "same-id", 20, nil)
 	rec := &taskRecord{
 		spec:  tasks.WorkSpec{ID: "same-id", Pool: "p", QuotaOwner: "owner"},
 		state: tasks.StateDispatching, permit: current, dispatchEpoch: 20,

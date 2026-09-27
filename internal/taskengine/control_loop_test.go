@@ -186,7 +186,7 @@ func TestWorkerStartedFencingIgnoresStalePermit(t *testing.T) {
 	}
 	_ = ticket
 	// Forged permit for an unknown task must be ignored (no panic, no state change).
-	e.sendInternal(engineRequest{op: opWorkerStarted, taskID: "task-unknown", permit: newPermit("general", 0, "task-unknown", 999, nil), started: time.Now().UTC()})
+	e.sendInternal(engineRequest{op: opWorkerStarted, taskID: "task-unknown", permit: newPermit("general", "task-unknown", 999, nil), started: time.Now().UTC()})
 	time.Sleep(50 * time.Millisecond)
 	close(release)
 	snap := waitForState(t, e, "task-fence", tasks.StateCompleted, 5*time.Second)
