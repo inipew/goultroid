@@ -56,12 +56,12 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	}
 
 	if acc == nil {
-		card := ui.NewCard("MyXL Control Center").
+		card := ui.NewCard("MyXL").
 			WithIcon("📱").
-			WithHeader("Kelola akun dan pantau kuota internet real-time.").
+			WithHeader("Ringkasan akun, kuota, dan pembelian paket.").
 			AddField("Status Akun", "⚠️ Belum ada akun terhubung").
-			WithRaw("Silakan login menggunakan nomor XL/Axis Anda. Anda akan menerima kode verifikasi OTP melalui SMS.").
-			WithFooter("<i>Tekan tombol Login di bawah untuk memulai.</i>")
+			WithRaw("Login dengan nomor XL/Axis untuk menerima OTP melalui SMS.").
+			WithFooter("<i>Mulai dari Login Akun Baru.</i>")
 		screen := ui.NewScreen("myxl", "", card.Render())
 		screen.AddRow(newMenuButton("➕ Login Akun Baru (OTP)", "myxl:login_req"))
 		screen.AddRow(newMenuButton("❌ Tutup", "assistant:close"))
@@ -70,37 +70,44 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 
 	qCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-
-	balance, _ := m.plugin.client.GetBalance(qCtx, acc)
-	quota, _ := m.plugin.client.GetQuotaDetails(qCtx, acc)
+	snapshot := m.plugin.loadQuotaSnapshot(qCtx, acc)
 
 	displayNum := acc.MSISDN
 	if mask {
 		displayNum = MaskMSISDN(acc.MSISDN)
 	}
 
-	card := ui.NewCard("MyXL Control Center").
+	card := ui.NewCard("Ringkasan MyXL").
 		WithIcon("📱").
-		WithHeader("Kelola akun dan pantau kuota internet real-time.").
-		AddField("Nomor", "<code>"+displayNum+"</code>")
-
+		WithHeader("Akun aktif dan status penggunaan saat ini.").
+		AddField("Nomor", "<code>"+html.EscapeString(displayNum)+"</code>")
 	if acc.Alias != "" {
 		card.AddField("Alias", html.EscapeString(acc.Alias))
 	}
-	card.AddField("Status", "🟢 Aktif & Terhubung")
+	card.AddField("Status Akun", "🟢 Aktif")
 
-	if balance != nil {
-		card.AddField("Pulsa", fmt.Sprintf("<code>Rp %s</code>", formatRupiah(int64(balance.Remaining))))
-		if balance.ExpiredAt > 0 {
-			card.AddField("Masa Aktif", FormatWIBTime(balance.ExpiredAt))
+	switch {
+	case snapshot.BalanceErr != nil:
+		card.AddField("Pulsa", "⚠️ Gagal dimuat")
+	case snapshot.Balance != nil:
+		card.AddField("Pulsa", fmt.Sprintf("<code>Rp %s</code>", formatRupiah(int64(snapshot.Balance.Remaining))))
+		if snapshot.Balance.ExpiredAt > 0 {
+			card.AddField("Masa Aktif", FormatWIBTime(snapshot.Balance.ExpiredAt))
 		}
+	default:
+		card.AddField("Pulsa", "ℹ️ Data tidak tersedia")
 	}
 
-	if quota != nil && len(quota.Quotas) > 0 {
+	switch {
+	case snapshot.QuotaErr != nil:
+		card.WithRaw("⚠️ <b>Kuota:</b> gagal dimuat. Data pulsa yang berhasil tetap ditampilkan.")
+	case snapshot.Quota == nil || len(snapshot.Quota.Quotas) == 0:
+		card.WithRaw("<i>Tidak ada paket kuota aktif yang terdeteksi.</i>")
+	default:
 		var qb strings.Builder
-		qb.WriteString("📦 <b>Ringkasan Paket:</b>\n")
+		qb.WriteString("📦 <b>Ringkasan Kuota:</b>\n")
 		count := 0
-		for _, q := range quota.Quotas {
+		for _, q := range snapshot.Quota.Quotas {
 			for _, ben := range q.Benefits {
 				if strings.EqualFold(ben.DataType, "DATA") || ben.Total > 1000 {
 					bar, pct := RenderProgressBar(ben.Remaining, ben.Total, 10)
@@ -116,9 +123,9 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 		}
 		if count > 0 {
 			card.WithRaw(qb.String())
+		} else {
+			card.WithRaw("<i>Kuota berhasil dimuat, tetapi tidak ada benefit data yang dapat diringkas.</i>")
 		}
-	} else {
-		card.WithRaw("<i>Tidak ada kuota data aktif yang terdeteksi.</i>")
 	}
 
 	var pendingQR *PendingQRIS
@@ -128,34 +135,36 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 	if pendingQR != nil {
 		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
 		if rem > 0 {
-			card.WithRaw(fmt.Sprintf("⏳ <b>Tagihan QRIS Menunggu Pembayaran:</b>\n• <b>Paket:</b> %s\n• <b>Nominal:</b> Rp %s\n• <b>Sisa Waktu:</b> %s (s/d %s)\n",
+			card.WithRaw(fmt.Sprintf("⏳ <b>QRIS Menunggu Pembayaran:</b>\n• <b>Paket:</b> %s\n• <b>Nominal:</b> Rp %s\n• <b>Sisa Waktu:</b> %s (s/d %s)\n",
 				html.EscapeString(pendingQR.PackageName), formatRupiah(pendingQR.Price), FormatRemainingDuration(rem), FormatWIBClock(pendingQR.ExpiresAt)))
 		}
 	}
 
-	card.WithFooter("<i>Pilih menu di bawah untuk rincian kuota, akun, atau belanja paket.</i>")
+	if snapshot.partial() {
+		card.WithFooter("<i>Sebagian data gagal dimuat. Pilih Coba Lagi untuk mengambil ulang tanpa membuang data yang berhasil.</i>")
+	} else if snapshot.allFailed() {
+		card.WithFooter("<i>Pulsa dan kuota gagal dimuat. Akun tetap tersedia; pilih Coba Lagi.</i>")
+	} else {
+		card.WithFooter("<i>Lanjutkan sesuai urutan: kuota → akun → pilih paket → tinjau pembelian.</i>")
+	}
+
 	screen := ui.NewScreen("myxl", "", card.Render())
 	if pendingQR != nil && time.Now().UTC().Before(pendingQR.ExpiresAt) {
 		rem := time.Until(pendingQR.ExpiresAt).Round(time.Second)
-		screen.AddRow(
-			newMenuButton("📱 Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "myxl:pending_qris"),
-		)
+		screen.AddRow(newMenuButton("⏳ Lihat QRIS Aktif ("+FormatRemainingDuration(rem)+")", "myxl:pending_qris"))
 	}
 	screen.AddRow(
-		newMenuButton("🔄 Perbarui Kuota", "myxl:refresh"),
 		newMenuButton("📊 Rincian Kuota", "myxl:detail"),
+		newMenuButton("🔄 Coba Lagi", "myxl:refresh"),
 	)
+	screen.AddRow(newMenuButton("👥 Kelola Akun", "myxl:accounts"))
 	screen.AddRow(
-		newMenuButton("👥 Kelola Akun", "myxl:accounts"),
-		newMenuButton("🛒 Beli Paket", "myxl:store"),
-	)
-	screen.AddRow(
+		newMenuButton("🔍 Cari / Pilih Paket", "myxl:store"),
 		newMenuButton("⭐ Paket Favorit", "myxl:saved"),
-		newMenuButton("❌ Tutup Menu", "assistant:close"),
 	)
+	screen.AddRow(newMenuButton("❌ Tutup Menu", "assistant:close"))
 	return screen, nil
 }
-
 func (m *MenuManager) BuildQuotaDetailScreen(ctx context.Context, mask bool) (*ui.Screen, error) {
 	acc, err := m.plugin.repo.GetActive(ctx)
 	if err != nil || acc == nil {
@@ -164,19 +173,15 @@ func (m *MenuManager) BuildQuotaDetailScreen(ctx context.Context, mask bool) (*u
 
 	qCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
+	snapshot := m.plugin.loadQuotaSnapshot(qCtx, acc)
 
-	balance, _ := m.plugin.client.GetBalance(qCtx, acc)
-	quota, _ := m.plugin.client.GetQuotaDetails(qCtx, acc)
-
-	formatted := FormatQuotaResponse(acc, balance, quota, mask)
-	screen := ui.NewScreen("myxl:detail", "", formatted)
+	screen := ui.NewScreen("myxl:detail", "", FormatQuotaSnapshot(acc, snapshot, mask))
 	screen.AddRow(
-		newMenuButton("🔄 Perbarui", "myxl:detail"),
-		newMenuButton("🔙 Kembali ke MyXL", "myxl:home"),
+		newMenuButton("🔄 Coba Lagi", "myxl:detail"),
+		newMenuButton("🔙 Kembali ke Ringkasan", "myxl:home"),
 	)
 	return screen, nil
 }
-
 func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, error) {
 	accounts, err := m.plugin.repo.List(ctx)
 	if err != nil {
@@ -259,32 +264,33 @@ func (m *MenuManager) BuildStoreScreen(ctx context.Context) (*ui.Screen, error) 
 		return nil, fmt.Errorf("no active account")
 	}
 
-	card := ui.NewCard("Beli Paket MyXL").
+	card := ui.NewCard("Pilih Paket MyXL").
 		WithIcon("🛒").
-		WithHeader("Pilih metode pencarian paket yang ingin Anda beli.").
+		WithHeader("Cari paket, pilih favorit, atau masukkan Option Code.").
 		AddField("Akun Aktif", "<code>"+MaskMSISDN(acc.MSISDN)+"</code>")
 
 	bCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if bal, bErr := m.plugin.client.GetBalance(bCtx, acc); bErr == nil && bal != nil {
 		card.AddField("Sisa Pulsa", fmt.Sprintf("Rp %s", formatRupiah(int64(bal.Remaining))))
+	} else if bErr != nil {
+		card.AddField("Sisa Pulsa", "⚠️ Gagal dimuat")
 	}
 
 	card.WithRaw(
-		"• <b>Paket Favorit:</b> Akses cepat paket yang sudah Anda simpan.\n" +
-			"• <b>Family Code:</b> Cari paket berdasarkan ID grup paket (contoh: <code>7658c955-a0b9-405f-bb17-de7f43d1a946</code>).\n" +
-			"• <b>Input Option Code:</b> Masukkan Option Code secara langsung (misal: <code>OPT12345</code>).\n",
+		"• <b>Favorit:</b> paket yang pernah Anda simpan.\n" +
+			"• <b>Family Code:</b> telusuri katalog berdasarkan grup paket.\n" +
+			"• <b>Option Code:</b> buka paket tertentu secara langsung.\n",
 	)
-	card.WithFooter("<i>Pilih salah satu metode di bawah.</i>")
+	card.WithFooter("<i>Setelah memilih paket, Anda akan melihat detail lalu halaman tinjau sebelum transaksi dijalankan.</i>")
 
 	screen := ui.NewScreen("myxl:store", "", card.Render())
-	screen.AddRow(newMenuButton("⭐ Paket Favorit Tersimpan", "myxl:saved"))
+	screen.AddRow(newMenuButton("⭐ Paket Favorit", "myxl:saved"))
 	screen.AddRow(newMenuButton("🔍 Cari dari Family Code", "myxl:fam_input"))
 	screen.AddRow(newMenuButton("⚡ Masukkan Option Code", "myxl:buy_opt_input"))
-	screen.AddRow(newMenuButton("🔙 Kembali ke MyXL", "myxl:home"))
+	screen.AddRow(newMenuButton("🔙 Kembali ke Ringkasan", "myxl:home"))
 	return screen, nil
 }
-
 func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen, error) {
 	acc, err := m.plugin.repo.GetActive(ctx)
 	if err != nil || acc == nil {
@@ -351,16 +357,15 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 
 	card := ui.NewCard("Detail Paket MyXL").
 		WithIcon("📦").
-		WithHeader("Periksa paket dan pilih metode pembayaran.").
+		WithHeader("Pilih metode pembayaran standar, atau buka opsi lanjutan bila memang diperlukan.").
 		AddField("Paket", html.EscapeString(pkgName)).
 		AddField("Option Code", "<code>"+html.EscapeString(canonicalOptionCode)+"</code>").
 		AddField("Harga Resmi", fmt.Sprintf("Rp %s", formatRupiah(price))).
-		AddField("Token Status", "✅ Tersedia & Siap Transaksi")
-
-	card.WithFooter("<i>Pilih salah satu metode pembayaran di bawah untuk melanjutkan.</i>")
+		AddField("Status", "✅ Detail terbaru tersedia").
+		WithRaw("⚙️ <b>Pembelian lanjutan</b>\n<i>Decoy dan overwrite harga mengubah cara request pembelian dibentuk. Fitur tetap tersedia, tetapi dipisahkan dari metode pembayaran normal agar tidak tertekan tanpa sengaja.</i>").
+		WithFooter("<i>Metode apa pun tetap masuk ke halaman tinjau; harga dan kode paket diverifikasi ulang saat konfirmasi.</i>")
 
 	optKey := m.RegisterOptionCode(optionCode)
-
 	screen := ui.NewScreen("myxl:pkg_detail", "", card.Render())
 	screen.AddRow(
 		newMenuButton("💰 Pulsa", fmt.Sprintf("myxl:method:balance:%s", optKey)),
@@ -374,20 +379,15 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 		newMenuButton("🔵 DANA", fmt.Sprintf("myxl:method:dana:%s", optKey)),
 		newMenuButton("🟠 ShopeePay", fmt.Sprintf("myxl:method:shopeepay:%s", optKey)),
 	)
+	screen.AddRow(newMenuButton("⭐ Simpan Favorit", fmt.Sprintf("myxl:bookmark_add:%s", optKey)))
 	screen.AddRow(
-		newMenuButton("⚡ Decoy Pulsa", fmt.Sprintf("myxl:method:decoy_balance:%s", optKey)),
-		newMenuButton("⚡ Decoy QRIS", fmt.Sprintf("myxl:method:decoy_qris:%s", optKey)),
+		newMenuButton("🧪 Decoy Pulsa", fmt.Sprintf("myxl:method:decoy_balance:%s", optKey)),
+		newMenuButton("🧪 Decoy QRIS", fmt.Sprintf("myxl:method:decoy_qris:%s", optKey)),
 	)
-	screen.AddRow(
-		newMenuButton("✏️ Overwrite Harga", fmt.Sprintf("myxl:custom_price:%s", optKey)),
-		newMenuButton("⭐ Simpan Favorit", fmt.Sprintf("myxl:bookmark_add:%s", optKey)),
-	)
-	screen.AddRow(
-		newMenuButton("🔙 Batal / Kembali", "myxl:store"),
-	)
+	screen.AddRow(newMenuButton("⚙️ Overwrite Harga", fmt.Sprintf("myxl:custom_price:%s", optKey)))
+	screen.AddRow(newMenuButton("🔙 Kembali ke Pilih Paket", "myxl:store"))
 	return screen, nil
 }
-
 func (m *MenuManager) BuildCheckoutScreen(quote purchaseCheckoutPreview) (*ui.Screen, error) {
 	priceLabel := fmt.Sprintf("Rp %s", formatRupiah(quote.EffectivePrice))
 	if quote.Intent.HasOverwrite {
@@ -416,16 +416,25 @@ func (m *MenuManager) BuildCheckoutScreen(quote purchaseCheckoutPreview) (*ui.Sc
 func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packageName string, effectivePrice int64, method, optionCode string) *ui.Screen {
 	title := "Pembelian Gagal"
 	icon := "❌"
-	if result != nil && result.IsSuccess {
-		title = "Pembelian Berhasil!"
-		icon = "🎉"
+	status := "Gagal"
+	pendingQRIS := result != nil && result.IsSuccess && strings.Contains(strings.ToLower(method), "qris")
+	switch {
+	case pendingQRIS:
+		title = "Menunggu Pembayaran QRIS"
+		icon = "⏳"
+		status = "Menunggu pembayaran"
+	case result != nil && result.IsSuccess:
+		title = "Pembelian Berhasil"
+		icon = "✅"
+		status = "Berhasil"
 	}
 
 	card := ui.NewCard(title).
 		WithIcon(icon).
 		AddField("Paket", html.EscapeString(packageName)).
 		AddField("Metode", strings.ToUpper(html.EscapeString(method))).
-		AddField("Nominal", fmt.Sprintf("Rp %s", formatRupiah(effectivePrice)))
+		AddField("Nominal", fmt.Sprintf("Rp %s", formatRupiah(effectivePrice))).
+		AddField("Status", status)
 
 	if result != nil {
 		if result.TransactionCode != "" {
@@ -438,17 +447,19 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 			if qrPayload, qrErr := normalizeQRPayload(result.QRCode); qrErr != nil {
 				card.WithRaw("⚠️ <i>Payload QRIS dari operator tidak valid sehingga gambar QR tidak dapat dibuat.</i>")
 			} else {
-				wibLoc := time.FixedZone("WIB", 7*3600)
-				expireWIB := time.Now().UTC().Add(pendingQRISTTL).In(wibLoc).Format("15:04:05")
+				expireWIB := time.Now().UTC().Add(pendingQRISTTL).In(time.FixedZone("WIB", 7*3600)).Format("15:04:05")
 				preview, truncated := inlineQRPreview(qrPayload)
 				card.AddField("Batas Waktu", fmt.Sprintf("5 Menit (s/d %s WIB)", expireWIB))
-				note := "<i>💡 Foto QRIS dikirimkan di bawah ini. QRIS berlaku 5 menit dan dapat dilihat kembali di Dashboard atau perintah <code>.myxl qris</code> selama belum dibayar.</i>"
+				note := "<i>💡 Foto QRIS dikirimkan ke chat dan tagihan dapat dibuka kembali dari Ringkasan selama belum kedaluwarsa.</i>"
 				if truncated {
 					note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
 				}
 				card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 			}
 		}
+	}
+	if pendingQRIS {
+		card.WithRaw("ℹ️ <i>Menghapus tagihan QRIS dari bot hanya menghapus salinan tersimpan di Goultroid; itu tidak membatalkan pembayaran atau tagihan di operator.</i>")
 	}
 
 	screen := ui.NewScreen("myxl:result", "", card.Render())
@@ -462,13 +473,12 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 		}
 	}
 	screen.AddRow(firstRow...)
-	screen.AddRow(
-		newMenuButton("📱 Buka Dashboard", "myxl:home"),
-	)
+	if pendingQRIS {
+		screen.AddRow(newMenuButton("⏳ Lihat Tagihan QRIS", "myxl:pending_qris"))
+	}
+	screen.AddRow(newMenuButton("📱 Kembali ke Ringkasan", "myxl:home"))
 	return screen
 }
-
-// BuildPendingQRISScreen renders the screen for active unexpired pending QRIS.
 func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, error) {
 	acc, err := m.plugin.repo.GetActive(ctx)
 	if err != nil || acc == nil {
@@ -479,22 +489,19 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 	if err != nil || pending == nil {
 		card := ui.NewCard("Tagihan QRIS").
 			WithIcon("ℹ️").
-			WithRaw("<i>Tidak ada transaksi QRIS aktif yang menunggu pembayaran.\nTransaksi QRIS otomatis kedaluwarsa setelah 5 menit.</i>")
+			WithRaw("<i>Tidak ada QRIS aktif yang tersimpan di bot. Tagihan tersimpan otomatis kedaluwarsa setelah 5 menit.</i>")
 		screen := ui.NewScreen("myxl:pending_qris", "", card.Render())
-		screen.AddRow(newMenuButton("🔙 Kembali ke Dashboard", "myxl:home"))
+		screen.AddRow(newMenuButton("🔙 Kembali ke Ringkasan", "myxl:home"))
 		return screen, nil
 	}
 
 	rem := time.Until(pending.ExpiresAt).Round(time.Second)
-	remStr := FormatRemainingDuration(rem)
-	expireWIB := FormatWIBClock(pending.ExpiresAt)
-
-	card := ui.NewCard("Tagihan QRIS Menunggu Pembayaran").
+	card := ui.NewCard("QRIS Menunggu Pembayaran").
 		WithIcon("⏳").
 		AddField("Paket", html.EscapeString(pending.PackageName)).
 		AddField("Nominal", fmt.Sprintf("Rp %s", formatRupiah(pending.Price))).
-		AddField("Batas Waktu", fmt.Sprintf("%s (Sisa: %s)", expireWIB, remStr))
-
+		AddField("Batas Waktu", fmt.Sprintf("%s (Sisa: %s)", FormatWIBClock(pending.ExpiresAt), FormatRemainingDuration(rem))).
+		AddField("Status", "Menunggu pembayaran")
 	if pending.TransactionCode != "" {
 		card.AddField("Kode Transaksi", "<code>"+html.EscapeString(pending.TransactionCode)+"</code>")
 	}
@@ -504,12 +511,13 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 		card.WithRaw("⚠️ <i>Payload QRIS tersimpan tidak valid sehingga gambar QR tidak dapat dibuat.</i>")
 	} else {
 		preview, truncated := inlineQRPreview(qrPayload)
-		note := "<i>💡 Foto QRIS dikirimkan ke chat. Anda dapat scan langsung atau upload dari galeri aplikasi e-wallet / mobile banking.</i>"
+		note := "<i>💡 Foto QRIS dapat dikirim ulang ke chat untuk dipindai.</i>"
 		if truncated {
 			note = "<i>💡 String dipersingkat agar aman untuk Telegram; payload penuh tetap tersedia pada foto QRIS.</i>"
 		}
 		card.WithRaw("📱 <b>Kode / String QRIS:</b>\n<code>" + html.EscapeString(preview) + "</code>\n\n" + note)
 	}
+	card.WithRaw("ℹ️ <i>Hapus dari Bot hanya menghapus tagihan tersimpan di Goultroid. Tidak ada API pembatalan operator yang dijalankan.</i>")
 
 	screen := ui.NewScreen("myxl:pending_qris", "", card.Render())
 	qrKey := ""
@@ -520,16 +528,14 @@ func (m *MenuManager) BuildPendingQRISScreen(ctx context.Context) (*ui.Screen, e
 	if qrKey != "" {
 		actionRow = append(actionRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("myxl:qris_img:%s", qrKey)))
 	}
-	actionRow = append(actionRow, newMenuButton("🗑️ Batalkan", fmt.Sprintf("myxl:qris_cancel:%s", pending.TransactionCode)))
+	actionRow = append(actionRow, newMenuButton("🗑️ Hapus dari Bot", fmt.Sprintf("myxl:qris_cancel:%s", pending.TransactionCode)))
 	screen.AddRow(actionRow...)
 	screen.AddRow(
-		newMenuButton("🔄 Cek Status", "myxl:pending_qris"),
-		newMenuButton("🔙 Kembali ke Dashboard", "myxl:home"),
+		newMenuButton("🔄 Cek Lagi", "myxl:pending_qris"),
+		newMenuButton("🔙 Kembali ke Ringkasan", "myxl:home"),
 	)
 	return screen, nil
 }
-
-// BuildDeletePickScreen lets user choose which account to delete.
 func (m *MenuManager) BuildDeletePickScreen(ctx context.Context) (*ui.Screen, error) {
 	accounts, err := m.plugin.repo.List(ctx)
 	if err != nil {

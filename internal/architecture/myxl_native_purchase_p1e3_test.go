@@ -40,13 +40,17 @@ func TestP1E3NativeMyXLPurchaseProducerUsesA2(t *testing.T) {
 		t.Fatal("native purchase confirm terminator missing")
 	}
 	body := native[start : start+end]
+	resolve := strings.Index(body, "resolvePurchaseIntent(")
 	transition := strings.Index(body, "ctx.Transition(")
-	reserve := strings.Index(body, "ReservePurchase(")
-	if transition < 0 || reserve < 0 || transition > reserve {
-		t.Fatal("native purchase confirm must advance revision before ReservePurchase")
+	execute := strings.Index(body, "executeResolvedPurchase(")
+	if resolve < 0 || transition < 0 || execute < 0 || resolve > transition || transition > execute {
+		t.Fatal("native purchase confirm must fresh-resolve, advance revision, then enter shared execution")
 	}
-	if !strings.Contains(body, "resolvePurchaseIntent(") || !strings.Contains(body, "ctx.Terminate(") {
-		t.Fatal("native purchase confirm must fresh-resolve and terminate the session")
+	if strings.Contains(body, "ReservePurchase(") {
+		t.Fatal("native purchase confirm must not own reservation outside shared workflow")
+	}
+	if !strings.Contains(body, "ctx.Terminate(") {
+		t.Fatal("native purchase confirm must terminate the session on final outcomes")
 	}
 }
 

@@ -22,7 +22,8 @@ func TestP1E1MyXLNativeQuotaUsesA2WithoutAssistantOrLegacyCallback(t *testing.T)
 		"func (p *Plugin) NativeFeatureID() string",
 		"func (p *Plugin) BindNative(",
 		"RegisterPreparedAction(",
-		"ExecutionTimeout: nativeQuotaRefreshExec",
+		"ExecutionTimeout: timeout",
+		"registerPrepared(nativeQuotaRefreshAction, nativeQuotaRefreshExec, p.handleNativeQuotaRefresh)",
 		"rt.Interactions.Begin(",
 		"ctx.Transition(",
 	} {

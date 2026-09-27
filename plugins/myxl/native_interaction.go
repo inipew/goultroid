@@ -191,7 +191,6 @@ func (p *Plugin) handleNativeQuotaRefresh(ctx *orchestration.Context) error {
 
 	queryCtx, cancel := context.WithTimeout(ctx.Context(), 25*time.Second)
 	defer cancel()
-
 	acc, err := p.repo.GetByMSISDN(queryCtx, state.MSISDN)
 	if err != nil {
 		return ctx.Answer("Gagal membaca akun MyXL. Silakan coba lagi.", true)
@@ -200,9 +199,8 @@ func (p *Plugin) handleNativeQuotaRefresh(ctx *orchestration.Context) error {
 		return ctx.Answer("Akun MyXL tidak ditemukan. Buka ulang .kuota.", true)
 	}
 
-	balance, balanceErr := p.client.GetBalance(queryCtx, acc)
-	quota, quotaErr := p.client.GetQuotaDetails(queryCtx, acc)
-	if balanceErr != nil && quotaErr != nil {
+	snapshot := p.loadQuotaSnapshot(queryCtx, acc)
+	if snapshot.allFailed() {
 		return ctx.Answer("Gagal memperbarui pulsa dan kuota MyXL. Silakan coba lagi.", true)
 	}
 
@@ -210,9 +208,8 @@ func (p *Plugin) handleNativeQuotaRefresh(ctx *orchestration.Context) error {
 	if err != nil {
 		return err
 	}
-	return ctx.Transition(raw, nativeQuotaRefreshTTL, nativeQuotaView(FormatQuotaResponse(acc, balance, quota, state.Masked)))
+	return ctx.Transition(raw, nativeQuotaRefreshTTL, nativeQuotaView(FormatQuotaSnapshot(acc, snapshot, state.Masked)))
 }
-
 func (p *Plugin) handleNativePurchaseCancel(ctx *orchestration.Context) error {
 	if p == nil || ctx == nil {
 		return orchestration.ErrInvalidEngine
@@ -231,7 +228,6 @@ func (p *Plugin) handleNativePurchaseConfirm(ctx *orchestration.Context) error {
 
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 45*time.Second)
 	defer cancel()
-
 	resolved, err := p.resolvePurchaseIntent(cCtx, intent)
 	if err != nil {
 		if errors.Is(err, ErrPurchaseQuoteChanged) {
@@ -240,13 +236,13 @@ func (p *Plugin) handleNativePurchaseConfirm(ctx *orchestration.Context) error {
 		return ctx.Terminate(presentation.View{Text: "❌ Detail pembelian tidak lagi valid. Pembelian tidak dijalankan; buka ulang paket lalu coba lagi."})
 	}
 
-	raw, err := json.Marshal(intent)
+	raw, err := json.Marshal(resolved.Intent)
 	if err != nil {
 		return err
 	}
 	if err := ctx.Transition(raw, purchaseProcessingTTL, presentation.View{
 		Text: fmt.Sprintf(
-			"⏳ <b>Memproses pembelian MyXL</b>\n\nPaket: <b>%s</b>\nKode: <code>%s</code>\nMetode: <code>%s</code>\n\nJangan ulangi transaksi sampai hasil akhir ditampilkan.",
+			"⏳ <b>Memproses pembelian MyXL</b>\n\nPaket: <b>%s</b>\nKode: <code>%s</code>\nMetode: <code>%s</code>\n\nJangan ulangi transaksi sampai status akhir ditampilkan.",
 			html.EscapeString(resolved.PackageName),
 			html.EscapeString(resolved.Intent.OptionCode),
 			html.EscapeString(strings.ToUpper(resolved.Intent.Method)),
@@ -255,104 +251,31 @@ func (p *Plugin) handleNativePurchaseConfirm(ctx *orchestration.Context) error {
 		return err
 	}
 
-	reserved, err := p.repo.ReservePurchase(
-		cCtx,
-		resolved.IdempotencyKey,
-		resolved.Intent.MSISDN,
-		resolved.Intent.OptionCode,
-		resolved.Intent.Method,
-	)
+	execution, err := p.executeResolvedPurchase(cCtx, resolved)
 	if err != nil {
 		return ctx.Terminate(presentation.View{Text: "❌ Gagal mengamankan transaksi. Pembelian tidak dijalankan."})
 	}
-	if !reserved {
-		return ctx.Terminate(presentation.View{Text: "⏳ Transaksi sedang diproses atau baru saja dikonfirmasi. Pembelian tidak dijalankan ulang."})
-	}
-
-	var result *SettlementResult
-	switch resolved.Intent.Method {
-	case "balance":
-		result, err = p.client.SettlementBalance(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
-	case "qris":
-		result, err = p.client.SettlementQRIS(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
-	case "gopay", "ovo", "dana", "shopeepay":
-		result, err = p.client.SettlementMultipayment(
-			cCtx,
-			resolved.Account,
-			resolved.Item,
-			strings.ToUpper(resolved.Intent.Method),
-			resolved.Intent.WalletNumber,
-			resolved.Overwrite,
-		)
-	case "decoy_balance":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "balance", resolved.Overwrite)
-	case "decoy_qris":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris", resolved.Overwrite)
-	case "decoy_qris0":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris0", resolved.Overwrite)
-	default:
-		err = fmt.Errorf("unsupported payment method %q", resolved.Intent.Method)
-	}
-
-	if err != nil {
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", err.Error())
-		persistCancel()
+	switch execution.Kind {
+	case purchaseOutcomeDuplicate:
+		return ctx.Terminate(presentation.View{Text: "⏳ Transaksi sedang diproses atau baru saja dikonfirmasi. Klik ulang tidak menjalankan pembelian kedua."})
+	case purchaseOutcomeUnknown:
 		return ctx.Terminate(presentation.View{Text: "⚠️ Hasil transaksi tidak dapat dipastikan. Transaksi tidak akan diulang otomatis; periksa riwayat MyXL sebelum mencoba lagi."})
 	}
-	if result == nil {
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", "empty settlement result")
-		persistCancel()
-		return ctx.Terminate(presentation.View{Text: "⚠️ Hasil transaksi kosong dan tidak dapat dipastikan. Periksa riwayat MyXL sebelum mencoba lagi."})
-	}
 
-	status := "FAILED"
-	if result.IsSuccess {
-		status = "SUCCESS"
+	text := FormatPurchaseResult(
+		execution.Result,
+		resolved.PackageName,
+		resolved.EffectivePrice,
+		strings.ToUpper(resolved.Intent.Method),
+	)
+	if execution.Kind == purchaseOutcomePendingQRIS {
+		text += "\n<i>Gunakan <code>.myxl qris</code> untuk membuka kembali tagihan QRIS yang tersimpan di bot.</i>"
 	}
-	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-	finishErr := p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, status, result.TransactionCode, result.Message)
-	persistCancel()
-	if finishErr != nil {
-		return ctx.Terminate(presentation.View{Text: "⚠️ Transaksi selesai tetapi hasilnya gagal dicatat. Periksa riwayat MyXL sebelum mencoba lagi."})
+	if execution.Warning != "" {
+		text += "\n\n⚠️ " + html.EscapeString(execution.Warning)
 	}
-
-	var qrWarning string
-	if result.QRCode != "" {
-		qrPayload, qrErr := normalizeQRPayload(result.QRCode)
-		if qrErr != nil {
-			qrWarning = "\n\n⚠️ Payload QRIS dari operator tidak valid; gambar QR tidak dibuat."
-			result.QRCode = ""
-		} else {
-			result.QRCode = qrPayload
-			now := time.Now().UTC()
-			pending := &PendingQRIS{
-				TransactionCode: result.TransactionCode,
-				IdempotencyKey:  resolved.IdempotencyKey,
-				MSISDN:          resolved.Intent.MSISDN,
-				OptionCode:      resolved.Intent.OptionCode,
-				PackageName:     resolved.PackageName,
-				Price:           resolved.EffectivePrice,
-				QRCode:          qrPayload,
-				Status:          "PENDING",
-				CreatedAt:       now,
-				ExpiresAt:       now.Add(pendingQRISTTL),
-			}
-			if err := p.repo.SavePendingQRIS(cCtx, pending); err != nil {
-				qrWarning = "\n\n⚠️ QRIS berhasil dibuat tetapi gagal disimpan untuk dilihat kembali."
-			}
-		}
-	}
-
-	text := FormatPurchaseResult(result, resolved.PackageName, resolved.EffectivePrice, strings.ToUpper(resolved.Intent.Method))
-	if result.QRCode != "" {
-		text += "\n\n<i>Gunakan <code>.myxl qris</code> bila ingin melihat kembali QRIS aktif atau mengirim gambar QR.</i>"
-	}
-	text += qrWarning
 	return ctx.Terminate(presentation.View{Text: text})
 }
-
 func decodeNativeQuotaState(raw []byte) (quotaRefreshState, error) {
 	var state quotaRefreshState
 	if len(raw) == 0 {

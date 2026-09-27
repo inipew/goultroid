@@ -301,33 +301,18 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 		return ctx.Status("Format salah! Gunakan: <code>.myxl login &lt;nomor_hp&gt;</code>\nContoh: <code>.myxl login 081912345678</code>")
 	}
 
-	rawMSISDN := args[0]
-	msisdn, err := NormalizeMSISDN(rawMSISDN)
+	msisdn, err := NormalizeMSISDN(args[0])
 	if err != nil {
 		return ctx.Fail(err, "Nomor HP tidak valid.")
 	}
-
 	_ = ctx.Progress(fmt.Sprintf("Mengirim permintaan OTP ke <code>%s</code>...", html.EscapeString(msisdn)))
 
 	cCtx, cancel := context.WithTimeout(getContext(ctx), 20*time.Second)
 	defer cancel()
-
-	subID, err := p.client.RequestOTP(cCtx, msisdn)
+	msisdn, err = p.requestLoginOTP(cCtx, msisdn)
 	if err != nil {
-		return ctx.Fail(err, "Gagal meminta OTP. Silakan coba lagi.")
+		return ctx.Fail(err, "Gagal meminta atau menyimpan sesi OTP. Silakan coba lagi.")
 	}
-
-	// Save or update placeholder account with subscriber_id if present
-	existing, _ := p.repo.GetByMSISDN(cCtx, msisdn)
-	if existing == nil {
-		existing = &Account{
-			MSISDN:       msisdn,
-			SubscriberID: subID,
-		}
-	} else if subID != "" {
-		existing.SubscriberID = subID
-	}
-	_ = p.repo.Save(cCtx, existing)
 
 	return ctx.Success(
 		fmt.Sprintf("<b>Kode OTP telah dikirimkan via SMS</b> ke <code>%s</code>!\n\n"+
@@ -336,58 +321,31 @@ func (p *Plugin) handleLogin(ctx *core.Context, args []string) error {
 			html.EscapeString(msisdn), html.EscapeString(msisdn)),
 	)
 }
-
 func (p *Plugin) handleOTP(ctx *core.Context, args []string) error {
 	if len(args) < 2 {
 		return ctx.Status("Format salah! Gunakan: <code>.myxl otp &lt;nomor_hp&gt; &lt;kode_otp&gt;</code>\nContoh: <code>.myxl otp 081912345678 123456</code>")
 	}
 
-	rawMSISDN := args[0]
-	code := args[1]
-
-	msisdn, err := NormalizeMSISDN(rawMSISDN)
+	msisdn, err := NormalizeMSISDN(args[0])
 	if err != nil {
 		return ctx.Fail(err, "Nomor HP tidak valid.")
 	}
-
 	_ = ctx.Progress(fmt.Sprintf("Memverifikasi kode OTP untuk <code>%s</code>...", html.EscapeString(msisdn)))
 
 	cCtx, cancel := context.WithTimeout(getContext(ctx), 25*time.Second)
 	defer cancel()
-
-	tokens, err := p.client.SubmitOTP(cCtx, msisdn, code)
+	acc, err := p.completeLoginOTP(cCtx, msisdn, args[1])
 	if err != nil {
-		return ctx.Fail(err, "Verifikasi OTP gagal. Periksa kode lalu coba lagi.")
-	}
-
-	acc, _ := p.repo.GetByMSISDN(cCtx, msisdn)
-	if acc == nil {
-		acc = &Account{
-			MSISDN: msisdn,
-		}
-	}
-	acc.AccessToken = tokens.AccessToken
-	acc.IDToken = tokens.IDToken
-	acc.RefreshToken = tokens.RefreshToken
-	if tokens.ExpiresIn > 0 {
-		acc.TokenExpiresAt = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
-	} else {
-		acc.TokenExpiresAt = time.Now().Add(DefaultTokenExpiryFallback)
-	}
-	acc.IsActive = true
-
-	if err := p.repo.Save(cCtx, acc); err != nil {
-		return ctx.Fail(err, "Login berhasil, tetapi akun gagal disimpan. Periksa log sebelum mencoba ulang.")
+		return ctx.Fail(err, "Verifikasi OTP gagal atau akun tidak dapat disimpan. Periksa kode lalu coba lagi.")
 	}
 
 	return ctx.Success(
 		fmt.Sprintf("<b>Login Berhasil!</b>\n\n"+
 			"Nomor <code>%s</code> telah tersimpan dan dijadikan sebagai <b>akun aktif</b>.\n\n"+
 			"Gunakan <code>.kuota</code> untuk memeriksa sisa kuota dan pulsa Anda.",
-			html.EscapeString(msisdn)),
+			html.EscapeString(acc.MSISDN)),
 	)
 }
-
 func (p *Plugin) handleSetAlias(ctx *core.Context, args []string) error {
 	if len(args) < 2 {
 		return ctx.Status("Format: <code>.myxl alias &lt;nomor/alias_lama&gt; &lt;alias_baru&gt;</code>\nContoh: <code>.myxl alias 081912345678 Utama</code>")
@@ -492,19 +450,14 @@ func (p *Plugin) handleUseAccount(ctx *core.Context, args []string) error {
 		return ctx.Status("Masukkan nomor atau alias akun! Contoh: <code>.myxl use 081912345678</code> atau <code>.myxl use Utama</code>")
 	}
 
-	target := args[0]
-	if norm, err := NormalizeMSISDN(target); err == nil {
-		target = norm
-	}
-
+	target := strings.TrimSpace(args[0])
 	cCtx := getContext(ctx)
-	if err := p.repo.SetActive(cCtx, target); err != nil {
+	if err := p.switchActiveAccount(cCtx, target); err != nil {
 		return ctx.Fail(err, "Gagal mengganti akun aktif.")
 	}
 
 	return ctx.Success(fmt.Sprintf("Akun aktif berhasil diubah ke <code>%s</code>.", html.EscapeString(target)))
 }
-
 func (p *Plugin) handleDeleteAccount(ctx *core.Context, args []string) error {
 	if len(args) == 0 {
 		return ctx.Status("Masukkan nomor atau alias akun! Contoh: <code>.myxl del 081912345678</code>")
@@ -534,22 +487,19 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 	cCtx := getContext(ctx)
 	if len(args) > 0 {
 		target := args[0]
-		if norm, err := NormalizeMSISDN(target); err == nil {
-			target = norm
+		if normalized, normalizeErr := NormalizeMSISDN(target); normalizeErr == nil {
+			target = normalized
 		}
 		acc, err = p.repo.GetByMSISDN(cCtx, target)
 	} else {
 		acc, err = p.repo.GetActive(cCtx)
 	}
-
 	if err != nil {
 		return ctx.Fail(err, "Error database.")
 	}
-
 	if acc == nil {
 		return ctx.Status("Tidak ada akun MyXL aktif. Silakan login terlebih dahulu dengan <code>.myxl login &lt;nomor&gt;</code>")
 	}
-
 	if acc.IDToken == "" && acc.RefreshToken == "" {
 		return ctx.Status(fmt.Sprintf("Akun <code>%s</code> belum terautentikasi. Silakan jalankan <code>.myxl login %s</code>", html.EscapeString(acc.MSISDN), html.EscapeString(acc.MSISDN)))
 	}
@@ -562,25 +512,20 @@ func (p *Plugin) handleShowQuota(ctx *core.Context, args []string) error {
 
 	queryCtx, cancel := context.WithTimeout(cCtx, 25*time.Second)
 	defer cancel()
-
-	balance, bErr := p.client.GetBalance(queryCtx, acc)
-	quota, qErr := p.client.GetQuotaDetails(queryCtx, acc)
-
-	if bErr != nil && qErr != nil {
-		return ctx.Fail(errors.Join(bErr, qErr), "Gagal mengambil data pulsa dan kuota MyXL. Silakan coba lagi.")
+	snapshot := p.loadQuotaSnapshot(queryCtx, acc)
+	if snapshot.allFailed() {
+		return ctx.Fail(errors.Join(snapshot.BalanceErr, snapshot.QuotaErr), "Gagal mengambil data pulsa dan kuota MyXL. Silakan coba lagi.")
 	}
 
-	respText := FormatQuotaResponse(acc, balance, quota, maskMSISDN)
+	respText := FormatQuotaSnapshot(acc, snapshot, maskMSISDN)
 	if useNativeRefresh {
-		attempted, err := p.openNativeQuotaRefresh(ctx, quotaRefreshState{MSISDN: acc.MSISDN, Masked: maskMSISDN}, respText)
+		attempted, openErr := p.openNativeQuotaRefresh(ctx, quotaRefreshState{MSISDN: acc.MSISDN, Masked: maskMSISDN}, respText)
 		if attempted {
-			return err
+			return openErr
 		}
 	}
-
 	return deliverHTML(ctx, respText)
 }
-
 func condMask(s string, mask bool) string {
 	if mask {
 		return MaskMSISDN(s)
@@ -787,7 +732,7 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 			if err := p.repo.DeletePendingQRIS(cCtx, pending.TransactionCode); err != nil {
 				return ctx.Fail(err, "Gagal membatalkan transaksi QRIS.")
 			}
-			return ctx.Success("Transaksi QRIS berhasil dibatalkan dan dihapus dari penyimpanan.")
+			return ctx.Success("Tagihan QRIS tersimpan di bot telah dihapus. Tindakan ini tidak membatalkan pembayaran atau tagihan di operator.")
 		}
 	}
 
@@ -825,9 +770,9 @@ func (p *Plugin) handlePendingQRIS(ctx *core.Context, args []string) error {
 		sb.WriteString("<b>Kode QRIS:</b>\n")
 		sb.WriteString(fmt.Sprintf("<code>%s</code>\n\n", html.EscapeString(preview)))
 		if truncated {
-			sb.WriteString("💡 <i>String dipersingkat agar aman untuk Telegram; gunakan gambar QR untuk pembayaran. Ketik <code>.myxl qris cancel</code> untuk membatalkan.</i>")
+			sb.WriteString("💡 <i>String dipersingkat agar aman untuk Telegram; gunakan gambar QR untuk pembayaran. Ketik <code>.myxl qris cancel</code> untuk menghapus tagihan tersimpan dari bot; ini tidak membatalkan pembayaran di operator.</i>")
 		} else {
-			sb.WriteString("💡 <i>Salin string QRIS di atas atau scan gambar QR yang dikirimkan. QRIS hanya berlaku 5 menit. Ketik <code>.myxl qris cancel</code> untuk membatalkan.</i>")
+			sb.WriteString("💡 <i>Salin string QRIS di atas atau scan gambar QR yang dikirimkan. QRIS hanya berlaku 5 menit. Ketik <code>.myxl qris cancel</code> untuk menghapus tagihan tersimpan dari bot; ini tidak membatalkan pembayaran di operator.</i>")
 		}
 	}
 

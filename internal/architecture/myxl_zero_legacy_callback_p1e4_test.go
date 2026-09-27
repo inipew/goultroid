@@ -127,9 +127,13 @@ func TestP1EAssistantPurchaseUsesPreparedExecutionAndStalesBeforeReserve(t *test
 		t.Fatal("confirmAssistantPurchase terminator missing")
 	}
 	body := source[start : start+end]
+	resolve := strings.Index(body, "resolvePurchaseIntent(")
 	transition := strings.Index(body, "ctx.Transition(")
-	reserve := strings.Index(body, "ReservePurchase(")
-	if transition < 0 || reserve < 0 || transition > reserve {
-		t.Fatal("Assistant purchase must advance session revision before ReservePurchase")
+	execute := strings.Index(body, "executeResolvedPurchase(")
+	if resolve < 0 || transition < 0 || execute < 0 || resolve > transition || transition > execute {
+		t.Fatal("Assistant purchase must fresh-resolve, advance session revision, then enter shared execution")
+	}
+	if strings.Contains(body, "ReservePurchase(") {
+		t.Fatal("Assistant purchase must not own reservation outside shared workflow")
 	}
 }

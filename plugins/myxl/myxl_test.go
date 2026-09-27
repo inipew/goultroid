@@ -614,14 +614,18 @@ func TestMyXLPlugin_PendingQRISCommand(t *testing.T) {
 
 	// 4. .myxl qris cancel -> cancels transaction
 	_ = plugin.handlePendingQRIS(&ctxQRIS, []string{"cancel"})
-	if !strings.Contains(svc.sent, "berhasil dibatalkan") {
-		t.Errorf("expected cancellation message, got %s", svc.sent)
+	if !strings.Contains(svc.sent, "telah dihapus") ||
+		!strings.Contains(svc.sent, "tidak membatalkan pembayaran atau tagihan di operator") {
+		t.Errorf("expected bot-only QRIS deletion message, got %s", svc.sent)
+	}
+	if strings.Contains(svc.sent, "berhasil dibatalkan") {
+		t.Errorf("QRIS deletion must not claim operator cancellation, got %s", svc.sent)
 	}
 
 	// Verify it got deleted from repo
 	p, err := repo.GetPendingQRIS(ctx, acc.MSISDN)
 	if err != nil || p != nil {
-		t.Errorf("expected pending QRIS to be cancelled, got: %v", p)
+		t.Errorf("expected pending QRIS to be deleted from bot storage, got: %v", p)
 	}
 }
 

@@ -122,8 +122,20 @@ func MaskMSISDN(msisdn string) string {
 
 // FormatQuotaResponse builds the Telegram HTML message for balance and quota.
 func FormatQuotaResponse(account *Account, balance *BalanceData, quota *QuotaDetailsData, maskMSISDN bool) string {
-	var b strings.Builder
+	return FormatQuotaSnapshot(account, quotaSnapshot{
+		Balance: balance,
+		Quota:   quota,
+	}, maskMSISDN)
+}
 
+// FormatQuotaSnapshot renders independently fetched balance/quota results. It
+// deliberately distinguishes an API failure from a successful empty response.
+func FormatQuotaSnapshot(account *Account, snapshot quotaSnapshot, maskMSISDN bool) string {
+	if account == nil {
+		return "<i>Akun MyXL tidak tersedia.</i>"
+	}
+
+	var b strings.Builder
 	displayNum := account.MSISDN
 	if maskMSISDN {
 		displayNum = MaskMSISDN(account.MSISDN)
@@ -139,66 +151,69 @@ func FormatQuotaResponse(account *Account, balance *BalanceData, quota *QuotaDet
 	}
 	b.WriteString("\n")
 
-	if balance != nil {
-		b.WriteString(fmt.Sprintf("💰 <b>Pulsa:</b> <code>Rp %s</code>\n", formatRupiah(int64(balance.Remaining))))
-		if balance.ExpiredAt > 0 {
-			b.WriteString(fmt.Sprintf("⏳ <b>Masa Aktif:</b> <code>%s</code>\n", FormatWIBTime(balance.ExpiredAt)))
+	switch {
+	case snapshot.BalanceErr != nil:
+		b.WriteString("⚠️ <b>Pulsa:</b> <i>gagal dimuat</i>\n")
+	case snapshot.Balance != nil:
+		b.WriteString(fmt.Sprintf("💰 <b>Pulsa:</b> <code>Rp %s</code>\n", formatRupiah(int64(snapshot.Balance.Remaining))))
+		if snapshot.Balance.ExpiredAt > 0 {
+			b.WriteString(fmt.Sprintf("⏳ <b>Masa Aktif:</b> <code>%s</code>\n", FormatWIBTime(snapshot.Balance.ExpiredAt)))
 		}
+	default:
+		b.WriteString("ℹ️ <b>Pulsa:</b> <i>data tidak tersedia</i>\n")
 	}
 
 	b.WriteString("\n")
-
-	if quota == nil || len(quota.Quotas) == 0 {
+	if snapshot.QuotaErr != nil {
+		b.WriteString("⚠️ <b>Kuota:</b> <i>gagal dimuat</i>\n")
+	} else if snapshot.Quota == nil || len(snapshot.Quota.Quotas) == 0 {
 		b.WriteString("<i>Tidak ada paket kuota aktif ditemukan.</i>\n")
-		return b.String()
-	}
-
-	b.WriteString("📦 <b>Paket Aktif:</b>\n")
-
-	for i, q := range quota.Quotas {
-		name := strings.TrimSpace(q.Name)
-		if name == "" {
-			name = "Paket Internet"
-		}
-
-		b.WriteString(fmt.Sprintf("\n<b>%d. %s</b>\n", i+1, html.EscapeString(name)))
-		if q.ExpiredAt > 0 {
-			b.WriteString(fmt.Sprintf("   ⏳ <i>Berlaku s/d: %s</i>\n", FormatWIBTime(q.ExpiredAt)))
-		}
-
-		hasBenefits := false
-		for _, benefit := range q.Benefits {
-			bName := strings.TrimSpace(benefit.Name)
-			if bName == "" {
-				bName = benefit.DataType
-			}
-			if bName == "" {
-				bName = "Quota"
+	} else {
+		b.WriteString("📦 <b>Paket Aktif:</b>\n")
+		for i, q := range snapshot.Quota.Quotas {
+			name := strings.TrimSpace(q.Name)
+			if name == "" {
+				name = "Paket Internet"
 			}
 
-			// If data quota (measured in bytes)
-			if strings.EqualFold(benefit.DataType, "DATA") || benefit.Total > 1000 {
-				bar, pct := RenderProgressBar(benefit.Remaining, benefit.Total, 10)
-				b.WriteString(fmt.Sprintf("   ▫️ <b>%s:</b>\n", html.EscapeString(bName)))
-				b.WriteString(fmt.Sprintf("      <code>%s %s</code>\n", bar, pct))
-				b.WriteString(fmt.Sprintf("      <i>%s / %s</i>\n", FormatBytes(benefit.Remaining), FormatBytes(benefit.Total)))
-				hasBenefits = true
-			} else if benefit.Total > 0 {
-				// Voice or SMS
-				b.WriteString(fmt.Sprintf("   ▫️ <b>%s:</b> <code>%.0f / %.0f %s</code>\n",
-					html.EscapeString(bName), benefit.Remaining, benefit.Total, benefit.DataType))
-				hasBenefits = true
+			b.WriteString(fmt.Sprintf("\n<b>%d. %s</b>\n", i+1, html.EscapeString(name)))
+			if q.ExpiredAt > 0 {
+				b.WriteString(fmt.Sprintf("   ⏳ <i>Berlaku s/d: %s</i>\n", FormatWIBTime(q.ExpiredAt)))
 			}
-		}
 
-		if !hasBenefits {
-			b.WriteString("   <i>Tidak ada rincian benefit.</i>\n")
+			hasBenefits := false
+			for _, benefit := range q.Benefits {
+				bName := strings.TrimSpace(benefit.Name)
+				if bName == "" {
+					bName = benefit.DataType
+				}
+				if bName == "" {
+					bName = "Quota"
+				}
+
+				if strings.EqualFold(benefit.DataType, "DATA") || benefit.Total > 1000 {
+					bar, pct := RenderProgressBar(benefit.Remaining, benefit.Total, 10)
+					b.WriteString(fmt.Sprintf("   ▫️ <b>%s:</b>\n", html.EscapeString(bName)))
+					b.WriteString(fmt.Sprintf("      <code>%s %s</code>\n", bar, pct))
+					b.WriteString(fmt.Sprintf("      <i>%s / %s</i>\n", FormatBytes(benefit.Remaining), FormatBytes(benefit.Total)))
+					hasBenefits = true
+				} else if benefit.Total > 0 {
+					b.WriteString(fmt.Sprintf("   ▫️ <b>%s:</b> <code>%.0f / %.0f %s</code>\n",
+						html.EscapeString(bName), benefit.Remaining, benefit.Total, benefit.DataType))
+					hasBenefits = true
+				}
+			}
+			if !hasBenefits {
+				b.WriteString("   <i>Tidak ada rincian benefit.</i>\n")
+			}
 		}
 	}
 
+	if snapshot.BalanceErr != nil || snapshot.QuotaErr != nil {
+		b.WriteString("\n🔄 <i>Sebagian data gagal dimuat. Gunakan Perbarui / Coba Lagi untuk mengambil ulang data yang gagal.</i>\n")
+	}
 	return b.String()
 }
-
 func formatRupiah(amount int64) string {
 	sign := ""
 	if amount < 0 {
@@ -300,25 +315,37 @@ func FormatSavedPackages(pkgs []*SavedPackage) string {
 
 // FormatPurchaseResult renders the result of a purchase/settlement attempt.
 func FormatPurchaseResult(res *SettlementResult, pkgName string, price int64, method string) string {
+	if res == nil {
+		return "<b>⚠️ Hasil transaksi tidak tersedia.</b>"
+	}
+
 	var b strings.Builder
-	if res.IsSuccess {
-		b.WriteString("<b>✅ Transaksi Berhasil Diajukan!</b>\n\n")
-	} else {
+	pendingQRIS := res.IsSuccess && strings.Contains(strings.ToLower(method), "qris")
+	switch {
+	case pendingQRIS:
+		b.WriteString("<b>⏳ Menunggu Pembayaran QRIS</b>\n\n")
+	case res.IsSuccess:
+		b.WriteString("<b>✅ Pembelian Berhasil</b>\n\n")
+	default:
 		b.WriteString(fmt.Sprintf("<b>❌ Pembelian Gagal: %s</b>\n\n", html.EscapeString(res.Status)))
 	}
+
 	if pkgName != "" {
 		b.WriteString(fmt.Sprintf("<b>Paket:</b> %s\n", html.EscapeString(pkgName)))
 	}
-	b.WriteString(fmt.Sprintf("<b>Nominal Tagihan:</b> Rp %s\n", formatRupiah(price)))
+	b.WriteString(fmt.Sprintf("<b>Nominal:</b> Rp %s\n", formatRupiah(price)))
 	b.WriteString(fmt.Sprintf("<b>Metode Pembayaran:</b> <code>%s</code>\n", html.EscapeString(method)))
+	if pendingQRIS {
+		b.WriteString("<b>Status:</b> Menunggu pembayaran\n")
+	}
 	if res.TransactionCode != "" {
 		b.WriteString(fmt.Sprintf("<b>ID Transaksi:</b> <code>%s</code>\n", html.EscapeString(res.TransactionCode)))
 	}
 	if res.Message != "" {
-		b.WriteString(fmt.Sprintf("<b>Pesan:</b> %s\n", html.EscapeString(res.Message)))
+		b.WriteString(fmt.Sprintf("<b>Pesan Operator:</b> %s\n", html.EscapeString(res.Message)))
 	}
 	if res.Deeplink != "" {
-		b.WriteString(fmt.Sprintf("\n🔗 <a href=\"%s\">Klik Disini untuk Bayar via E-Wallet</a>\n", html.EscapeString(res.Deeplink)))
+		b.WriteString(fmt.Sprintf("\n🔗 <a href=\"%s\">Klik di sini untuk melanjutkan pembayaran</a>\n", html.EscapeString(res.Deeplink)))
 	}
 	if res.QRCode != "" {
 		if qrPayload, qrErr := normalizeQRPayload(res.QRCode); qrErr != nil {
@@ -330,9 +357,12 @@ func FormatPurchaseResult(res *SettlementResult, pkgName string, price int64, me
 			if truncated {
 				b.WriteString("<i>String dipersingkat di pesan ini; payload penuh tetap tersedia pada foto QRIS.</i>\n")
 			} else {
-				b.WriteString("<i>Salin kode QRIS di atas atau scan foto QRIS yang dikirimkan melalui aplikasi e-wallet / mobile banking.</i>\n")
+				b.WriteString("<i>Salin kode QRIS di atas atau scan foto QRIS melalui aplikasi e-wallet / mobile banking.</i>\n")
 			}
 		}
+	}
+	if pendingQRIS {
+		b.WriteString("\n<i>Tagihan ini tersimpan sementara di bot. Menghapusnya dari bot tidak membatalkan pembayaran atau tagihan di operator.</i>\n")
 	}
 	return b.String()
 }

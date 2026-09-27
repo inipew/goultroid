@@ -154,8 +154,8 @@ func TestMenuManager_Screens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildStoreScreen failed: %v", err)
 	}
-	if !strings.Contains(storeScreen.Body, "Beli Paket") {
-		t.Errorf("expected Beli Paket in store screen, got: %s", storeScreen.Body)
+	if !strings.Contains(storeScreen.Body, "Pilih Paket MyXL") {
+		t.Errorf("expected task-oriented package picker in store screen, got: %s", storeScreen.Body)
 	}
 
 	// 6. Saved packages (empty then populated)
@@ -225,8 +225,13 @@ func TestMenuManager_Screens(t *testing.T) {
 		TransactionCode: "TRX-QRIS-OK",
 		QRCode:          qrisPayload,
 	}, "Combo QRIS 10GB", 25000, "QRIS", "OPT-QRIS")
-	if !strings.Contains(qrisScreen.Body, "Kode / String QRIS") || !strings.Contains(qrisScreen.Body, "Foto QRIS dikirimkan") {
-		t.Errorf("expected QRIS screen to contain QRIS info and photo notice, got: %s", qrisScreen.Body)
+	if !strings.Contains(qrisScreen.Body, "Kode / String QRIS") ||
+		!strings.Contains(qrisScreen.Body, "Foto QRIS dikirimkan") ||
+		!strings.Contains(qrisScreen.Body, "Menunggu Pembayaran QRIS") {
+		t.Errorf("expected QRIS screen to contain pending-payment QRIS info, got: %s", qrisScreen.Body)
+	}
+	if strings.Contains(qrisScreen.Body, "Pembelian Berhasil") {
+		t.Errorf("QRIS pending screen must not claim completed purchase success: %s", qrisScreen.Body)
 	}
 	hasPhotoBtn := false
 	for _, row := range qrisScreen.Rows {
@@ -317,7 +322,7 @@ func TestMenuManager_PendingQRISScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPendingQRISScreen failed: %v", err)
 	}
-	if !strings.Contains(screen.Body, "Tidak ada transaksi QRIS aktif") {
+	if !strings.Contains(screen.Body, "Tidak ada QRIS aktif") {
 		t.Errorf("expected empty pending QRIS message, got: %s", screen.Body)
 	}
 
@@ -326,7 +331,7 @@ func TestMenuManager_PendingQRISScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDashboardScreen failed: %v", err)
 	}
-	if strings.Contains(dash.Body, "Tagihan QRIS Menunggu Pembayaran") {
+	if strings.Contains(dash.Body, "QRIS Menunggu Pembayaran") {
 		t.Errorf("expected no QRIS banner on dashboard when none pending")
 	}
 
@@ -364,7 +369,7 @@ func TestMenuManager_PendingQRISScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDashboardScreen failed: %v", err)
 	}
-	if !strings.Contains(dash.Body, "Tagihan QRIS Menunggu Pembayaran") {
+	if !strings.Contains(dash.Body, "QRIS Menunggu Pembayaran") {
 		t.Errorf("expected QRIS banner on dashboard")
 	}
 
@@ -390,7 +395,7 @@ func TestMenuManager_PendingQRISScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPendingQRISScreen failed: %v", err)
 	}
-	if !strings.Contains(screen.Body, "Tidak ada transaksi QRIS aktif") {
+	if !strings.Contains(screen.Body, "Tidak ada QRIS aktif") {
 		t.Errorf("expected empty pending QRIS screen for expired item, got: %s", screen.Body)
 	}
 }

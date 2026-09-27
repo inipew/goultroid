@@ -43,7 +43,7 @@ func TestP1E2PurchaseIntentRetainsNoSettlementAuthority(t *testing.T) {
 	}
 }
 
-func TestP1E2BothPurchaseConfirmPathsResolveFreshBeforeReserve(t *testing.T) {
+func TestP1E2BothPurchaseConfirmPathsResolveFreshBeforeSharedExecution(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, rel := range []string{
 		filepath.Join("plugins", "myxl", "native_interaction.go"),
@@ -55,9 +55,22 @@ func TestP1E2BothPurchaseConfirmPathsResolveFreshBeforeReserve(t *testing.T) {
 		}
 		source := string(raw)
 		resolve := strings.Index(source, "resolvePurchaseIntent(")
-		reserve := strings.Index(source, "ReservePurchase(")
-		if resolve < 0 || reserve < 0 || resolve > reserve {
-			t.Fatalf("%s must fresh-resolve purchase intent before ReservePurchase", rel)
+		execute := strings.Index(source, "executeResolvedPurchase(")
+		if resolve < 0 || execute < 0 || resolve > execute {
+			t.Fatalf("%s must fresh-resolve purchase intent before shared execution", rel)
 		}
+		if strings.Contains(source, "ReservePurchase(") {
+			t.Fatalf("%s must not own purchase reservation; workflow.go is canonical", rel)
+		}
+	}
+
+	workflowRaw, err := os.ReadFile(filepath.Join(root, "plugins", "myxl", "workflow.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow := string(workflowRaw)
+	if !strings.Contains(workflow, "func (p *Plugin) executeResolvedPurchase(") ||
+		!strings.Contains(workflow, "ReservePurchase(") {
+		t.Fatal("shared MyXL purchase workflow must own the single reservation boundary")
 	}
 }

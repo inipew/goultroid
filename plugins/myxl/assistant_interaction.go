@@ -481,7 +481,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if opaque == "" || opaque == "noop" {
 			return ctx.Answer("", false)
 		}
-		if err := p.repo.SetActive(ctx.Context(), opaque); err != nil {
+		if err := p.switchActiveAccount(ctx.Context(), opaque); err != nil {
 			return ctx.Answer("Gagal mengganti akun. Silakan coba lagi.", true)
 		}
 		_ = ctx.Answer("✅ Akun aktif diganti", false)
@@ -576,15 +576,8 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if msisdn == "" {
 			return ctx.Answer("Nomor HP tidak valid", true)
 		}
-		subID, err := p.client.RequestOTP(ctx.Context(), msisdn)
-		if err != nil {
-			return ctx.Answer("Gagal mengirim ulang OTP. Silakan coba lagi.", true)
-		}
-		if subID != "" {
-			if existing, _ := p.repo.GetByMSISDN(ctx.Context(), msisdn); existing != nil {
-				existing.SubscriberID = subID
-				_ = p.repo.Save(ctx.Context(), existing)
-			}
+		if _, err := p.requestLoginOTP(ctx.Context(), msisdn); err != nil {
+			return ctx.Answer("Gagal mengirim ulang atau menyimpan sesi OTP. Silakan coba lagi.", true)
 		}
 		return ctx.Answer("📩 Kode OTP telah dikirim ulang via SMS!", true)
 
@@ -716,7 +709,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 
 	case "cancel_draft", "buy_cancel":
 		state.Draft = nil
-		_ = ctx.Answer("Pembelian dibatalkan", false)
+		_ = ctx.Answer("Pembelian dibatalkan sebelum transaksi dijalankan", false)
 		screen, err := p.menuMgr.BuildStoreScreen(ctx.Context())
 		if err != nil {
 			return err
@@ -736,10 +729,10 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		}
 		raw, view, err := assistantDestructiveConfirmation(
 			state,
-			"⚠️ <b>Batalkan Transaksi QRIS</b>\n\nTransaksi pending akan dihapus dari penyimpanan bot. Lanjutkan?",
+			"⚠️ <b>Hapus Tagihan QRIS dari Bot</b>\n\nTagihan tersimpan akan dihapus dari Goultroid. Ini tidak membatalkan pembayaran atau tagihan di operator. Lanjutkan?",
 			fmt.Sprintf("myxl:qris_cancel_exec:%s", opaque),
 			"myxl:pending_qris",
-			"🗑️ Ya, Batalkan",
+			"🗑️ Ya, Hapus dari Bot",
 		)
 		if err != nil {
 			return err
@@ -753,7 +746,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if err := p.repo.DeletePendingQRIS(ctx.Context(), opaque); err != nil {
 			return ctx.Answer("Gagal membatalkan transaksi QRIS. Silakan coba lagi.", true)
 		}
-		_ = ctx.Answer("✅ Transaksi QRIS dibatalkan", false)
+		_ = ctx.Answer("✅ Tagihan QRIS dihapus dari bot. Pembayaran di operator tidak dibatalkan.", false)
 		screen, err := p.menuMgr.BuildDashboardScreen(ctx.Context(), false)
 		if err != nil {
 			return err
@@ -901,18 +894,9 @@ func (p *Plugin) assistantInputMSISDN(ctx *orchestration.Context, state assistan
 	}
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 25*time.Second)
 	defer cancel()
-	subID, err := p.client.RequestOTP(cCtx, msisdn)
+	msisdn, err = p.requestLoginOTP(cCtx, msisdn)
 	if err != nil {
-		return p.assistantRearm(ctx, state, "❌ <b>Gagal meminta OTP dari MyXL.</b> Silakan coba lagi.")
-	}
-	existing, _ := p.repo.GetByMSISDN(cCtx, msisdn)
-	if existing == nil {
-		existing = &Account{MSISDN: msisdn, SubscriberID: subID}
-	} else if subID != "" {
-		existing.SubscriberID = subID
-	}
-	if err := p.repo.Save(cCtx, existing); err != nil {
-		return p.assistantRearm(ctx, state, "❌ Gagal menyimpan sesi login. Silakan coba lagi.")
+		return p.assistantRearm(ctx, state, "❌ <b>Gagal meminta atau menyimpan sesi OTP.</b> Silakan coba lagi.")
 	}
 	state.Wizard = "login_otp"
 	state.MSISDN = msisdn
@@ -922,33 +906,14 @@ func (p *Plugin) assistantInputMSISDN(ctx *orchestration.Context, state assistan
 	)
 	return p.assistantAwait(ctx, state, prompt)
 }
-
 func (p *Plugin) assistantInputOTP(ctx *orchestration.Context, state assistantState, input string) error {
-	code, err := normalizeOTPCode(input)
-	if err != nil {
+	if _, err := normalizeOTPCode(input); err != nil {
 		return p.assistantRearm(ctx, state, "⚠️ <b>Kode OTP harus berupa 6 digit angka.</b>")
 	}
 	cCtx, cancel := context.WithTimeout(ctx.Context(), 25*time.Second)
 	defer cancel()
-	tokens, err := p.client.SubmitOTP(cCtx, state.MSISDN, code)
-	if err != nil {
-		return p.assistantRearm(ctx, state, "❌ <b>Verifikasi OTP gagal.</b> Periksa OTP lalu coba lagi.")
-	}
-	acc, _ := p.repo.GetByMSISDN(cCtx, state.MSISDN)
-	if acc == nil {
-		acc = &Account{MSISDN: state.MSISDN}
-	}
-	acc.AccessToken = tokens.AccessToken
-	acc.IDToken = tokens.IDToken
-	acc.RefreshToken = tokens.RefreshToken
-	if tokens.ExpiresIn > 0 {
-		acc.TokenExpiresAt = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
-	} else {
-		acc.TokenExpiresAt = time.Now().Add(DefaultTokenExpiryFallback)
-	}
-	acc.IsActive = true
-	if err := p.repo.Save(cCtx, acc); err != nil {
-		return p.assistantRearm(ctx, state, "⚠️ Login berhasil, tetapi sesi gagal disimpan. Silakan coba lagi.")
+	if _, err := p.completeLoginOTP(cCtx, state.MSISDN, input); err != nil {
+		return p.assistantRearm(ctx, state, "❌ <b>Verifikasi OTP gagal atau akun tidak dapat disimpan.</b> Periksa OTP lalu coba lagi.")
 	}
 	screen, err := p.menuMgr.BuildDashboardScreen(cCtx, false)
 	if err != nil {
@@ -956,7 +921,6 @@ func (p *Plugin) assistantInputOTP(ctx *orchestration.Context, state assistantSt
 	}
 	return p.assistantTransition(ctx, assistantState{}, screen)
 }
-
 func (p *Plugin) assistantInputAlias(ctx *orchestration.Context, state assistantState, input string) error {
 	alias, err := normalizeAlias(input)
 	if err != nil {
@@ -1040,9 +1004,9 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	resolved, err := p.resolvePurchaseIntent(cCtx, intent)
 	if err != nil {
 		if errors.Is(err, ErrPurchaseQuoteChanged) {
-			return ctx.Terminate(presentation.View{Text: "⚠️ Harga paket berubah sejak halaman konfirmasi dibuat. Pembelian tidak dijalankan; buka ulang paket untuk harga terbaru."})
+			return ctx.Terminate(presentation.View{Text: "⚠️ Harga paket berubah sejak halaman konfirmasi dibuat. Pembelian tidak dijalankan; buka ulang paket untuk mengonfirmasi harga terbaru."})
 		}
-		return ctx.Terminate(presentation.View{Text: "❌ Detail pembelian tidak lagi valid. Buka ulang paket lalu coba lagi."})
+		return ctx.Terminate(presentation.View{Text: "❌ Detail pembelian tidak lagi valid. Pembelian tidak dijalankan; buka ulang paket lalu coba lagi."})
 	}
 
 	processingState := state
@@ -1056,7 +1020,7 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	}
 	if err := ctx.Transition(processingRaw, purchaseProcessingTTL, presentation.View{
 		Text: fmt.Sprintf(
-			"⏳ <b>Memproses pembelian MyXL</b>\n\nPaket: <b>%s</b>\nKode: <code>%s</code>\nMetode: <code>%s</code>\n\nJangan ulangi transaksi sampai hasil akhir ditampilkan.",
+			"⏳ <b>Memproses pembelian MyXL</b>\n\nPaket: <b>%s</b>\nKode: <code>%s</code>\nMetode: <code>%s</code>\n\nJangan ulangi transaksi sampai status akhir ditampilkan.",
 			html.EscapeString(resolved.PackageName),
 			html.EscapeString(resolved.Intent.OptionCode),
 			html.EscapeString(strings.ToUpper(resolved.Intent.Method)),
@@ -1066,98 +1030,20 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	}
 	state = processingState
 
-	reserved, err := p.repo.ReservePurchase(
-		cCtx,
-		resolved.IdempotencyKey,
-		resolved.Intent.MSISDN,
-		resolved.Intent.OptionCode,
-		resolved.Intent.Method,
-	)
+	execution, err := p.executeResolvedPurchase(cCtx, resolved)
 	if err != nil {
 		return ctx.Terminate(presentation.View{Text: "❌ Gagal mengamankan transaksi. Pembelian tidak dijalankan."})
 	}
-	if !reserved {
-		return ctx.Terminate(presentation.View{Text: "⏳ Transaksi sedang diproses atau baru saja dikonfirmasi. Pembelian tidak dijalankan ulang."})
-	}
-
-	var result *SettlementResult
-	switch resolved.Intent.Method {
-	case "balance":
-		result, err = p.client.SettlementBalance(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
-	case "qris":
-		result, err = p.client.SettlementQRIS(cCtx, resolved.Account, resolved.Item, resolved.Overwrite)
-	case "gopay", "ovo", "dana", "shopeepay":
-		result, err = p.client.SettlementMultipayment(
-			cCtx,
-			resolved.Account,
-			resolved.Item,
-			strings.ToUpper(resolved.Intent.Method),
-			resolved.Intent.WalletNumber,
-			resolved.Overwrite,
-		)
-	case "decoy_balance":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "balance", resolved.Overwrite)
-	case "decoy_qris":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris", resolved.Overwrite)
-	case "decoy_qris0":
-		result, err = p.client.SettlementDecoy(cCtx, resolved.Account, resolved.Item, "qris0", resolved.Overwrite)
-	default:
-		err = fmt.Errorf("unsupported payment method %q", resolved.Intent.Method)
-	}
-	if err != nil {
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", err.Error())
-		persistCancel()
+	switch execution.Kind {
+	case purchaseOutcomeDuplicate:
+		return ctx.Terminate(presentation.View{Text: "⏳ Transaksi sedang diproses atau baru saja dikonfirmasi. Klik ulang tidak menjalankan pembelian kedua."})
+	case purchaseOutcomeUnknown:
 		return ctx.Terminate(presentation.View{Text: "⚠️ Hasil transaksi tidak dapat dipastikan. Transaksi tidak akan diulang otomatis; periksa riwayat MyXL sebelum mencoba lagi."})
-	}
-	if result == nil {
-		persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-		_ = p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, "UNKNOWN", "", "empty settlement result")
-		persistCancel()
-		return ctx.Terminate(presentation.View{Text: "⚠️ Hasil transaksi kosong dan tidak dapat dipastikan. Periksa riwayat MyXL sebelum mencoba lagi."})
-	}
-
-	status := "FAILED"
-	if result.IsSuccess {
-		status = "SUCCESS"
-	}
-	persistCtx, persistCancel := context.WithTimeout(context.WithoutCancel(cCtx), 5*time.Second)
-	finishErr := p.repo.FinishPurchase(persistCtx, resolved.IdempotencyKey, status, result.TransactionCode, result.Message)
-	persistCancel()
-	if finishErr != nil {
-		return ctx.Terminate(presentation.View{Text: "⚠️ Transaksi selesai tetapi hasilnya gagal dicatat. Periksa riwayat MyXL sebelum mencoba lagi."})
-	}
-
-	var qrWarning string
-	if result.QRCode != "" {
-		qrPayload, qrErr := normalizeQRPayload(result.QRCode)
-		if qrErr != nil {
-			qrWarning = "Payload QRIS dari operator tidak valid; gambar QR tidak dibuat."
-			result.QRCode = ""
-		} else {
-			result.QRCode = qrPayload
-			now := time.Now().UTC()
-			pending := &PendingQRIS{
-				TransactionCode: result.TransactionCode,
-				IdempotencyKey:  resolved.IdempotencyKey,
-				MSISDN:          resolved.Intent.MSISDN,
-				OptionCode:      resolved.Intent.OptionCode,
-				PackageName:     resolved.PackageName,
-				Price:           resolved.EffectivePrice,
-				QRCode:          qrPayload,
-				Status:          "PENDING",
-				CreatedAt:       now,
-				ExpiresAt:       now.Add(pendingQRISTTL),
-			}
-			if err := p.repo.SavePendingQRIS(cCtx, pending); err != nil {
-				qrWarning = "QRIS berhasil dibuat tetapi gagal disimpan untuk dilihat kembali."
-			}
-		}
 	}
 
 	state.Draft = nil
 	screen := p.menuMgr.BuildPurchaseResultScreen(
-		result,
+		execution.Result,
 		resolved.PackageName,
 		resolved.EffectivePrice,
 		resolved.Intent.Method,
@@ -1167,22 +1053,25 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 		return err
 	}
 
-	if result.QRCode != "" {
+	if execution.Result != nil && execution.Result.QRCode != "" {
 		rt := p.currentAssistantRuntime()
 		if target, ok := ctx.Target().(presentationtelegram.MessageTarget); ok && target.Peer != nil && rt.Service != nil {
-			if err := p.sendQRPhoto(ctx.Context(), rt.Service, target.Peer, result.QRCode, resolved.PackageName, resolved.EffectivePrice); err != nil && qrWarning == "" {
-				qrWarning = "Transaksi selesai tetapi foto QRIS gagal dikirim."
+			if err := p.sendQRPhoto(ctx.Context(), rt.Service, target.Peer, execution.Result.QRCode, resolved.PackageName, resolved.EffectivePrice); err != nil {
+				execution.Warning = joinPurchaseWarning(execution.Warning, "Status transaksi sudah diterima, tetapi foto QRIS gagal dikirim.")
 			}
 		}
 	}
-	if qrWarning != "" {
-		return ctx.Answer(qrWarning, true)
+	if execution.Warning != "" {
+		return ctx.Answer("⚠️ "+execution.Warning, true)
 	}
-	if result.IsSuccess {
-		return ctx.Answer("✅ Pembelian selesai", false)
+	switch execution.Kind {
+	case purchaseOutcomePendingQRIS:
+		return ctx.Answer("⏳ QRIS dibuat dan sedang menunggu pembayaran.", false)
+	case purchaseOutcomeSuccess:
+		return ctx.Answer("✅ Pembelian berhasil.", false)
+	default:
+		return ctx.Answer("❌ Pembelian selesai dengan status gagal.", true)
 	}
-	return ctx.Answer("Pembelian selesai dengan status gagal.", true)
 }
-
 var _ assistantinteraction.FeatureDriver = (*Plugin)(nil)
 var _ interface{ FeatureSpec() feature.Spec } = (*Plugin)(nil)
