@@ -164,7 +164,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		pluginManager.InteractionRuntime(),
 		pluginManager.ActionDispatcher(),
 		coreDeps.taskEngine,
-		tgRuntime.client.Service,
+		tgRuntime.client.PresentationService,
 		coreDeps.perms,
 	)
 	if err != nil {

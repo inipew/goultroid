@@ -21,6 +21,7 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"go.uber.org/zap"
 )
 
@@ -216,6 +217,16 @@ func (c *Client) Service() core.TelegramServicer {
 	return svc
 }
 
+// PresentationService returns only the Telegram surface required by the shared
+// presentation bridge.
+func (c *Client) PresentationService() presentationtelegram.BridgeService {
+	if c == nil || c.dispatcher == nil {
+		return nil
+	}
+	service, _ := c.dispatcher.Service().(presentationtelegram.BridgeService)
+	return service
+}
+
 // Dispatcher returns the underlying Dispatcher instance.
 func (c *Client) Dispatcher() *Dispatcher {
 	if c != nil {
@@ -366,10 +377,18 @@ func (c *Client) NotifyRestartState(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
-	return notifyRestartState(ctx, c.Service(), c.logger)
+	if c.dispatcher == nil {
+		return nil
+	}
+	return notifyRestartState(ctx, c.dispatcher.Service(), c.logger)
 }
 
-func notifyRestartState(ctx context.Context, svc core.TelegramServicer, logger *zap.Logger) error {
+type restartNotifierService interface {
+	SendMessage(context.Context, tg.InputPeerClass, string) (*tg.Message, error)
+	EditMessage(context.Context, tg.InputPeerClass, int, string) error
+}
+
+func notifyRestartState(ctx context.Context, svc restartNotifierService, logger *zap.Logger) error {
 	restartPath := "data/restart.json"
 	data, err := os.ReadFile(restartPath)
 	if err != nil {

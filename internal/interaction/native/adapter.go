@@ -32,7 +32,7 @@ var (
 // ServiceProvider resolves the currently connected userbot Telegram service.
 // The provider is intentionally late-bound because application composition is
 // completed before the MTProto client establishes its live service.
-type ServiceProvider func() core.TelegramServicer
+type ServiceProvider func() presentationtelegram.BridgeService
 
 // BeginRequest opens one declared native/userbot screen through the shared a2
 // session runtime. ScreenID is metadata used for admission; callback ownership
@@ -391,7 +391,7 @@ func newTelegramPort(service ServiceProvider) *telegramPort {
 	return &telegramPort{service: service, pending: make(map[int64]bool)}
 }
 
-func (p *telegramPort) serviceNow() core.TelegramServicer {
+func (p *telegramPort) serviceNow() presentationtelegram.BridgeService {
 	if p == nil || p.service == nil {
 		return nil
 	}
