@@ -91,16 +91,16 @@ const (
 )
 
 type engineRequest struct {
-	op       opKind
-	ctx      context.Context
-	spec     tasks.WorkSpec
-	taskID   tasks.TaskID
-	scope    tasks.ScopeIdentity
-	reason   tasks.Cause
-	pool     tasks.PoolID
-	slotID   int
-	permit   *permit
-	result   tasks.TaskResult
+	op              opKind
+	ctx             context.Context
+	spec            tasks.WorkSpec
+	taskID          tasks.TaskID
+	scope           tasks.ScopeIdentity
+	reason          tasks.Cause
+	pool            tasks.PoolID
+	slotID          int
+	permit          *permit
+	result          tasks.TaskResult
 	started         time.Time
 	decision        *submitCell
 	controlDecision *controlCell
@@ -113,6 +113,7 @@ type engineRequest struct {
 	resourceName     string
 	resourceCapacity int64
 	reply            chan engineReply
+
 }
 
 type engineReply struct {

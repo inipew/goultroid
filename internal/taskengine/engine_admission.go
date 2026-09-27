@@ -183,7 +183,6 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	return ticket, nil
 }
 
-
 type controlDecisionState uint32
 
 const (
