@@ -19,7 +19,7 @@ type DispatcherService interface {
 }
 
 type dispatcherCapabilities struct {
-	command            core.CommandTelegramServicer
+	command            core.TelegramCapabilities
 	inline             inlineservice.TelegramAnswerer
 	callback           callbackQueryAnswerer
 	origin             botOriginTracker
@@ -33,7 +33,7 @@ func dispatcherCapabilitiesFrom(service DispatcherService) dispatcherCapabilitie
 		return dispatcherCapabilities{}
 	}
 	caps := dispatcherCapabilities{
-		command:  service,
+		command:  core.TelegramCapabilitiesFrom(service),
 		inline:   service,
 		callback: service,
 		origin:   service,

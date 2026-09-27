@@ -117,26 +117,48 @@ func (d *Dispatcher) Service() DispatcherService {
 	return d.getService()
 }
 
-func (d *Dispatcher) getCommandService() core.CommandTelegramServicer {
+func (d *Dispatcher) getCommandCapabilities() core.TelegramCapabilities {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.services.command
 }
 
+// CommandCapabilities returns the capability-sized command transport snapshot
+// used by production command contexts.
+func (d *Dispatcher) CommandCapabilities() core.TelegramCapabilities {
+	return d.getCommandCapabilities()
+}
+
+// CommandService is retained only for compatibility callers injected through
+// SetService/NewDispatcher. Production runtime composition uses capability
+// accessors and does not depend on this aggregate.
 func (d *Dispatcher) CommandService() core.CommandTelegramServicer {
-	return d.getCommandService()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.compatService == nil {
+		return nil
+	}
+	return d.compatService
 }
 
 func (d *Dispatcher) MessageService() core.MessageServicer {
-	return d.getCommandService()
+	return d.getCommandCapabilities().Messages
 }
 
 func (d *Dispatcher) AdminService() core.AdminServicer {
-	return d.getCommandService()
+	return d.getCommandCapabilities().Admin
 }
 
 func (d *Dispatcher) MediaService() core.MediaServicer {
-	return d.getCommandService()
+	return d.getCommandCapabilities().Media
+}
+
+func (d *Dispatcher) PeerService() core.PeerServicer {
+	return d.getCommandCapabilities().Peers
+}
+
+func (d *Dispatcher) ProfileService() core.ProfileServicer {
+	return d.getCommandCapabilities().Profile
 }
 
 func (d *Dispatcher) ContextualMessageService() core.ContextualMessageServicer {

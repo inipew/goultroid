@@ -213,7 +213,7 @@ func (c *Client) Service() core.TelegramServicer {
 	if c == nil || c.dispatcher == nil {
 		return nil
 	}
-	svc, _ := c.dispatcher.CommandService().(core.TelegramServicer)
+	svc, _ := c.dispatcher.Service().(core.TelegramServicer)
 	return svc
 }
 

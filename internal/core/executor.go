@@ -57,7 +57,7 @@ func (e *CommandExecutor) Execute(ctx *Context, cmd Command) error {
 
 // ExecuteExecution is the canonical entry point for scheduled, assistant,
 // and system execution. It does not manufacture a Telegram trigger message.
-func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, svc CommandTelegramServicer) error {
+func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, telegram TelegramCapabilities) error {
 	if exec.Ctx == nil {
 		exec.Ctx = context.Background()
 	}
@@ -76,7 +76,7 @@ func (e *CommandExecutor) ExecuteExecution(exec CommandExecution, cmd Command, s
 		Sender:        exec.Sender,
 		Principal:     exec.Principal,
 		Perms:         exec.Perms,
-		Telegram:      TelegramCapabilitiesFrom(svc),
+		Telegram:      telegram,
 		PeerID:        exec.PeerID,
 	}
 	return e.execute(ctx, cmd, exec.Source)

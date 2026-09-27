@@ -70,8 +70,11 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	schedEngine.SetPrivilegedChecker(core.perms)
 	if core.jobsManager != nil {
 		actionHandler := scheduledActionHandler{
-			repo: schedRepo, service: func() corepkg.CommandTelegramServicer {
-				return tg.dispatcher.CommandService()
+			repo: schedRepo, service: func() corepkg.TelegramCapabilities {
+				if tg == nil || tg.dispatcher == nil {
+					return corepkg.TelegramCapabilities{}
+				}
+				return tg.dispatcher.CommandCapabilities()
 			}, router: core.router,
 			perms: core.perms, executor: tg.dispatcher.Executor(), jobs: core.jobsManager,
 			tasks: core.taskEngine,
@@ -112,8 +115,11 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		if tg == nil || tg.dispatcher == nil {
 			return nil
 		}
-		service, _ := tg.dispatcher.CommandService().(pmpermitSvc.TelegramService)
-		return service
+		return newPMPermitTelegramAdapter(
+			tg.dispatcher.MessageService(),
+			tg.dispatcher.PeerService(),
+			tg.dispatcher.OriginTracker(),
+		)
 	}, cfg.OwnerID, core.perms, logger)
 	pmpermitService.SetEventBus(core.eventBus)
 
@@ -129,8 +135,10 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 		if tg == nil || tg.dispatcher == nil {
 			return nil
 		}
-		service, _ := tg.dispatcher.CommandService().(broadcastSvc.Sender)
-		return service
+		return newBroadcastTelegramAdapter(
+			tg.dispatcher.MessageService(),
+			tg.dispatcher.MediaService(),
+		)
 	}, logger)
 	if core.taskEngine != nil {
 		broadcastService.SetTasks(core.taskEngine)

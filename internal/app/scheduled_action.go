@@ -20,7 +20,7 @@ import (
 // command rows. The timing-only scheduler never imports Telegram infrastructure.
 type scheduledActionHandler struct {
 	repo     scheduler.Repository
-	service  func() core.CommandTelegramServicer
+	service  func() core.TelegramCapabilities
 	router   *core.Router
 	perms    *core.Permissions
 	executor *core.CommandExecutor
@@ -103,14 +103,18 @@ func (h scheduledActionHandler) execute(ctx context.Context, job scheduler.Sched
 }
 
 func (h scheduledActionHandler) sendMessage(ctx context.Context, job scheduler.ScheduledJob) error {
-	if h.service == nil || h.service() == nil {
+	if h.service == nil {
 		return errors.New("telegram service is not configured")
+	}
+	telegram := h.service()
+	if telegram.Messages == nil {
+		return errors.New("telegram message service is not configured")
 	}
 	text := job.Payload
 	if job.IntervalSeconds == 0 && time.Since(job.NextRunAt) > time.Minute {
 		text = "⏰ <b>Reminder</b> (<i>delayed, bot was offline</i>):\n" + text
 	}
-	_, err := h.service().SendMessage(ctx, scheduledPeer(job), text)
+	_, err := telegram.Messages.SendMessage(ctx, scheduledPeer(job), text)
 	return err
 }
 
@@ -141,8 +145,12 @@ func scheduledCommandResultError(res tasks.TaskResult) error {
 }
 
 func (h scheduledActionHandler) executeCommand(ctx context.Context, job scheduler.ScheduledJob) error {
-	if h.router == nil || h.executor == nil || h.service == nil || h.service() == nil {
+	if h.router == nil || h.executor == nil || h.service == nil {
 		return errors.New("scheduled command dependencies are not configured")
+	}
+	telegram := h.service()
+	if telegram.Messages == nil {
+		return errors.New("scheduled command telegram capabilities are not configured")
 	}
 	parsed, isCommand, err := h.router.Parse(job.Payload)
 	if err != nil {
@@ -168,7 +176,7 @@ func (h scheduledActionHandler) executeCommand(ctx context.Context, job schedule
 	}
 
 	if len(command.Resources) == 0 {
-		return h.executor.ExecuteExecution(execution, command, h.service())
+		return h.executor.ExecuteExecution(execution, command, telegram)
 	}
 	if h.tasks == nil {
 		return errors.New("scheduled command task client is not configured")
