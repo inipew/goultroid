@@ -22,7 +22,7 @@ func (m *p0dBenchmarkMatcher) Match(string) ([]string, bool) {
 }
 
 func BenchmarkRegistryResolveOwnedExplicitP0D(b *testing.B) {
-	for _, count := range []int{1, 16, 64, 256, 1024, 4096} {
+	for _, count := range []int{1, 2, 16, 64, 256, 1024, 4096} {
 		b.Run(fmt.Sprintf("exact/%d", count), func(b *testing.B) {
 			reg := NewRegistry()
 			for i := 0; i < count; i++ {
