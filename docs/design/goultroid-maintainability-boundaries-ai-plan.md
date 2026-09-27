@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1 CLOSED; M2 CLOSED (scoped acceptance passed); M3 IMPLEMENTED / LOCAL ACCEPTANCE PENDING**
+Status: **IN PROGRESS — M1 CLOSED; M2 CLOSED (scoped acceptance passed); M3 STRUCTURAL IMPLEMENTATION COMPLETE / HARDENING REQUIRED**
 
 Audit baseline:
 
@@ -597,12 +597,13 @@ Gate:
 
 ### M3 — Split TaskEngine by responsibility
 
-Status: **IMPLEMENTED — local structural/regression acceptance pending**
+Status: **STRUCTURAL IMPLEMENTATION COMPLETE — hardening required before closure**
 
 Implementation commits:
 
 - `2fc271d7ce6d035ac1e8ecfc60860b89093384b0` — `refactor(taskengine): split config and state declarations`
 - `11431fdb96aa25fab3f96b3741c689110c74369d` — `refactor(taskengine): split coordinator responsibilities`
+- `4449a1ded52ac0c280d4b9db6877f1e21f0235de` — `test(maint): fence taskengine m3 ownership`
 
 Implemented structure:
 
@@ -616,7 +617,24 @@ Implemented structure:
 - existing `durability.go`, `delivery.go`, `accounting.go`, `executor.go`, `shutdown.go`, and `diagnostics.go` remain specialized files;
 - no second Engine, coordinator, queue, registry, or execution authority was introduced.
 
-An architecture fence requires exactly one `type Engine struct` and exactly one `(*Engine).runLoop`, and pins them to `engine_state.go` and `engine.go` respectively.
+The structural audit at `4449a1ded52ac0c280d4b9db6877f1e21f0235de` compared the pre-split `engine.go` with the split implementation: 71 functions/methods and the moved type declarations were preserved, with no function-body change found after whitespace normalization. This supports a behavior-neutral mechanical split; it does **not** establish that the pre-existing TaskEngine behavior is correct. The architecture fence requires exactly one `type Engine struct` and one `(*Engine).runLoop` in their intended files, but does not prove that no differently named coordinator, registry, or execution authority can be introduced. It also checks file existence rather than ownership of each responsibility.
+
+Current-code audit findings to resolve before M3 closure (these were preserved by the mechanical split; no causal attribution to the split):
+
+1. **Lifecycle and control after root cancellation.** `runLoop` returns after `applyStopFinalize()`, but that function does not call `checkDrained()` after finalizing records. If no active task can subsequently settle, `drainDone` remains open; a later `Drain` or `Stop` with no deadline can wait indefinitely. `sendControl` and other producers retain non-nil inbox/root-context pointers and can select an enqueue into the now-unconsumed inbox when cancellation and send are both ready. `Health` also lacks a root-context cancellation case at enqueue. The inbox has a fixed capacity, so the issue is retained dead requests and ambiguous post-stop API behavior, not unbounded channel growth.
+2. **Live pool bounds and validation.** `applyPoolConfig` changes the configured maximum without preventing excess existing workers from taking replacement tasks after a shrink. Already running tasks may finish, but later dispatch must converge to the new maximum. Startup treats `MinConcurrency=0, ZeroIdle=false` as a fixed-size minimum, while live configuration changes it to one. Live `BacklogLimit` and `PayloadBudget` are passed through without the startup non-negative validation; zero/negative values disable those admission checks. Startup validation also permits `Concurrency=0` with a minimum above the effective default of four, and does not reject negative `MaxTerminalRetained` before defaulting it.
+3. **Owner fairness and control admission.** `SetOwnerLimits` changes `ownerLimits` but does not refresh the quantum cached for an owner whose DRR queue is active. `Engine.SetOwnerLimits` has no caller context or error result, and its initial inbox send can wait indefinitely if the coordinator cannot receive. The later two-second acknowledgement wait does not bound this initial send.
+4. **Retention and accounting.** `settleTerminal` clears execution callbacks but leaves `spec.Input`, `spec.Resources`, and `spec.Job` on the record. A retained `engineTicket` holds that record even after registry eviction, so a large input can remain reachable while `retainedBytes` decreases. Admission charges fixed task overhead plus declared payload bytes, without bounding variable-size identity and metadata strings. Audit how the recorded payload size relates to actual `Input` memory before claiming a strict byte bound.
+5. **Durability and forced cleanup.** The direct durability fallback captures `rec` in its queued closure despite already taking `taskID` and `commitSeq` snapshots. `durabilityLane.loop` recovers a panic in that closure without producing a commit acknowledgement, leaving the record pending until an external/forced resolution. `forceCancelInFlight` releases permit and admission ownership but does not call `releaseResources`; late completion is fenced out, so `resourceUsed` can remain nonzero after forced shutdown.
+6. **Observability and structural fences.** `poolGenerations` is initialized and read but never advanced, so the active late-completion fence depends on permit identity and dispatch epoch. Internal stats calculate `accepting` and `quiesced` but public `RuntimeStats` omits them. `opWorkerIdle` has no visible production sender. `engine.go` is now 458 lines and `engine_completion.go` is 340 lines; lifecycle/control and cancellation/completion are still grouped more broadly than the suggested layout. Further file movement is optional unless it materially improves ownership clarity. Add behavior-focused architecture and regression fences rather than relying only on file names and symbol counts.
+
+Hardening sequence:
+
+- **M3-H1 — lifecycle/shutdown:** settle `drainDone` on every root-cancellation/finalization path; reject or resolve post-stop control requests promptly; cover parent cancellation followed by graceful `Stop` and repeated post-stop API calls.
+- **M3-H2 — live pool/admission:** enforce the new maximum for replacement dispatch after shrink; align startup/live minimum semantics; validate effective startup bounds and live backlog/payload limits; cover a busy 8-to-2 shrink with persistent backlog.
+- **M3-H3 — fairness/control:** update active-owner DRR quantum when weight changes; make owner-limit control admission bounded and report whether the update was applied.
+- **M3-H4 — memory/durability:** detach terminal records from unneeded input/job/resource graphs while preserving ticket results; account for or bound variable-size metadata; remove the direct-fallback record capture; turn direct-commit panic into an explicit uncertain/failure acknowledgement; release resources on forced cancellation.
+- **M3-H5 — observability/fences:** expose or deliberately remove computed lifecycle stats; remove or make meaningful inert generation/operation state; strengthen ownership checks and regression tests for the invariants above.
 
 Required regression groups:
 
@@ -633,7 +651,7 @@ Gate:
 
 - `engine.go` is no longer a 2k-line multi-responsibility file;
 - all mutable ownership invariants remain unchanged;
-- run local TaskEngine architecture/regression tests and hot/cold benchmarks before changing M3 to final CLOSED;
+- resolve M3-H1 through M3-H5 with focused regression coverage, then run local TaskEngine architecture/regression tests and hot/cold benchmarks before changing M3 to final CLOSED;
 - do not inspect or poll CI unless explicitly requested.
 
 ### M4 — Split Jobs Manager by responsibility
