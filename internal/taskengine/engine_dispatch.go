@@ -103,20 +103,27 @@ func (e *Engine) applyPoolConfig(pool tasks.PoolID, cfg PoolEngineConfig) error 
 	if cfg.Concurrency <= 0 || cfg.Concurrency > hardMax || cfg.MinConcurrency < 0 || cfg.MinConcurrency > cfg.Concurrency {
 		return errors.New("taskengine: invalid live pool bounds")
 	}
-	if cfg.ZeroIdle {
-		cfg.MinConcurrency = 0
-	} else if cfg.MinConcurrency == 0 {
-		cfg.MinConcurrency = 1
+	if cfg.IdleTimeout < 0 {
+		return errors.New("taskengine: live pool idle timeout cannot be negative")
 	}
-	if cfg.IdleTimeout <= 0 {
+	if cfg.BacklogLimit < 0 {
+		return errors.New("taskengine: live pool backlog limit cannot be negative")
+	}
+	if cfg.PayloadBudget < 0 {
+		return errors.New("taskengine: live pool payload budget cannot be negative")
+	}
+	cfg.MinConcurrency = effectivePoolMinimum(cfg, cfg.Concurrency)
+	if cfg.IdleTimeout == 0 {
 		cfg.IdleTimeout = e.poolIdleTimeouts[pool]
 	}
 	if err := e.adm.SetPoolConfig(pool, admission.PoolConfig{BacklogLimit: cfg.BacklogLimit, PayloadBudget: cfg.PayloadBudget}); err != nil {
 		return err
 	}
+	e.config.Pools[pool] = cfg
 	e.poolConcurrencies[pool] = cfg.Concurrency
 	e.poolMinWorkers[pool] = cfg.MinConcurrency
 	e.poolIdleTimeouts[pool] = cfg.IdleTimeout
+	e.retireExcessWorkers(pool)
 	now := time.Now().UTC()
 	e.sweepIdleWorkers(now)
 	for runningCount(e.workerRunning[pool]) < cfg.MinConcurrency {
@@ -126,7 +133,6 @@ func (e *Engine) applyPoolConfig(pool tasks.PoolID, cfg PoolEngineConfig) error 
 	}
 	return nil
 }
-
 func runningCount(slots []bool) int {
 	count := 0
 	for _, running := range slots {
@@ -135,6 +141,16 @@ func runningCount(slots []bool) int {
 		}
 	}
 	return count
+}
+
+func (e *Engine) retireExcessWorkers(pool tasks.PoolID) {
+	maximum := e.poolConcurrencies[pool]
+	for runningCount(e.workerRunning[pool]) > maximum && len(e.idleSlots[pool]) > 0 {
+		slotID := e.idleSlots[pool][len(e.idleSlots[pool])-1]
+		if !e.retireWorker(pool, slotID) {
+			return
+		}
+	}
 }
 
 func (e *Engine) applyResourceCapacity(name string, capacity int64) error {
@@ -186,6 +202,7 @@ func (e *Engine) markWorkerIdle(pool tasks.PoolID, slotID int) {
 		}
 	}
 	e.idleSlots[pool] = append(e.idleSlots[pool], slotID)
+	e.retireExcessWorkers(pool)
 	for p := range e.config.Pools {
 		e.tryDispatch(p)
 	}

@@ -92,10 +92,32 @@ func NewDefaultConfig() Config {
 // NewDefaultConfig/newDefaultConfig instead of reading this mutable value.
 var DefaultConfig = NewDefaultConfig()
 
+const defaultPoolConcurrency = 4
+
+func effectivePoolConcurrency(cfg PoolEngineConfig) int {
+	if cfg.Concurrency > 0 {
+		return cfg.Concurrency
+	}
+	return defaultPoolConcurrency
+}
+
+func effectivePoolMinimum(cfg PoolEngineConfig, concurrency int) int {
+	if cfg.ZeroIdle {
+		return 0
+	}
+	if cfg.MinConcurrency > 0 {
+		return cfg.MinConcurrency
+	}
+	return concurrency
+}
+
 // ValidateConfig checks that pool and engine limits are non-negative.
 func ValidateConfig(cfg Config) error {
 	if cfg.ResultCapacity < 0 {
 		return errors.New("taskengine: ResultCapacity cannot be negative")
+	}
+	if cfg.MaxTerminalRetained < 0 {
+		return errors.New("taskengine: MaxTerminalRetained cannot be negative")
 	}
 	if cfg.DecisionTimeout < 0 {
 		return errors.New("taskengine: DecisionTimeout cannot be negative")
@@ -131,7 +153,8 @@ func ValidateConfig(cfg Config) error {
 		if pcfg.Concurrency < 0 {
 			return fmt.Errorf("taskengine: pool %s concurrency cannot be negative", poolID)
 		}
-		if pcfg.MinConcurrency < 0 || (pcfg.Concurrency > 0 && pcfg.MinConcurrency > pcfg.Concurrency) {
+		effectiveConcurrency := effectivePoolConcurrency(pcfg)
+		if pcfg.MinConcurrency < 0 || pcfg.MinConcurrency > effectiveConcurrency {
 			return fmt.Errorf("taskengine: pool %s minimum concurrency is invalid", poolID)
 		}
 		if pcfg.IdleTimeout < 0 {
@@ -185,7 +208,7 @@ func NewEngine(cfg Config) *Engine {
 	generations := make(map[tasks.PoolID]uint64, len(cfg.Pools))
 
 	maxTerminal := cfg.MaxTerminalRetained
-	if maxTerminal <= 0 {
+	if maxTerminal == 0 {
 		maxTerminal = 1000
 	}
 	decisionTimeout := cfg.DecisionTimeout
@@ -229,16 +252,10 @@ func NewEngine(cfg Config) *Engine {
 
 	mailboxes := make(map[tasks.PoolID][]chan workerAssignment, len(cfg.Pools))
 	for poolID, pcfg := range cfg.Pools {
-		if pcfg.Concurrency <= 0 {
-			pcfg.Concurrency = 4
-		}
+		pcfg.Concurrency = effectivePoolConcurrency(pcfg)
+		cfg.Pools[poolID] = pcfg
 		concurrencies[poolID] = pcfg.Concurrency
-		minimum := pcfg.MinConcurrency
-		if pcfg.ZeroIdle {
-			minimum = 0
-		} else if minimum <= 0 {
-			minimum = pcfg.Concurrency
-		}
+		minimum := effectivePoolMinimum(pcfg, pcfg.Concurrency)
 		minimums[poolID] = minimum
 		idleTimeout := pcfg.IdleTimeout
 		if idleTimeout <= 0 {
