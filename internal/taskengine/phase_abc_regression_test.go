@@ -187,3 +187,26 @@ func TestDurabilityLaneIndependentFromCompletionCallbacks(t *testing.T) {
 	}
 	close(releaseCallback)
 }
+
+func TestWorkerStartedRequiresExactPermitAndEpoch(t *testing.T) {
+	e := NewEngine(Config{Pools: map[tasks.PoolID]PoolEngineConfig{"p": {Concurrency: 1, BacklogLimit: 8}}})
+	current := newPermit("p", 0, "same-id", 20, nil)
+	foreign := newPermit("p", 0, "same-id", 20, nil)
+	rec := &taskRecord{
+		spec:  tasks.WorkSpec{ID: "same-id", Pool: "p", QuotaOwner: "owner"},
+		state: tasks.StateDispatching, permit: current, dispatchEpoch: 20,
+	}
+	e.registry["same-id"] = rec
+
+	e.applyWorkerStarted("same-id", foreign, time.Now().UTC())
+	if rec.state != tasks.StateDispatching || !rec.startedAt.IsZero() {
+		t.Fatalf("foreign permit promoted task: state=%s started=%v", rec.state, rec.startedAt)
+	}
+
+	rec.dispatchEpoch = 21
+	e.applyWorkerStarted("same-id", current, time.Now().UTC())
+	if rec.state != tasks.StateDispatching || !rec.startedAt.IsZero() {
+		t.Fatalf("stale epoch promoted task: state=%s started=%v", rec.state, rec.startedAt)
+	}
+}
+
