@@ -196,14 +196,17 @@ func (p *Plugin) handleBroadcast(ctx *core.Context) error {
 		return fmt.Errorf("broadcast: wait media capture: %w", waitErr)
 	}
 	if captureErr != nil {
-		return ctx.Status(fmt.Sprintf("Could not capture replied broadcast: %v", captureErr))
+		return ctx.Fail(captureErr, "Could not capture replied broadcast.")
 	}
 	if !result.IsSuccess() {
 		failure := strings.TrimSpace(result.Failure.Message)
 		if failure == "" {
 			failure = fmt.Sprintf("capture task ended with %s", result.Outcome)
 		}
-		return ctx.Status(fmt.Sprintf("Could not capture replied broadcast: %s", failure))
+		return ctx.Fail(
+			fmt.Errorf("broadcast: media capture task failed: %s", failure),
+			"Could not capture replied broadcast.",
+		)
 	}
 
 	// TaskEngine releases download:1 before closing the ticket. Keep the
