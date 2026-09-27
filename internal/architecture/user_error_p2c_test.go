@@ -70,6 +70,13 @@ func TestP2CKnownRawErrorHotspotsStayClosed(t *testing.T) {
 		"internal/assistant/savedresponseadmin/feature.go": {
 			"rearm(ctx, s, err.Error())",
 		},
+		"plugins/broadcast/broadcast.go": {
+			"Could not capture replied broadcast: %v",
+			"Could not capture replied broadcast: %s",
+		},
+		"plugins/filters/filters.go": {
+			"Could not capture replied response: %v",
+		},
 	}
 	for rel, forbidden := range checks {
 		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
