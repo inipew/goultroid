@@ -154,6 +154,12 @@ func (p *Plugin) handleSticker(ctx *core.Context) error {
 	// Decode source image
 	srcImg, err := decodeImageFile(downloadedPath)
 	if err != nil {
+		if errors.Is(err, imageguard.ErrDimensionsExceeded) ||
+			errors.Is(err, imageguard.ErrInputTooLarge) ||
+			errors.Is(err, imageguard.ErrPixelBudgetExceeded) ||
+			errors.Is(err, imageguard.ErrDecodedBudgetExceeded) {
+			return ctx.Fail(err, "Image rejected by safety limits.")
+		}
 		return ctx.Fail(err, "Failed to decode sticker image.")
 	}
 
