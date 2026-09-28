@@ -245,7 +245,6 @@ func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
 	}
 }
 
-
 func TestTerminalRetainedChargeKeepsAttemptIDBytes(t *testing.T) {
 	const retainedCap = 40 << 10
 	attemptID := strings.Repeat("a", 24<<10)
@@ -359,6 +358,7 @@ func TestQueuedCancelPreservesAttemptAfterTerminalDetach(t *testing.T) {
 	default:
 	}
 }
+
 func TestTerminalTTLEvictsWhileEngineIdle(t *testing.T) {
 	e := boundedTestEngine(t, Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{
