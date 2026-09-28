@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T10 CLOSED. T10 full repository race acceptance is user-confirmed green on the current `test-next` lineage through `31445f849ab4a6ce617df70eda8a6e70d856f102`. T11 final cleanup/closure is READY; no compatibility surface may be removed without concrete caller evidence.**
+Status: **OPEN — T1-T10 CLOSED. T11 source cleanup/audit is implemented through `13961fc07f87830a3949d5be120e679a458115ce`; executable T11 acceptance remains pending. No compatibility surface was removed without concrete caller evidence.**
 
 Audit authority:
 
@@ -1257,18 +1257,40 @@ The batch changes test fixtures/expectations only; no production behavior, execu
 
 ### T11 — Final cleanup and closure
 
-Status: **READY — T10 gate satisfied at current lineage through `31445f849ab4a6ce617df70eda8a6e70d856f102`.**
+Status: **SOURCE IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — source cleanup and fences are at `13961fc07f87830a3949d5be120e679a458115ce`.
 
-Only after T1–T10 acceptance:
+T11 audit/cleanup results:
 
-- remove dead helper/fallback paths made unreachable by the fixes;
-- update comments that still describe obsolete retry/fallback behavior;
-- update architecture fences where a stable invariant now exists;
-- re-scan for raw Telegram bypasses in the affected paths;
-- verify no duplicate executor/task/callback/cache authority was introduced;
-- update this document with exact closing HEADs and test/benchmark evidence.
+- dead callback/scope-resolver helpers removed immediately before T11 by `31445f849ab4a6ce617df70eda8a6e70d856f102`; repository re-scan found no production references to `SetPluginScopeResolver`, `resolvePluginScope`, the retired `internal/services/callback` runtime, legacy `callback.EncodeCallbackData`, or post-admission `AcceptClaim`;
+- retained compatibility surfaces were **not** deleted without caller evidence: `Context.Svc`, dispatcher/client aggregate accessors, `RetryRPC`, `DirectExecutor`, `NewService`, exported default-policy/cache values, and the legacy UI Telegram adapter remain compatibility-only and are already fenced away from production composition;
+- the stale `SendMessage` comment that still described bounded FloodWait retry was corrected to the actual T1 invariant: non-idempotent text transport is single-attempt and is never replayed after a transport/RPC failure;
+- raw Telegram/RPC re-scan confirms userbot feature/service/resolver calls remain inside `RPCExecutor` operations; Assistant production wiring installs `assistantRPCExecutor{executor: client.Executor()}`, constructs `managedAPI`, and then configures the interaction transport with the same executor;
+- T11 found one concrete missed T6 boundary: `UploadInlineMedia` wrapped the whole `c.uploader.FromPath` transfer in a logical `upload.saveFilePart` executor call even though the managed uploader already sends every physical `saveFilePart/saveBigFilePart` through the shared executor. `13961fc07f87830a3949d5be120e679a458115ce` removes that duplicate whole-transfer executor boundary and reuses `uploadMediaFile`; final `messages.uploadMedia` remains separately executor-managed;
+- `internal/architecture/telegram_runtime_t11_test.go` now fences production Assistant shared-executor wiring, managed physical media upload ownership, absence of whole-transfer `saveFilePart` wrapping, and non-reintroduction of retired callback/scope-resolver helpers;
+- static post-commit inspection confirms three Assistant upload paths now call `c.uploadMediaFile(ctx, filePath)`, no `executeValue(... "upload.saveFilePart" ...)` whole-transfer wrapper remains, production Assistant wiring contains the shared executor adapter, and no `DirectExecutor` appears in production app wiring;
+- no second TaskEngine, RPC executor authority, callback protocol/runtime, interaction runtime, locale cache, downloader engine, or retry authority was introduced.
 
-Do not use final cleanup to start a new redesign.
+The new T11 architecture test was run through local `gofmt` before commit. The two existing production files changed only by gofmt-neutral block/comment replacement; this environment still lacks a materialized repository checkout and the installed Go toolchain is 1.23.2 rather than the repository's Go 1.27, so no local compile/race result is claimed for `13961fc...`.
+
+Before declaring T11 CLOSED, execute on a clean Go 1.27 checkout at or after `13961fc07f87830a3949d5be120e679a458115ce`:
+
+```bash
+gofmt -w \
+  internal/assistant/interaction/message.go \
+  internal/telegram/service.go \
+  internal/architecture/telegram_runtime_t11_test.go
+
+git diff --check
+
+go test ./internal/assistant/interaction ./internal/telegram ./internal/architecture -count=1 -timeout=120s
+go test -race ./internal/assistant/interaction ./internal/telegram ./internal/architecture -count=1 -timeout=180s
+go test -race ./... -count=1 -timeout=180s
+
+go vet ./...
+go build ./cmd/goultroid
+```
+
+If that matrix is green, record the exact tested HEAD/toolchain and mark T11 plus this runtime-hardening plan CLOSED. Do not use final cleanup to start a new redesign.
 
 ---
 
