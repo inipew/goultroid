@@ -121,7 +121,7 @@ func TestMyXLQuotaSnapshotPreservesPartialSuccess(t *testing.T) {
 			t.Fatalf("dashboard missing task-flow action %q", action)
 		}
 	}
-	if !strings.Contains(screen.Body, "Gagal dimuat") || !strings.Contains(screen.Body, "Akrab Partial") {
+	if !strings.Contains(screen.Body, "Pulsa gagal dimuat") || !strings.Contains(screen.Body, "Akrab Partial") {
 		t.Fatalf("dashboard did not preserve partial data: %s", screen.Body)
 	}
 }

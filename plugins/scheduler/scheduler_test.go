@@ -221,7 +221,7 @@ func TestSchedulerPlugin(t *testing.T) {
 	if err := cmdMap["remind"].Handler(ctxRemind); err != nil {
 		t.Fatalf("remind failed: %v", err)
 	}
-	if !strings.Contains(mockSvc.sent, "Reminder set!") {
+	if !strings.Contains(mockSvc.sent, "Reminder set for") {
 		t.Errorf("expected reminder set confirmation, got: %s", mockSvc.sent)
 	}
 
