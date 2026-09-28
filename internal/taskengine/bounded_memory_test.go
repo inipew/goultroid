@@ -246,6 +246,67 @@ func TestTerminalRecordDropsExecutionReferences(t *testing.T) {
 }
 
 
+func TestTerminalRetainedChargeKeepsAttemptIDBytes(t *testing.T) {
+	const retainedCap = 40 << 10
+	attemptID := strings.Repeat("a", 24<<10)
+	e := boundedTestEngine(t, Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"p": {Concurrency: 1, BacklogLimit: 4, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity: 4, MaxTerminalRetained: 4, MaxRetainedBytes: retainedCap,
+	})
+	blockerStarted := make(chan struct{})
+	blockerRelease := make(chan struct{})
+	defer close(blockerRelease)
+	if _, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "attempt-charge-blocker", QuotaOwner: "blocker", Pool: "p",
+		Handler: func(context.Context) error { close(blockerStarted); <-blockerRelease; return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-blockerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocker did not start")
+	}
+
+	ticket, err := e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "attempt-charge-retained", QuotaOwner: "owner", Pool: "p",
+		Job:     &tasks.OccurrenceRef{AttemptID: tasks.AttemptID(attemptID)},
+		Handler: func(context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err := e.Cancel("attempt-charge-retained", tasks.CauseUserCancel)
+	if err != nil || !receipt.Accepted {
+		t.Fatalf("cancel receipt = %+v err=%v", receipt, err)
+	}
+	res, err := ticket.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(res.AttemptID) != attemptID {
+		t.Fatalf("attempt id length = %d, want %d", len(res.AttemptID), len(attemptID))
+	}
+	rec := e.registry["attempt-charge-retained"]
+	if rec == nil || rec.spec.Job != nil {
+		t.Fatalf("terminal record = %+v", rec)
+	}
+	if rec.retainedBytes < int64(len(attemptID)) {
+		t.Fatalf("terminal retained bytes = %d, want at least AttemptID bytes %d", rec.retainedBytes, len(attemptID))
+	}
+
+	_, err = e.Submit(context.Background(), tasks.WorkSpec{
+		ID: "attempt-charge-second", QuotaOwner: "owner-2", Pool: "p",
+		Job:     &tasks.OccurrenceRef{AttemptID: tasks.AttemptID(strings.Repeat("b", 24<<10))},
+		Handler: func(context.Context) error { return nil },
+	})
+	if !errors.Is(err, tasks.ErrRetainedBudget) {
+		t.Fatalf("second large AttemptID submit error = %v, want ErrRetainedBudget", err)
+	}
+}
+
 func TestQueuedCancelPreservesAttemptAfterTerminalDetach(t *testing.T) {
 	e := boundedTestEngine(t, Config{
 		Pools: map[tasks.PoolID]PoolEngineConfig{

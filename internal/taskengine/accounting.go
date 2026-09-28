@@ -67,12 +67,21 @@ func workSpecMetadataBytes(spec tasks.WorkSpec) int64 {
 		jobMetadataBytes(spec.Job) + resourceMetadataBytes(spec.Resources)
 }
 
+func terminalDetachedJobBytes(ref *tasks.OccurrenceRef) int64 {
+	if ref == nil {
+		return 0
+	}
+	// AttemptID remains reachable through TaskResult after Job is detached, so
+	// keep its admission charge until the terminal record itself is evicted.
+	return jobRefBytes + int64(len(ref.JobID)+len(ref.OccurrenceID))
+}
+
 // terminalDetachedSpecBytes returns the retained charge that becomes unreachable
 // when settleTerminal strips execution-only WorkSpec ownership.
 func terminalDetachedSpecBytes(spec tasks.WorkSpec) int64 {
 	inputBytes, _ := payloadSize(spec.Input)
 	return inputBytes + int64(len(spec.OrderingKey)+len(spec.HandlerRef)) +
-		jobMetadataBytes(spec.Job) + resourceMetadataBytes(spec.Resources)
+		terminalDetachedJobBytes(spec.Job) + resourceMetadataBytes(spec.Resources)
 }
 
 // freezeWorkSpecMetadata gives the engine exact-size string/backing ownership
