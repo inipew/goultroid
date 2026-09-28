@@ -64,30 +64,6 @@ func (m *recordingInteraction) SendMedia(ctx context.Context, peer tg.InputPeerC
 	return &tg.Message{ID: 1}, nil
 }
 
-type mockInlineInteraction struct {
-	answered     bool
-	answer       string
-	answerCalls  int
-	edited       bool
-	editText     string
-	markupEdited bool
-	editMarkup   tg.ReplyMarkupClass
-}
-
-func (m *mockInlineInteraction) Answer(ctx context.Context, queryID int64, text string, alert bool) error {
-	m.answered, m.answer = true, text
-	m.answerCalls++
-	return nil
-}
-func (m *mockInlineInteraction) Edit(ctx context.Context, target interaction.InlineTarget, text string, markup tg.ReplyMarkupClass) error {
-	m.edited, m.editText, m.editMarkup = true, text, markup
-	return nil
-}
-func (m *mockInlineInteraction) EditMarkup(ctx context.Context, target interaction.InlineTarget, markup tg.ReplyMarkupClass) error {
-	m.markupEdited, m.editMarkup = true, markup
-	return nil
-}
-
 type testTaskClient struct{ last tasks.WorkSpec }
 
 func (c *testTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
@@ -188,41 +164,6 @@ func (e *recordingInlineExecutor) ExecutePreparedWithPeerType(
 	peerType tg.InlineQueryPeerTypeClass,
 ) error {
 	return e.ExecuteWithPeerType(ctx, svc, queryID, userID, prepared.Query(), offset, peerType)
-}
-
-func messageEvent(queryID, userID int64, data []byte, target interaction.MessageTarget) *core.CallbackQueryEvent {
-	return &core.CallbackQueryEvent{
-		At:      time.Now(),
-		QueryID: queryID,
-		UserID:  userID,
-		ChatID:  target.ChatID(),
-		MsgID:   target.MessageID(),
-		Data:    data,
-		Origin:  core.CallbackOriginMessage,
-		Target: core.CallbackTarget{
-			Origin:       core.CallbackOriginMessage,
-			Peer:         target.Peer(),
-			MessageID:    target.MessageID(),
-			ChatInstance: target.ChatInstance(),
-		},
-		ChatInstance: target.ChatInstance(),
-	}
-}
-
-func inlineEvent(queryID, userID int64, data []byte, target interaction.InlineTarget) *core.CallbackQueryEvent {
-	return &core.CallbackQueryEvent{
-		At:      time.Now(),
-		QueryID: queryID,
-		UserID:  userID,
-		Data:    data,
-		Origin:  core.CallbackOriginInline,
-		Target: core.CallbackTarget{
-			Origin:       core.CallbackOriginInline,
-			InlineID:     target.MessageID(),
-			ChatInstance: target.ChatInstance(),
-		},
-		ChatInstance: target.ChatInstance(),
-	}
 }
 
 func TestUpdateHandlers_InlineQueryExecutesThroughTaskEngine(t *testing.T) {
@@ -370,32 +311,6 @@ func TestUpdateHandlers_CallbackSpinnerProtection(t *testing.T) {
 	if api.answerReq == nil || api.answerReq.QueryID != 202 || api.answerReq.Message != "" {
 		t.Fatalf("inline noop answer: %+v", api.answerReq)
 	}
-}
-
-type testCancelledTicket struct{ done chan struct{} }
-
-func (t *testCancelledTicket) TaskID() tasks.TaskID   { return "asst:cb:888" }
-func (t *testCancelledTicket) State() tasks.TaskState { return tasks.StateCancelled }
-func (t *testCancelledTicket) Done() <-chan struct{}  { return t.done }
-func (t *testCancelledTicket) Result() (tasks.TaskResult, bool) {
-	return tasks.TaskResult{TaskID: "asst:cb:888", Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseUserCancel, Failure: tasks.FailureInfo{Message: "scope cancelled"}}, true
-}
-func (t *testCancelledTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
-	res, _ := t.Result()
-	return res, nil
-}
-
-type testCancelledTaskClient struct{ ticket tasks.Ticket }
-
-func (c *testCancelledTaskClient) Submit(context.Context, tasks.WorkSpec) (tasks.Ticket, error) {
-	return c.ticket, nil
-}
-func (c *testCancelledTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
-	return tasks.CancelReceipt{}, nil
-}
-func (c *testCancelledTaskClient) CancelScope(tasks.ScopeIdentity, tasks.Cause) int { return 0 }
-func (c *testCancelledTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
-	return tasks.TaskSnapshot{}, false
 }
 
 func TestCallbackQueryDeduper_BoundedAndReusableAfterTTL(t *testing.T) {

@@ -116,7 +116,7 @@ func OpenHelpModuleSlotState(raw []byte, commands []core.Command, slot int) ([]b
 	if slot < 0 || slot >= HelpModuleSlotCount || state.Screen != ScreenHelp || !helpBindingMatches(state, helpModulePageBinding(modules, page)) {
 		return nil, HelpModule{}, 0, false
 	}
-	start, end, page, _ := helpPageWindow(len(modules), page, HelpModuleSlotCount)
+	start, end, _, _ := helpPageWindow(len(modules), page, HelpModuleSlotCount)
 	index := start + slot
 	if index < start || index >= end {
 		return nil, HelpModule{}, 0, false

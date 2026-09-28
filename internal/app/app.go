@@ -39,7 +39,6 @@ import (
 	"github.com/inipew/goultroid/internal/services/savedresponse"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
-	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -134,13 +133,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	pluginManager.SetInlineRegistry(coreDeps.inlineEngine.Registry())
 	coreDeps.inlineEngine.SetFeatureCatalog(pluginManager.FeatureCatalog())
 	coreDeps.inlineEngine.SetInteractionRuntime(pluginManager.InteractionRuntime())
-	tgRuntime.dispatcher.SetPluginScopeResolver(func(owner string) (tasks.ScopeIdentity, bool) {
-		scope, ok := pluginManager.Scope(owner)
-		if !ok {
-			return tasks.ScopeIdentity{}, false
-		}
-		return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, true
-	})
 	if coreDeps.resourceManager != nil {
 		pluginManager.SetResourceManager(coreDeps.resourceManager)
 	}

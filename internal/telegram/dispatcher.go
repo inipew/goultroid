@@ -45,7 +45,6 @@ type Dispatcher struct {
 	legacyCommandIdentityUntil time.Time
 	ingressDedupe              *ingressMessageDedupe
 	tasks                      tasks.Client
-	scopeResolver              func(string) (tasks.ScopeIdentity, bool)
 
 	messageHandlers   []prioritizedHandler
 	messageRouteIndex atomic.Pointer[messageHandlerIndex]
@@ -69,23 +68,6 @@ type Dispatcher struct {
 	peerEnqueued   atomic.Int64
 	peerSaveFailed atomic.Int64
 	stopping       atomic.Bool
-}
-
-// SetPluginScopeResolver binds Telegram work to the currently active plugin generation.
-func (d *Dispatcher) SetPluginScopeResolver(resolve func(string) (tasks.ScopeIdentity, bool)) {
-	d.mu.Lock()
-	d.scopeResolver = resolve
-	d.mu.Unlock()
-}
-
-func (d *Dispatcher) resolvePluginScope(owner string) (tasks.ScopeIdentity, bool) {
-	d.mu.RLock()
-	resolve := d.scopeResolver
-	d.mu.RUnlock()
-	if resolve == nil {
-		return tasks.ScopeIdentity{}, false
-	}
-	return resolve(owner)
 }
 
 // DispatcherDeps specifies dependencies for initializing a Dispatcher via dependency injection.

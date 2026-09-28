@@ -7,12 +7,12 @@ import (
 )
 
 var (
-	ErrAssistantResponseTimeout = errors.New("Assistant did not answer the inline query in time. Try again.")
-	ErrAssistantInvalid         = errors.New("Telegram cannot use the configured Assistant bot for inline mode. Check BOT_TOKEN and the Assistant username, then restart Goultroid.")
-	ErrPeerInlineRestricted     = errors.New("Telegram cannot insert Assistant inline results in this chat. Check chat access and inline/send permissions, or try another chat.")
-	ErrInlineResultExpired      = errors.New("The Assistant inline result expired before Telegram could send it. Run the command again.")
-	ErrQueryFailed              = errors.New("Telegram could not query the Assistant inline bot. Try again.")
-	ErrSendFailed               = errors.New("Telegram could not insert the Assistant inline result. Try again.")
+	ErrAssistantResponseTimeout = errors.New("assistant did not answer the inline query in time; try again")
+	ErrAssistantInvalid         = errors.New("telegram cannot use the configured assistant bot for inline mode; check BOT_TOKEN and the assistant username, then restart Goultroid")
+	ErrPeerInlineRestricted     = errors.New("telegram cannot insert assistant inline results in this chat; check chat access and inline/send permissions, or try another chat")
+	ErrInlineResultExpired      = errors.New("assistant inline result expired before Telegram could send it; run the command again")
+	ErrQueryFailed              = errors.New("telegram could not query the assistant inline bot; try again")
+	ErrSendFailed               = errors.New("telegram could not insert the assistant inline result; try again")
 )
 
 // RenderStage identifies the furthest self-inline phase reached before Render

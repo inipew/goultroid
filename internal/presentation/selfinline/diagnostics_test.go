@@ -137,3 +137,22 @@ func TestRenderHidesRawRPCFailureButPreservesExecutionSemantics(t *testing.T) {
 		t.Fatalf("execution semantics changed by diagnostic wrapper: %+v ok=%v", semantics, ok)
 	}
 }
+
+func TestSelfInlineDiagnosticsRetainActionableGuidance(t *testing.T) {
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{selfinline.ErrAssistantResponseTimeout, "try again"},
+		{selfinline.ErrAssistantInvalid, "check BOT_TOKEN"},
+		{selfinline.ErrPeerInlineRestricted, "check chat access"},
+		{selfinline.ErrInlineResultExpired, "run the command again"},
+		{selfinline.ErrQueryFailed, "try again"},
+		{selfinline.ErrSendFailed, "try again"},
+	}
+	for _, tc := range tests {
+		if !strings.Contains(tc.err.Error(), tc.want) {
+			t.Errorf("diagnostic %q lacks guidance %q", tc.err, tc.want)
+		}
+	}
+}

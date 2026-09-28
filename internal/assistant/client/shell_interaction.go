@@ -1302,14 +1302,3 @@ func (c *AssistantClient) shellStatusView(ctx context.Context, userID, chatID in
 		Locale:    c.shellLocale(ctx, userID, chatID),
 	})
 }
-
-func (c *AssistantClient) shellCommands() []core.Command {
-	if c == nil || c.cmdRouter == nil {
-		return nil
-	}
-	router := c.cmdRouter.CoreRouter()
-	if router == nil {
-		return nil
-	}
-	return router.CommandsForSurface(execution.SourceAssistant)
-}

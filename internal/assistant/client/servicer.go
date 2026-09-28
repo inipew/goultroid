@@ -230,10 +230,6 @@ type assistantInlineCallbackServicer struct {
 	answer      callbackAnswerGuard
 }
 
-func newAssistantInlineCallbackServicer(queryID int64, target interaction.InlineTarget, inter interaction.InlineInteraction) *assistantInlineCallbackServicer {
-	return &assistantInlineCallbackServicer{queryID: queryID, target: target, interaction: inter}
-}
-
 type assistantMessageCallbackTransport interface {
 	AnswerCallbackQuery(context.Context, int64, string, bool) error
 	EditMessage(context.Context, tg.InputPeerClass, int, string) error
