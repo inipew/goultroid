@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Execution Audit — AI Session Plan
 
-Status: **OPEN — E0 reproducer landed; E1 source fixes and E2 best-effort contract are implemented; R6 correctness fix + measurement harness landed; executable focused/acceptance runs and R5/R6 measurements remain pending**
+Status: **OPEN — E0-E2 correctness work landed; R5/R6 measurement harnesses and R5 path controls landed; executable focused/acceptance runs plus actual R5/R6 measurements remain pending**
 
 Audit baseline:
 
@@ -159,7 +159,20 @@ Measurement-harness commit:
 
 `BenchmarkRuntimeExecutionE3_ReconcileSettledClaims` runs representative 1/100/1000 active-claim batches and reports both `scheduled_reads/op` and `occurrence_reads/op`. No R6 performance optimization has been made from the source-level complexity estimate alone.
 
-R5 is intentionally unchanged. The source still shows resource-bearing scheduled commands occupying the scheduler wrapper while waiting for the child TaskEngine ticket; resource-free commands run directly and ActionJob routes to the target Jobs definition. A representative executable measurement of scheduler-pool occupancy, child queue delay, and end-to-end attempt latency is still required before changing that orchestration.
+R5 production orchestration is intentionally unchanged. The source still shows resource-bearing scheduled commands occupying the scheduler wrapper while waiting for the child TaskEngine ticket; resource-free commands run directly in the wrapper; redesigned ActionJob schedules point directly at the caller-owned target definition and do not create a scheduler.action wrapper.
+
+Additional E3 measurement/control commits:
+
+- `8b6cad8ae28be58997931d2e58e9b51900a2f451` — `test(runtime): measure scheduler child contention`
+  - adds a real TaskEngine contention harness with four scheduler wrappers and one saturated download worker;
+  - captures scheduler-pool running occupancy, child download waiting depth, child queue p50/p95, and wrapper-attempt p95;
+  - adds a resource-free control asserting only the wrapper task is active, with no child TaskEngine job;
+  - adds an ActionJob control proving the redesigned schedule targets the caller-owned definition directly and creates no scheduler.action wrapper.
+- `ce50f4995490bef3f6cd71772768243c33ca2697` — `test(jobs): verify scheduler wrapper cascade`
+  - verifies the R2 cleanup assumption that deleting a scheduler-owned wrapper definition cascades its owned schedule when SQLite foreign-key enforcement is enabled;
+  - production database configuration explicitly enables `foreign_keys(ON)` for pooled DSNs and the special `:memory:` path.
+
+These harnesses distinguish the three execution shapes required by R5 without changing production orchestration. Actual benchmark numbers are still required before deciding whether wrapper occupancy is material enough to justify a redesign.
 
 ### Verification status and environment limit
 
@@ -174,10 +187,40 @@ git diff --check
 
 go test ./internal/taskengine ./internal/jobs ./internal/scheduler ./internal/app ./internal/telegram -count=1 -timeout=120s
 go test ./internal/scheduler -run 'TestRuntimeExecutionE0|TestRuntimeExecutionE1' -count=1
-go test ./internal/app -run 'TestRuntimeExecutionE2' -count=1
+go test ./internal/app -run 'TestRuntimeExecutionE2|TestRuntimeExecutionE3' -count=1
+go test ./internal/jobs/sqlite -run 'TestRuntimeExecutionE1' -count=1
+go test ./internal/scheduler -run 'TestRuntimeExecutionE0|TestRuntimeExecutionE1|TestRuntimeExecutionE3' -count=1
 
-go test ./internal/scheduler -run '^$' -bench '^BenchmarkRuntimeExecutionE3_ReconcileSettledClaims$' -benchtime=500ms -count=3
-# Add/run an R5 representative contention measurement before any R5 orchestration change.
+go test ./internal/scheduler -run '^
+go test -race ./... -count=1 -timeout=180s
+go vet ./...
+go build ./cmd/goultroid
+```
+
+Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
+ -bench '^BenchmarkRuntimeExecutionE3_ReconcileSettledClaims
+go test -race ./... -count=1 -timeout=180s
+go vet ./...
+go build ./cmd/goultroid
+```
+
+Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
+ -benchtime=500ms -count=3
+go test ./internal/app -run '^
+go test -race ./... -count=1 -timeout=180s
+go vet ./...
+go build ./cmd/goultroid
+```
+
+Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
+ -bench '^BenchmarkRuntimeExecutionE3_ResourceScheduledCommandContention
+go test -race ./... -count=1 -timeout=180s
+go vet ./...
+go build ./cmd/goultroid
+```
+
+Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
+ -benchtime=5x -count=3
 
 go test -race ./... -count=1 -timeout=180s
 go vet ./...
