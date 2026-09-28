@@ -756,7 +756,9 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 	m.mu.Unlock()
 
 	var errs []error
-
+	m.mu.RLock()
+	featureRegistry := m.featureRegistry
+	m.mu.RUnlock()
 	// Quiesce TaskEngine ownership before detaching registrations. This prevents
 	// already-admitted work from crossing a plugin generation boundary while
 	// hooks/features are being removed.
@@ -769,6 +771,9 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 				shutdownTaskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseShutdown)
 			}
 		}
+	}
+	if featureRegistry != nil && featureRegistry.interactions != nil {
+		featureRegistry.interactions.PreserveDurableOnShutdown()
 	}
 
 	// 1. Detach all feature surfaces and message hooks before plugin shutdown.
@@ -784,9 +789,6 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		}
 	}
 
-	m.mu.RLock()
-	featureRegistry := m.featureRegistry
-	m.mu.RUnlock()
 	if featureRegistry != nil && featureRegistry.interactions != nil {
 		if err := featureRegistry.interactions.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("interaction runtime: %w", err))

@@ -12,3 +12,4 @@ pengganti.
 | [0004](0004-plugin-capability-and-platform-boundaries.md) | Plugin capability and platform boundaries | Accepted |
 | [0005](0005-storage-migration-and-namespace-compatibility.md) | Storage, migration, and namespace compatibility | Accepted |
 | [0006](0006-execution-runtime-redesign.md) | Execution runtime redesign: admission, workers, occurrences, attempts, and lifecycle | Proposed |
+| [0007](0007-durable-a2-sessions.md) | Durable A2 sessions for opted-in features | Accepted |

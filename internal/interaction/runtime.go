@@ -9,11 +9,12 @@ import (
 )
 
 type sessionEntry struct {
-	session Session
-	ctx     context.Context
-	cancel  context.CancelCauseFunc
-	expiry  *expiryItem
-	input   *inputClaim
+	session        Session
+	durableVersion string
+	ctx            context.Context
+	cancel         context.CancelCauseFunc
+	expiry         *expiryItem
+	input          *inputClaim
 }
 
 // Runtime owns bounded, cancellable interaction sessions. It intentionally has
@@ -31,17 +32,22 @@ type Runtime struct {
 	rootCancel context.CancelCauseFunc
 	closed     bool
 
-	sessions    map[string]*sessionEntry
-	byScope     map[tasks.ScopeIdentity]map[string]struct{}
-	actorCounts map[int64]int
-	expiries    expiryHeap
-	inputs      map[inputBindingKey]string
-	stateBytes  int
+	sessions        map[string]*sessionEntry
+	byScope         map[tasks.ScopeIdentity]map[string]struct{}
+	actorCounts     map[int64]int
+	expiries        expiryHeap
+	inputs          map[inputBindingKey]string
+	stateBytes      int
+	durable         DurableStore
+	preserveDurable bool
 
 	expiredCount          uint64
 	canceledCount         uint64
 	staleCount            uint64
 	capacityRejectedCount uint64
+	restoredCount         uint64
+	restoreRejectedCount  uint64
+	persistenceErrorCount uint64
 }
 
 // NewRuntime constructs an immediately usable interaction runtime.
@@ -157,7 +163,12 @@ func (r *Runtime) Create(ctx context.Context, request CreateRequest) (Resolved, 
 		CreatedAt: now,
 		ExpiresAt: expiresAt,
 	}
-	entry := &sessionEntry{session: snapshot, ctx: sessionCtx, cancel: cancel}
+	entry := &sessionEntry{session: snapshot, durableVersion: r.durabilityVersion(featureID), ctx: sessionCtx, cancel: cancel}
+	if err := r.saveDurableLocked(ctx, snapshot, nil); err != nil {
+		cancel(err)
+		r.mu.Unlock()
+		return Resolved{}, err
+	}
 	r.sessions[id] = entry
 	r.indexSessionLocked(entry)
 	r.scheduleExpiryLocked(entry, expiresAt)

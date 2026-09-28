@@ -140,6 +140,13 @@ func TestP1F2AssistantSettingsUsesA2AndRejectsStaleReplay(t *testing.T) {
 	}
 }
 
+func TestSettingsDeclaresDurableA2State(t *testing.T) {
+	p := &Plugin{}
+	if got := p.FeatureSpec().DurabilityVersion; got != "1" {
+		t.Fatalf("durability version = %q", got)
+	}
+}
+
 func TestP1F2SettingsFeatureDeclaresBothA2Surfaces(t *testing.T) {
 	p, _, _ := setupTestPlugin(t)
 	spec := p.FeatureSpec()

@@ -18,6 +18,9 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		t.Fatalf("ValidateSpec() error = %v", err)
 	}
 	spec := NewFeature().FeatureSpec()
+	if spec.DurabilityVersion != "3" {
+		t.Fatalf("durability version = %q", spec.DurabilityVersion)
+	}
 	if len(spec.Interactions) != 76 {
 		t.Fatalf("interactions = %d, want 76", len(spec.Interactions))
 	}

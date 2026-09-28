@@ -11,8 +11,9 @@ func TestRegistryInteractionCatalogViewFollowsRegistration(t *testing.T) {
 	registry := NewRegistry()
 	scope := tasks.ScopeIdentity{Owner: "plugin:demo", Generation: 7}
 	registration, err := registry.Register(Owner{ID: "demo", Scope: scope}, Spec{
-		ID:   "demo",
-		Name: "Demo",
+		ID:                "demo",
+		Name:              "Demo",
+		DurabilityVersion: "1",
 		Interactions: []Interaction{
 			{
 				ID:       "next",
@@ -39,11 +40,17 @@ func TestRegistryInteractionCatalogViewFollowsRegistration(t *testing.T) {
 	if !registry.HasAction("demo", "next") {
 		t.Fatal("HasAction(next) = false, want true")
 	}
+	if got := registry.DurabilityVersion("demo"); got != "1" {
+		t.Fatalf("durability version = %q", got)
+	}
 	if registry.HasAction("demo", "home") {
 		t.Fatal("HasAction(home) = true for non-action interaction")
 	}
 
 	registration.Close()
+	if got := registry.DurabilityVersion("demo"); got != "" {
+		t.Fatalf("closed durability version = %q", got)
+	}
 	if _, ok := registry.FeatureScope("demo"); ok {
 		t.Fatal("FeatureScope() remains visible after registration close")
 	}

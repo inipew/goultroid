@@ -85,6 +85,17 @@ func (r *Runtime) ArmInput(ctx context.Context, id string, request InputRequest)
 		r.mu.Unlock()
 		return Session{}, ErrCapacity
 	}
+	next := cloneSession(entry.session)
+	next.State = append([]byte(nil), request.State...)
+	next.Revision++
+	nextInputExpiry := now.Add(ttl)
+	if nextInputExpiry.After(next.ExpiresAt) {
+		nextInputExpiry = next.ExpiresAt
+	}
+	if err := r.saveDurableLocked(ctx, next, &inputClaim{key: key, expiresAt: nextInputExpiry}); err != nil {
+		r.mu.Unlock()
+		return Session{}, err
+	}
 
 	r.clearInputLocked(entry)
 	r.stateBytes = newTotal
@@ -151,6 +162,12 @@ func (r *Runtime) TakeInput(ctx context.Context, actorID, chatID int64) (Resolve
 		return Resolved{}, true, ErrExpired
 	}
 
+	next := cloneSession(entry.session)
+	next.Revision++
+	if err := r.saveDurableLocked(ctx, next, nil); err != nil {
+		r.mu.Unlock()
+		return Resolved{}, true, err
+	}
 	r.clearInputLocked(entry)
 	entry.session.Revision++
 	snapshot := cloneSession(entry.session)
@@ -176,6 +193,11 @@ func (r *Runtime) ReleaseInput(id string) bool {
 	entry, ok := r.sessions[id]
 	if !ok {
 		return false
+	}
+	if entry.input != nil {
+		if err := r.saveDurableLocked(context.Background(), entry.session, nil); err != nil {
+			return false
+		}
 	}
 	return r.clearInputLocked(entry)
 }

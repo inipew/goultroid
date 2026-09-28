@@ -25,6 +25,7 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/idempotency"
 	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
+	interactionsqlite "github.com/inipew/goultroid/internal/interaction/sqlite"
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
@@ -126,6 +127,13 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	tgRuntime.dispatcher.Executor().SetDelayedActions(delayedActions)
 
 	pluginManager := plugin.NewManager(coreDeps.router)
+	interactionStore := interactionsqlite.NewStore(coreDeps.db.DB)
+	if err := interactionStore.InitSchema(context.Background()); err != nil {
+		return nil, fmt.Errorf("initialize interaction sessions: %w", err)
+	}
+	if err := pluginManager.InteractionRuntime().SetDurableStore(interactionStore); err != nil {
+		return nil, fmt.Errorf("configure durable interactions: %w", err)
+	}
 	pluginManager.SetCleanupExecutor(coreDeps.cleanupExecutor)
 	pluginManager.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("plugin.panic")})
 	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
@@ -365,6 +373,9 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err := pluginManager.RegisterWithContext(context.Background(), assistantShell); err != nil {
 		return nil, fmt.Errorf("register assistant shell feature: %w", err)
 	}
+	if err := pluginManager.InteractionRuntime().RestoreDurable(context.Background()); err != nil {
+		return nil, fmt.Errorf("restore durable interactions: %w", err)
+	}
 	if err := savedResponseBindings.ValidateEnabledCollisions(context.Background()); err != nil {
 		return nil, fmt.Errorf("validate saved-response surface collisions: %w", err)
 	}
@@ -477,7 +488,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, fmt.Errorf("register supervisor component: %w", err)
 	}
 
-	if err := rt.Register(dependencyComponent{Component: pluginManager, dependencies: []string{"dispatcher", "jobs", "addon-runtimes"}}); err != nil {
+	if err := rt.Register(dependencyComponent{Component: pluginManager, dependencies: []string{"database", "dispatcher", "jobs", "addon-runtimes"}}); err != nil {
 		return nil, fmt.Errorf("register plugins component: %w", err)
 	}
 

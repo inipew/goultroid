@@ -83,11 +83,12 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 		})
 	}
 	return feature.Spec{
-		ID:           p.Name(),
-		Name:         "Calculator",
-		Description:  p.Description(),
-		Category:     "Utility",
-		Interactions: interactions,
+		ID:                p.Name(),
+		Name:              "Calculator",
+		Description:       p.Description(),
+		Category:          "Utility",
+		DurabilityVersion: "1",
+		Interactions:      interactions,
 	}
 }
 

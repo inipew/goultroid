@@ -117,12 +117,15 @@ type Interaction struct {
 // always populated from Plugin.Commands by BindCanonicalCommands; providers
 // declare only identity and non-command interactions during the migration.
 type Spec struct {
-	ID           string
-	Name         string
-	Description  string
-	Category     string
-	Commands     []CommandSurface
-	Interactions []Interaction
+	ID          string
+	Name        string
+	Description string
+	Category    string
+	// DurabilityVersion opts the feature into restart-safe A2 state.
+	// Change it whenever persisted state or action semantics become incompatible.
+	DurabilityVersion string
+	Commands          []CommandSurface
+	Interactions      []Interaction
 }
 
 // BindCanonicalCommands returns a validated copy of spec with command surfaces
@@ -174,6 +177,9 @@ func (s Spec) Validate() error {
 	}
 	if strings.TrimSpace(s.Name) == "" {
 		return fmt.Errorf("%w: feature name is empty", ErrInvalidSpec)
+	}
+	if s.DurabilityVersion != "" && (!validID(s.DurabilityVersion) || len(s.DurabilityVersion) > 64) {
+		return fmt.Errorf("%w: invalid durability version %q", ErrInvalidSpec, s.DurabilityVersion)
 	}
 
 	commands := make(map[string]struct{}, len(s.Commands))

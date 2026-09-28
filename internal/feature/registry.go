@@ -185,6 +185,20 @@ func (r *Registry) FeatureScope(featureID string) (tasks.ScopeIdentity, bool) {
 	return entry.entry.Owner.Scope, true
 }
 
+// DurabilityVersion returns the currently registered feature's A2 state version.
+func (r *Registry) DurabilityVersion(featureID string) string {
+	if r == nil {
+		return ""
+	}
+	r.mu.RLock()
+	entry, ok := r.entries[normalizeID(featureID)]
+	r.mu.RUnlock()
+	if !ok {
+		return ""
+	}
+	return entry.entry.Spec.DurabilityVersion
+}
+
 // HasAction reports whether the current feature generation declares an action.
 func (r *Registry) HasAction(featureID, actionID string) bool {
 	if r == nil {

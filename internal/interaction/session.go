@@ -80,6 +80,16 @@ func (r *Runtime) UpdateState(ctx context.Context, id string, request UpdateRequ
 		r.mu.Unlock()
 		return Session{}, ErrCapacity
 	}
+	next := cloneSession(entry.session)
+	next.State = append([]byte(nil), request.State...)
+	next.Revision++
+	if request.TTL != 0 {
+		next.ExpiresAt = now.Add(ttl)
+	}
+	if err := r.saveDurableLocked(ctx, next, nil); err != nil {
+		r.mu.Unlock()
+		return Session{}, err
+	}
 	r.clearInputLocked(entry)
 	r.stateBytes = newTotal
 	entry.session.State = append([]byte(nil), request.State...)
@@ -133,6 +143,12 @@ func (r *Runtime) BindTarget(ctx context.Context, id string, expectedRevision ui
 		r.mu.Unlock()
 		return Session{}, err
 	}
+	next := cloneSession(entry.session)
+	next.Binding = binding
+	if err := r.saveDurableLocked(ctx, next, entry.input); err != nil {
+		r.mu.Unlock()
+		return Session{}, err
+	}
 	entry.session.Binding = binding
 	snapshot := cloneSession(entry.session)
 	r.mu.Unlock()
@@ -167,6 +183,12 @@ func (r *Runtime) Touch(ctx context.Context, id string, ttl time.Duration) (Sess
 		r.removeLocked(id, ErrExpired)
 		r.mu.Unlock()
 		return Session{}, ErrExpired
+	}
+	next := cloneSession(entry.session)
+	next.ExpiresAt = now.Add(normalizedTTL)
+	if err := r.saveDurableLocked(ctx, next, entry.input); err != nil {
+		r.mu.Unlock()
+		return Session{}, err
 	}
 	entry.session.ExpiresAt = now.Add(normalizedTTL)
 	r.scheduleExpiryLocked(entry, entry.session.ExpiresAt)
@@ -231,13 +253,16 @@ func (r *Runtime) Stats() Stats {
 	r.pruneExpiredInputsLocked(now)
 	r.pruneExpiredLocked(now)
 	stats := Stats{
-		Sessions:         len(r.sessions),
-		Inputs:           len(r.inputs),
-		StateBytes:       r.stateBytes,
-		Expired:          r.expiredCount,
-		Canceled:         r.canceledCount,
-		Stale:            r.staleCount,
-		CapacityRejected: r.capacityRejectedCount,
+		Sessions:          len(r.sessions),
+		Inputs:            len(r.inputs),
+		StateBytes:        r.stateBytes,
+		Expired:           r.expiredCount,
+		Canceled:          r.canceledCount,
+		Stale:             r.staleCount,
+		CapacityRejected:  r.capacityRejectedCount,
+		Restored:          r.restoredCount,
+		RestoreRejected:   r.restoreRejectedCount,
+		PersistenceErrors: r.persistenceErrorCount,
 	}
 	r.mu.Unlock()
 	return stats
@@ -251,13 +276,16 @@ func (r *Runtime) SnapshotStats() Stats {
 	}
 	r.mu.Lock()
 	stats := Stats{
-		Sessions:         len(r.sessions),
-		Inputs:           len(r.inputs),
-		StateBytes:       r.stateBytes,
-		Expired:          r.expiredCount,
-		Canceled:         r.canceledCount,
-		Stale:            r.staleCount,
-		CapacityRejected: r.capacityRejectedCount,
+		Sessions:          len(r.sessions),
+		Inputs:            len(r.inputs),
+		StateBytes:        r.stateBytes,
+		Expired:           r.expiredCount,
+		Canceled:          r.canceledCount,
+		Stale:             r.staleCount,
+		CapacityRejected:  r.capacityRejectedCount,
+		Restored:          r.restoredCount,
+		RestoreRejected:   r.restoreRejectedCount,
+		PersistenceErrors: r.persistenceErrorCount,
 	}
 	r.mu.Unlock()
 	return stats

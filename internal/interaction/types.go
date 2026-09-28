@@ -57,13 +57,16 @@ type InputRequest struct {
 
 // Stats exposes bounded-retention diagnostics without leaking session contents.
 type Stats struct {
-	Sessions         int
-	Inputs           int
-	StateBytes       int
-	Expired          uint64
-	Canceled         uint64
-	Stale            uint64
-	CapacityRejected uint64
+	Sessions          int
+	Inputs            int
+	StateBytes        int
+	Expired           uint64
+	Canceled          uint64
+	Stale             uint64
+	CapacityRejected  uint64
+	Restored          uint64
+	RestoreRejected   uint64
+	PersistenceErrors uint64
 }
 
 func normalizeFeatureID(value string) string {

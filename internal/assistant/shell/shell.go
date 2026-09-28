@@ -111,10 +111,11 @@ func (*Feature) FeatureSpec() feature.Spec {
 	inlineOwnerPolicy := feature.OwnerPolicy(inlineSurface)
 
 	spec := feature.Spec{
-		ID:          FeatureID,
-		Name:        "Assistant Shell",
-		Description: "Root Assistant control surface migrated to interaction protocol a2.",
-		Category:    "Assistant",
+		ID:                FeatureID,
+		Name:              "Assistant Shell",
+		Description:       "Root Assistant control surface migrated to interaction protocol a2.",
+		Category:          "Assistant",
+		DurabilityVersion: "3",
 		Interactions: []feature.Interaction{
 			{ID: InteractionStart, Kind: feature.InteractionDeepLink, Description: "Telegram /start entry point", Surfaces: assistant, Policy: startPolicy},
 			{ID: InteractionInlineRoot, Kind: feature.InteractionInline, Description: "Default inline Assistant discovery surface", Surfaces: inlineSurface, Policy: inlinePublicPolicy},

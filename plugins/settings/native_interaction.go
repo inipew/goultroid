@@ -109,11 +109,12 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 		)
 	}
 	return feature.Spec{
-		ID:           p.Name(),
-		Name:         "Settings",
-		Description:  p.Description(),
-		Category:     "Settings",
-		Interactions: interactions,
+		ID:                p.Name(),
+		Name:              "Settings",
+		Description:       p.Description(),
+		Category:          "Settings",
+		DurabilityVersion: "1",
+		Interactions:      interactions,
 	}
 }
 

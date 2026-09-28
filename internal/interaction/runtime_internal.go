@@ -169,6 +169,12 @@ func (r *Runtime) removeLocked(id string, cause error) bool {
 	if !ok {
 		return false
 	}
+	if r.durable != nil && !r.preserveDurable && entry.durableVersion != "" {
+		if err := r.durable.Delete(context.Background(), id); err != nil {
+			r.persistenceErrorCount++
+			return false
+		}
+	}
 	r.clearInputLocked(entry)
 	delete(r.sessions, id)
 	if entry.expiry != nil && entry.expiry.index >= 0 {

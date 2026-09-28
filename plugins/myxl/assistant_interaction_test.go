@@ -18,6 +18,9 @@ func TestAssistantV2FeatureSpecIsPrivateOwnerOnly(t *testing.T) {
 	if spec.ID != "myxl" {
 		t.Fatalf("feature id = %q, want myxl", spec.ID)
 	}
+	if spec.DurabilityVersion != "1" {
+		t.Fatalf("durability version = %q", spec.DurabilityVersion)
+	}
 	assistantCount := 0
 	for _, interaction := range spec.Interactions {
 		if !interaction.Surfaces.Supports(execution.SourceAssistant) {

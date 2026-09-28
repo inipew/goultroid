@@ -10,6 +10,13 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 )
 
+func TestSpecRejectsInvalidDurabilityVersion(t *testing.T) {
+	spec := Spec{ID: "demo", Name: "Demo", DurabilityVersion: "  "}
+	if err := spec.Validate(); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestBindCanonicalCommandsProjectsCoreMetadata(t *testing.T) {
 	spec, err := BindCanonicalCommands(Spec{
 		ID:   "demo",
