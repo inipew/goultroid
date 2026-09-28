@@ -377,8 +377,8 @@ func TestP4RetryActionRequiresFailedSelection(t *testing.T) {
 		URL:      "https://example.com/file.mp4",
 		Provider: "http",
 		Phase:    phaseFailed,
-		Mode:     download.MediaModeVideo,
-		Format:   download.MediaFormatMP4,
+		Mode:     download.MediaModeDefault,
+		Format:   download.MediaFormatDefault,
 	}
 	if err := p.validateFinalAction(state, actionRetry); err != nil {
 		t.Fatalf("retry failed state rejected: %v", err)

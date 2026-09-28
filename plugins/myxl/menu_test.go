@@ -401,7 +401,7 @@ func TestMenuManager_PendingQRISScreen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildDashboardScreen failed: %v", err)
 	}
-	if !strings.Contains(dash.Body, "QRIS Menunggu Pembayaran") {
+	if !strings.Contains(dash.Body, "⏳ <b>QRIS:</b>") {
 		t.Errorf("expected QRIS banner on dashboard")
 	}
 	if !strings.Contains(dash.Body, "Akrab") {

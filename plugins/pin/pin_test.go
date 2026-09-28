@@ -159,7 +159,7 @@ func TestPinPluginErrors(t *testing.T) {
 	if err := cmds[1].Handler(ctx); err == nil {
 		t.Errorf("expected unpin to fail with permission denied")
 	}
-	if !strings.Contains(svc.edited, "bot/akun harus menjadi Admin") {
+	if !strings.Contains(svc.edited, "Bot/akun harus menjadi Admin") {
 		t.Errorf("expected admin notice, got: %s", svc.edited)
 	}
 

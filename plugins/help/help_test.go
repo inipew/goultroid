@@ -107,12 +107,14 @@ func TestHelpPlugin(t *testing.T) {
 		Aliases:     []string{"p"},
 		Description: "Check latency",
 		Category:    "Utility",
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 	})
 	_ = router.Register(core.Command{
 		Name:        "ban",
 		Description: "Ban user",
 		Category:    "Admin",
 		Permission:  core.PermissionSudo,
+		Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
 	})
 
 	p := New(router)

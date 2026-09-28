@@ -265,7 +265,7 @@ func TestStickerRejectsOversizedImageDimensions(t *testing.T) {
 		},
 		Svc: svc,
 	}
-	err := New().handleSticker(ctx)
+	err = New().handleSticker(ctx)
 	if err == nil || !core.UserErrorWasPresented(err) {
 		t.Fatalf("handler error=%v, want presented user-facing error", err)
 	}

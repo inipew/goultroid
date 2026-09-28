@@ -227,7 +227,7 @@ func TestConvertRejectsUnsupportedFormatBeforeDownload(t *testing.T) {
 	if svc.downloadCalled {
 		t.Fatal("unsupported format must be rejected before media download")
 	}
-	if !strings.Contains(svc.sent, "unsupported target format") {
+	if !strings.Contains(svc.sent, "Unsupported target format") {
 		t.Fatalf("unexpected response: %q", svc.sent)
 	}
 }

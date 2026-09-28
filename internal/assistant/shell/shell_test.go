@@ -117,7 +117,7 @@ func TestSettingsViewsUseDeterministicCanonicalDirectGrid(t *testing.T) {
 	}
 	if len(category.Rows) != 3 || len(category.Rows[0]) != 2 ||
 		category.Rows[0][0].Text != "Command Prefix" ||
-		category.Rows[0][1].Text != "Language" ||
+		category.Rows[0][1].Text != "Assistant Language" ||
 		category.Rows[0][0].ActionID != settingSlotActions[0] ||
 		category.Rows[0][1].ActionID != settingSlotActions[1] {
 		t.Fatalf("settings definition grid = %+v", category.Rows)
