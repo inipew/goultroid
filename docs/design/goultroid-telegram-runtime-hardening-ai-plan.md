@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3, T5, and T6 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T7-T11 remain pending**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T7 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T8-T11 remain pending**
 
 Audit authority:
 
@@ -486,6 +486,8 @@ Fold this into P1-F. Completion/fallback ACK should use a bounded detached conte
 ---
 
 ### P1-H — Scoped decision-handler infrastructure failures ignore the registered fail-open/fail-closed policy
+
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `dbe9405f68f63b90ca8469a77a849d578ea86e50`.
 
 Affected source:
 
@@ -1028,31 +1030,20 @@ Fresh focused execution is not claimed in this session because the repository ch
 
 ### T7 — Make decision-handler infrastructure failure obey explicit policy
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `dbe9405f68f63b90ca8469a77a849d578ea86e50`.
 
-Scope:
+Implementation evidence:
 
-- scoped decision-handler TaskEngine client missing;
-- submit rejection;
-- ticket wait timeout.
+- Scoped decision-handler TaskEngine absence, Submit rejection, and ticket Wait failure now derive their pipeline result from the exact `registered.failurePolicy` already used by handler error/panic execution.
+- Fail-closed registrations terminate the decision pipeline as handled; fail-open registrations log the infrastructure failure and continue to the next registered decision handler.
+- The existing five-second shared decision context, TaskEngine ownership, handler ordering, scope, quota owner, and ordering key remain unchanged.
+- No implicit moderation override was introduced: current policy remains explicit through `failurePolicyForPriority` (security defaults fail-closed; later priorities fail-open).
+- New matrix regression `dispatcher_decision_failure_policy_test.go` covers security fail-closed versus feature fail-open for missing TaskEngine, Submit rejection, Wait failure, handler error, and handler panic.
+- Logging now records `handler_id` and the resolved `fail_closed` decision for infrastructure failures.
 
-Implementation:
+Fresh focused execution is not claimed in this session because the valid checkout/Go 1.27 toolchain is unavailable locally. The committed diff was inspected directly; CI was not inspected.
 
-- centralize the result through `registered.failurePolicy`;
-- retain security ordering and one shared ingress deadline;
-- if policy defaults need adjustment for moderation, change the policy definition explicitly and cover it in tests.
-
-Tests should cover at minimum:
-
-- security fail-closed handler;
-- feature/other fail-open handler;
-- handler returns error;
-- handler panics;
-- TaskEngine missing;
-- submit rejected;
-- wait timeout.
-
-**Gate:** the same handler policy applies consistently to execution and infrastructure failures.
+**Gate status:** P1-H source semantics and regression coverage are implemented; executed focused/race acceptance remains pending.
 
 ---
 
