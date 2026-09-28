@@ -31,7 +31,7 @@ func TestP6AssistantOptionalUserbotClosureMatrix(t *testing.T) {
 		{feature: "Downloader", condition: "inline disabled/query/select failure", path: "plugins/downloader/url_progressive_test.go", test: "TestP3SafeSelfInlineFailureFallsBackToNativeURLPipeline"},
 		{feature: "Downloader", condition: "send-stage ambiguity", path: "plugins/downloader/url_progressive_test.go", test: "TestP3SendStageFailureDoesNotStartNativeDuplicate"},
 		{feature: "Downloader", condition: "plugin disable/reload", path: "internal/assistant/client/selfinline_downloader_reload_e2e_test.go", test: "TestSelfInlineDownloaderDisableEnableRejectsOldGenerationAndRebindsNew"},
-		{feature: "Settings", condition: "native self-contained navigation", path: "plugins/settings/assistant_optional_test.go", test: "TestP4NativeSettingsNavigationOwnsAllCallbacks"},
+		{feature: "Settings", condition: "native self-contained navigation", path: "plugins/settings/assistant_optional_test.go", test: "TestP1F2SharedSettingsViewOwnsSessionBoundActions"},
 		{feature: "MyXL", condition: "native userbot reference", path: "plugins/myxl/assistant_optional_test.go", test: "TestP6MyXLUserbotMenuDoesNotRequireAssistant"},
 		{feature: "Wikipedia", condition: "native command reference", path: "plugins/wikipedia/assistant_optional_test.go", test: "TestP6WikipediaNativeCommandDoesNotRequireInline"},
 		{feature: "Wikipedia", condition: "separate inline enhancement", path: "plugins/wikipedia/wikipedia_test.go", test: "TestWikipediaFeatureSpecOwnsPublicInlineLookup"},

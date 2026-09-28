@@ -26,7 +26,7 @@ func TestP1UserbotHelpPrefersCanonicalSelfInlineWithNativeFallback(t *testing.T)
 			"InteractionTTL:   InteractionTTL",
 		},
 		filepath.Join(root, "internal", "assistant", "shell", "shell.go"): {
-			"helpPolicy := feature.OwnerPolicy(assistant | inlineSurface)",
+			"helpPolicy := feature.PublicPolicy(assistant | inlineSurface)",
 		},
 		filepath.Join(root, "internal", "app", "app.go"): {
 			"SetHelpCommandProvider",

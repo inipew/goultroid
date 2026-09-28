@@ -72,7 +72,7 @@ func TestP7KGroupPlaneResourceAndLifecycleFences(t *testing.T) {
 			"type QuotaOwnedEvent interface",
 			"func (e *GroupServiceEvent) QuotaOwner() tasks.OwnerID",
 			"owner = eventOwner",
-			"defaultEventWorkerIdle = 30 * time.Second",
+			"defaultEventWorkerIdle = 10 * time.Second",
 		},
 		filepath.Join(root, "internal", "assistant", "groupevents", "service.go"): {
 			"Disabled configuration remains durable but is intentionally not",

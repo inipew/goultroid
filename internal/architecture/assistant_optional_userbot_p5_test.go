@@ -30,6 +30,7 @@ func TestP5SurfaceUserbotCommandsHaveNoUnfencedAssistantDependency(t *testing.T)
 		"downloader": {},
 		"help":       {},
 		"myxl":       {},
+		"settings":   {},
 	}
 	seenEnhancements := make(map[string]struct{}, len(allowedEnhancements))
 	userbotCommands := 0
@@ -93,8 +94,8 @@ func TestP5KnownAssistantEnhancementsRetainNativeUserbotFallbacks(t *testing.T) 
 			"subCmd := strings.ToLower(ctx.Args[0])",
 		},
 		filepath.Join(root, "plugins", "settings", "settings.go"): {
-			`callback.EncodeCallbackData("settings", callback.ActionNav`,
-			`callback.EncodeCallbackData("settings", callback.ActionClose`,
+			"return p.openAssistantSettings(ctx, state)",
+			"return p.openNativeSettings(ctx, state)",
 		},
 		filepath.Join(root, "plugins", "wikipedia", "wikipedia.go"): {
 			"Handler:     p.handle",
