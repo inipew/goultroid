@@ -363,6 +363,8 @@ Do not add a cleanup worker.
 
 ### P1-D — Userbot callback acknowledgements do not use the dedicated callback limiter family
 
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `de00f725febffb2870ef95ceb6ff922eb53c4310`.
+
 Affected source:
 
 - `internal/telegram/service.go`
@@ -880,7 +882,7 @@ Tests:
 
 ### T3 — Normalize callback ACK RPC lane
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING**
 
 Scope:
 
@@ -896,7 +898,14 @@ Tests/benchmark:
 - inspect captured RPC meta in a fake executor;
 - optional deterministic limiter-pressure test proving callback family does not consume the `messages` family bucket.
 
-**Gate:** P1-D closed.
+**Implementation evidence:**
+
+- `de00f725febffb2870ef95ceb6ff922eb53c4310` keeps `messages.setBotCallbackAnswer` inside the existing shared `RPCExecutor` but supplies `RPCMeta.Family="callback"` explicitly.
+- The regression captures limiter dimensions from `Service.AnswerCallbackQuery` and requires global, callback-family, and exact method dimensions while rejecting the generic `messages` family for this RPC.
+- No bypass, second limiter, or callback-specific executor was introduced; normal RPC error classification remains unchanged.
+- Changed Go blocks were passed through `gofmt` and the diff was inspected. Fresh focused execution remains pending for the previously recorded checkout/toolchain limitation; CI was not inspected.
+
+**Gate status:** source policy is corrected and regression is committed; P1-D awaits executed focused acceptance.
 
 ---
 
