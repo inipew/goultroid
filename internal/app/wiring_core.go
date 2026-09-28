@@ -100,7 +100,8 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	// Durable commit transport (Phase C): the engine holds CommitPending
 	// result credits until the pump acknowledges each attempt commit.
 	taskEngine.SetCommitPump(persistencePump)
-	jobsManager := jobs.NewManager(taskEngine, jobsqlite.NewResourceStore(db.DB), persistencePump)
+	jobStore := jobsqlite.NewResourceStore(db.DB)
+	jobsManager := jobs.NewManagerWithPorts(taskEngine, jobs.StorePortsFromStore(jobStore), persistencePump)
 	jobsManager.SetOutboxSink(func(ctx context.Context, event jobs.OutboxEvent) error {
 		return eventBus.PublishDurable(ctx, &core.JobLifecycleEvent{
 			MetaData: core.EventMeta{ID: event.ID}, At: event.CommittedAt,
