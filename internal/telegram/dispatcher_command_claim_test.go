@@ -76,7 +76,7 @@ func TestDispatcherReleasesCommandClaimsWhenTaskAdmissionFails(t *testing.T) {
 	if got := client.submissions.Load(); got != 1 {
 		t.Fatalf("first submissions=%d, want 1", got)
 	}
-	if processed, err := mgr.IsProcessedContext(ctx, "msg:10:91"); err != nil || processed {
+	if processed, err := mgr.IsProcessedContext(ctx, "msg:chat:10:91"); err != nil || processed {
 		t.Fatalf("rejected command remained durably claimed: processed=%v err=%v", processed, err)
 	}
 
@@ -87,7 +87,7 @@ func TestDispatcherReleasesCommandClaimsWhenTaskAdmissionFails(t *testing.T) {
 	if got := client.submissions.Load(); got != 2 {
 		t.Fatalf("retry submissions=%d, want 2", got)
 	}
-	if processed, err := mgr.IsProcessedContext(ctx, "msg:10:91"); err != nil || !processed {
+	if processed, err := mgr.IsProcessedContext(ctx, "msg:chat:10:91"); err != nil || !processed {
 		t.Fatalf("accepted command was not committed: processed=%v err=%v", processed, err)
 	}
 
@@ -116,7 +116,7 @@ func TestDispatcherReleasesCommandClaimsWhenPeerResolutionFails(t *testing.T) {
 	if got := client.submissions.Load(); got != 0 {
 		t.Fatalf("unresolved peer reached TaskEngine: submissions=%d", got)
 	}
-	if processed, err := mgr.IsProcessedContext(ctx, "msg:200:92"); err != nil || processed {
+	if processed, err := mgr.IsProcessedContext(ctx, "msg:user:200:92"); err != nil || processed {
 		t.Fatalf("unresolved command remained durably claimed: processed=%v err=%v", processed, err)
 	}
 
@@ -129,7 +129,7 @@ func TestDispatcherReleasesCommandClaimsWhenPeerResolutionFails(t *testing.T) {
 	if got := client.submissions.Load(); got != 1 {
 		t.Fatalf("resolved retry submissions=%d, want 1", got)
 	}
-	if processed, err := mgr.IsProcessedContext(ctx, "msg:200:92"); err != nil || !processed {
+	if processed, err := mgr.IsProcessedContext(ctx, "msg:user:200:92"); err != nil || !processed {
 		t.Fatalf("resolved command was not committed: processed=%v err=%v", processed, err)
 	}
 }

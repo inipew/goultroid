@@ -37,6 +37,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	chatID := extractChatIDFromPeer(msg.PeerID)
+	commandIdentity := fmt.Sprintf("%d:%d", chatID, msg.ID)
+	if typedIdentity, ok := telegramMessageIdentity(msg.PeerID, msg.ID); ok {
+		commandIdentity = typedIdentity
+	}
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
 		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))
@@ -108,7 +112,24 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	// fail-closed guarantee before command/event side effects.
 	var commandClaim dispatcherCommandClaim
 	if cmdExists && d.idempotencyMgr != nil {
-		key := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
+		key := "msg:" + commandIdentity
+		legacyKey := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
+		if key != legacyKey {
+			legacyProcessed, legacyErr := d.idempotencyMgr.IsProcessedContext(ctx, legacyKey)
+			if legacyErr != nil {
+				ingressClaim.Release()
+				d.logger.Error("dispatcher: legacy command idempotency lookup failed",
+					zap.String("key", legacyKey),
+					zap.String("command", cmdName),
+					zap.Error(legacyErr),
+				)
+				return nil
+			}
+			if legacyProcessed {
+				d.logger.Debug("dispatcher: duplicate command matched legacy idempotency key", zap.String("key", legacyKey))
+				return nil
+			}
+		}
 		var isNew bool
 		var claimErr error
 		commandClaim, isNew, claimErr = d.beginCommandClaim(ctx, key)
@@ -238,8 +259,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if sender.ID == 0 {
 		taskOwner = "telegram:unknown"
 	}
-	taskID := fmt.Sprintf("cmd:%d:%d", chat.ID, msg.ID)
-	correlationID := fmt.Sprintf("msg:%d:%d", chat.ID, msg.ID)
+	taskID := "cmd:" + commandIdentity
+	correlationID := "msg:" + commandIdentity
 	if err := d.submitInteractiveCommandWithAdmission(
 		execCtx,
 		cancel,
@@ -487,6 +508,31 @@ func extractCoreMessage(msg *tg.Message) *core.Message {
 		}
 	}
 	return coreMsg
+}
+
+func telegramMessageIdentity(peer tg.PeerClass, messageID int) (string, bool) {
+	if peer == nil || messageID <= 0 {
+		return "", false
+	}
+	switch p := peer.(type) {
+	case *tg.PeerUser:
+		if p == nil || p.UserID == 0 {
+			return "", false
+		}
+		return fmt.Sprintf("user:%d:%d", p.UserID, messageID), true
+	case *tg.PeerChat:
+		if p == nil || p.ChatID == 0 {
+			return "", false
+		}
+		return fmt.Sprintf("chat:%d:%d", p.ChatID, messageID), true
+	case *tg.PeerChannel:
+		if p == nil || p.ChannelID == 0 {
+			return "", false
+		}
+		return fmt.Sprintf("channel:%d:%d", p.ChannelID, messageID), true
+	default:
+		return "", false
+	}
 }
 
 func invocationSenderID(msg *tg.Message, selfID int64) int64 {
