@@ -561,35 +561,54 @@ func (s *Service) checkPeerError(ctx context.Context, err error, peers ...tg.Inp
 	}
 }
 
-// SendMessage sends a text message to the specified peer and returns the created tg.Message if available.
-// It parses HTML formatting, falling back to plain text if parsing or formatting fails.
-// If a short FloodWait is encountered (<= 5s), it automatically waits and retries once.
-// P1-09: Centralize access-hash preparation before every send.
-func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
-	if s.sender == nil {
-		return nil, fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
+// sendTextMessage prepares formatting locally, then performs exactly one physical
+// messages.sendMessage mutation for the logical send. Transport errors are never
+// converted into a second plain-text send.
+func (s *Service) sendTextMessage(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
+	if s == nil || s.api == nil {
+		return nil, fmt.Errorf("%w: telegram api is not initialized", core.ErrInternal)
 	}
+
+	plain, entities := parseHTML(text)
+	randomID, err := contextualRandomID()
+	if err != nil {
+		return nil, fmt.Errorf("generate message random id: %w", err)
+	}
+
 	res, err := s.execNonIdempotentPeerVal(ctx, "messages.sendMessage", peer, func(opCtx context.Context, currentPeer tg.InputPeerClass) (*tg.Message, error) {
-		updates, err := s.sender.To(currentPeer).StyledText(opCtx, html.String(nil, text))
-		if err != nil {
-			if _, isFlood := tgerr.AsFloodWait(err); isFlood {
-				return nil, err
-			}
-			// Fallback to plain text if HTML parsing or formatting fails
-			updates, err = s.sender.To(currentPeer).Text(opCtx, text)
-			if err != nil {
-				return nil, err
-			}
+		req := &tg.MessagesSendMessageRequest{
+			Peer:     currentPeer,
+			Message:  plain,
+			RandomID: randomID,
+		}
+		if len(entities) > 0 {
+			req.SetEntities(entities)
+		}
+		if markup != nil {
+			req.SetReplyMarkup(markup)
+		}
+		updates, invokeErr := s.api.MessagesSendMessage(opCtx, req)
+		if invokeErr != nil {
+			return nil, invokeErr
 		}
 		return extractMessageFromUpdates(updates), nil
 	})
 	if err != nil {
 		s.checkPeerError(ctx, err, peer)
+		return nil, err
 	}
-	if err == nil && res != nil {
+	if res != nil {
 		s.recordBotSent(peer, res.ID)
 	}
-	return res, err
+	return res, nil
+}
+
+// SendMessage sends a text message to the specified peer and returns the created tg.Message if available.
+// HTML is parsed locally and malformed formatting falls back to plain text before transport.
+// If a short FloodWait is encountered (<= 5s), the shared RPC executor applies its bounded policy.
+// P1-09: Centralize access-hash preparation before every send.
+func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	return s.sendTextMessage(ctx, peer, text, nil)
 }
 
 // EditMessage edits the text of an existing message.
@@ -617,45 +636,7 @@ func (s *Service) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID
 
 // SendMessageWithMarkup sends a text message with reply markup attached.
 func (s *Service) SendMessageWithMarkup(ctx context.Context, peer tg.InputPeerClass, text string, markup tg.ReplyMarkupClass) (*tg.Message, error) {
-	if s.sender == nil {
-		return nil, fmt.Errorf("%w: sender is not initialized", core.ErrInternal)
-	}
-	res, err := s.execNonIdempotentPeerVal(ctx, "messages.sendMessage", peer, func(opCtx context.Context, currentPeer tg.InputPeerClass) (*tg.Message, error) {
-		req := s.sender.To(currentPeer)
-		var updates tg.UpdatesClass
-		var err error
-
-		if markup != nil {
-			b := req.Markup(markup)
-			updates, err = b.StyledText(opCtx, html.String(nil, text))
-			if err != nil {
-				if _, isFlood := tgerr.AsFloodWait(err); isFlood {
-					return nil, err
-				}
-				updates, err = b.Text(opCtx, text)
-			}
-		} else {
-			updates, err = req.StyledText(opCtx, html.String(nil, text))
-			if err != nil {
-				if _, isFlood := tgerr.AsFloodWait(err); isFlood {
-					return nil, err
-				}
-				updates, err = req.Text(opCtx, text)
-			}
-		}
-
-		if err != nil {
-			return nil, err
-		}
-		return extractMessageFromUpdates(updates), nil
-	})
-	if err != nil {
-		s.checkPeerError(ctx, err, peer)
-	}
-	if err == nil && res != nil {
-		s.recordBotSent(peer, res.ID)
-	}
-	return res, err
+	return s.sendTextMessage(ctx, peer, text, markup)
 }
 
 // parseHTML parses text as HTML into plain text and Telegram message entities.

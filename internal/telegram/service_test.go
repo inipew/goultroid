@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gotd/td/bin"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
@@ -46,6 +47,88 @@ func TestParseHTML(t *testing.T) {
 	}
 	if len(ents3) == 0 {
 		t.Errorf("expected entities for config usage, got 0")
+	}
+}
+
+type sendMessageRecordingInvoker struct {
+	calls    int
+	requests []*tg.MessagesSendMessageRequest
+	err      error
+}
+
+func (i *sendMessageRecordingInvoker) Invoke(_ context.Context, input bin.Encoder, _ bin.Decoder) error {
+	req, ok := input.(*tg.MessagesSendMessageRequest)
+	if !ok {
+		return fmt.Errorf("unexpected RPC %T", input)
+	}
+	i.calls++
+	clone := *req
+	clone.Entities = append([]tg.MessageEntityClass(nil), req.Entities...)
+	i.requests = append(i.requests, &clone)
+	return i.err
+}
+
+func TestSendMessageSinglePhysicalAttemptOnTransportError(t *testing.T) {
+	transportErr := errors.New("transport lost after write")
+	for _, tc := range []struct {
+		name       string
+		withMarkup bool
+	}{
+		{name: "plain"},
+		{name: "markup", withMarkup: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			invoker := &sendMessageRecordingInvoker{err: transportErr}
+			svc := NewServiceWithExecutor(tg.NewClient(invoker), nil)
+			peer := &tg.InputPeerSelf{}
+
+			var err error
+			if tc.withMarkup {
+				_, err = svc.SendMessageWithMarkup(context.Background(), peer, "<b>hello</b>", &tg.ReplyInlineMarkup{})
+			} else {
+				_, err = svc.SendMessage(context.Background(), peer, "<b>hello</b>")
+			}
+			if err == nil {
+				t.Fatal("expected transport error")
+			}
+			if invoker.calls != 1 {
+				t.Fatalf("expected exactly one physical messages.sendMessage call, got %d", invoker.calls)
+			}
+			if len(invoker.requests) != 1 {
+				t.Fatalf("expected one captured request, got %d", len(invoker.requests))
+			}
+			req := invoker.requests[0]
+			if req.Message != "hello" {
+				t.Fatalf("expected locally parsed message %q, got %q", "hello", req.Message)
+			}
+			if len(req.Entities) == 0 {
+				t.Fatal("expected locally parsed entities")
+			}
+			if tc.withMarkup && req.ReplyMarkup == nil {
+				t.Fatal("expected reply markup to be preserved")
+			}
+		})
+	}
+}
+
+func TestSendMessageMalformedHTMLFallsBackBeforeTransport(t *testing.T) {
+	transportErr := errors.New("transport unavailable")
+	invoker := &sendMessageRecordingInvoker{err: transportErr}
+	svc := NewServiceWithExecutor(tg.NewClient(invoker), nil)
+	input := "&#57311;"
+
+	_, err := svc.SendMessage(context.Background(), &tg.InputPeerSelf{}, input)
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if invoker.calls != 1 {
+		t.Fatalf("expected one physical call after local HTML fallback, got %d", invoker.calls)
+	}
+	if got := invoker.requests[0].Message; got != input {
+		t.Fatalf("expected malformed HTML to fall back to original text %q, got %q", input, got)
+	}
+	if len(invoker.requests[0].Entities) != 0 {
+		t.Fatalf("expected no entities after malformed HTML fallback, got %d", len(invoker.requests[0].Entities))
 	}
 }
 
