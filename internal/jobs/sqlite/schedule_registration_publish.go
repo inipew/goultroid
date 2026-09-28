@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // PublishScheduleRegistration atomically publishes the scheduler compatibility
@@ -40,10 +41,11 @@ func (s *ResourceStore) PublishScheduleRegistration(ctx context.Context, schedul
 		return fmt.Errorf("scheduled compatibility row %d is not initializing", scheduledJobID)
 	}
 
+	now := time.Now().UTC()
 	scheduleResult, err := tx.ExecContext(ctx, `
 		UPDATE job_schedules
-		SET enabled = 1, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND enabled = 0 AND revision = 1`, scheduleID)
+		SET enabled = 1, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND enabled = 0 AND revision = 1`, now, scheduleID)
 	if err != nil {
 		return fmt.Errorf("publish redesigned schedule %s: %w", scheduleID, err)
 	}
