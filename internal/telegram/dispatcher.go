@@ -165,7 +165,8 @@ func NewDispatcher(
 // SetNormalizer configures a custom update normalizer.
 func (d *Dispatcher) SetNormalizer(n UpdateNormalizer) {
 	d.mu.Lock()
-	defer d.mu.Unlock()	dd.normalizer = n
+	defer d.mu.Unlock()
+	d.normalizer = n
 }
 
 // SetIdempotency configures durable deduplication for recognized commands and callbacks.
