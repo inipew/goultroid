@@ -2644,7 +2644,7 @@ Record the exact closing HEAD, Go version, benchmark `ns/op`/allocations and p50
 
 #### Current execution limitation
 
-For the T10 Go-changing commit, both new files were passed through local `gofmt` before commit and their committed diff was inspected. A local checkout was then attempted from the execution environment, but DNS/network access to GitHub is unavailable; the local Go installation is also Go 1.23.2 rather than the repository's Go 1.27 toolchain. Therefore no focused `go test`, race run, or benchmark result is claimed for `435c51081abf44c2ffa97234863493bfd56819ee`. CI was not inspected.
+The T10 Go-changing commit was created through the repository API because a checkout was unavailable at commit time, so this document does **not** claim that local `gofmt` preceded that commit. The exact committed contents of both new Go files were subsequently re-fetched from `test-next`, passed through local `gofmt`, and compared byte-for-byte; both were already canonical (`runtime_hardening_t10_test.go`: 181 lines / FNV-1a64 `3b91d5a0e88ab577`; `interaction_latency_benchmark_test.go`: 205 lines / FNV-1a64 `4e88a46683afabd2`). A full local checkout is still unavailable because DNS/network access to GitHub is blocked, and the installed Go is 1.23.2 while the module declares Go 1.27.0. Therefore no focused `go test`, race run, or benchmark result is claimed for `435c51081abf44c2ffa97234863493bfd56819ee`. CI was not inspected.
 
 T10 **must remain open** until the execution matrix above runs against the refreshed closing HEAD.
 
