@@ -734,19 +734,45 @@ Next: **M5 — Narrow Jobs external/store boundaries**. Do not re-merge these re
 
 ### M5 — Narrow Jobs external/store boundaries
 
-Tasks:
+Status: **IMPLEMENTED — local package regression execution pending**
 
-- add plugin-owned narrow job/schedule interfaces;
-- add scoped adapter;
-- migrate `PluginContext.Jobs()`;
-- split Store ports according to the newly separated Manager responsibilities;
-- keep compatibility constructor only while callers migrate.
+Implementation commits:
 
-Gate:
+- `9a79df1a75b9b3f2a731c29b2592c9a0788a74e5` — `refactor(plugin): scope jobs capability boundary`
+- `50fcea4160fe98997d7a0e84530366d3a26c186d` — `refactor(jobs): split durable store ports`
+- `a2c1ed7a04d8f0b8b29f15ee08ad687eb2a73472` — `test(plugin): cover scoped jobs capability ownership`
+- `5ec3dd4f5827d8f5e75ea34a5b231dce99a9fb54` — `test(architecture): fence jobs m5 boundaries`
+- `f3b229bcb627575ac09a6693cefaefe257fc96bc` — `refactor(app): wire jobs through store ports`
+- `51addef3ec0b8d573859279db8bcf2c757bd7457` — `test(jobs): fence m5 production store ports`
+- `cd17d43c2b7eaa60740d352e89c90f98269e0a06` — `style(jobs): restore m5 gofmt`
 
-- plugins no longer receive `*jobs.Manager`;
-- schedule-only callers cannot call unrelated recovery/lifecycle APIs;
-- tests can supply only the store ports used by the responsibility under test.
+Caller audit before implementation found no production plugin currently invoking `PluginContext.Jobs()`; existing PluginContext consumers use HTTP/files/process/secrets/tasks, while the scheduler plugin receives `scheduler.Service` from module wiring. M5 therefore does not replace the concrete manager with another broad speculative interface.
+
+Plugin-facing boundaries now are consumer-sized:
+
+- `PluginContext.Jobs() (JobClient, error)` requires `CapJobs` only and exposes only `RegisterHandler`, `Register`, and `Trigger`;
+- `PluginContext.Schedules() (ScheduleClient, error)` requires `CapScheduler` only and exposes only `SaveSchedule` and `DisableSchedule`;
+- the scoped adapters stamp job IDs, handler names, `ScopeOwner`, `QuotaOwner`, schedule IDs, and schedule JobIDs into the `plugin:<owner>:` namespace rather than trusting caller-supplied ownership;
+- a foreign pre-prefixed identifier is nested under the current plugin namespace rather than being accepted as an ownership escape;
+- the scheduler plugin no longer requests the unused `CapJobs` capability.
+
+The durable persistence boundary is now split into consumer-specific ports: `DefinitionStore`, `OccurrenceStore`, `AttemptStore`, `RecoveryStore`, `ScheduleStore`, `OutboxStore`, `DeferredDeadlineStore`, `DurableDiagnosticsStore`, `AttemptSummaryStore`, `NextAttemptLeaseStore`, `RecoveryCandidateStore`, and `DefinitionLoaderStore`. `Manager` owns a `StorePorts` value and each M4 responsibility file reads only its required ports. `manager_schedule.go`, for example, depends only on `Schedules`.
+
+`NewManagerWithPorts` is the narrow constructor. The existing `NewManager(client, Store, pump)` remains as a compatibility adapter and delegates through `StorePortsFromStore`; no second persistence implementation or transaction path was introduced. Production application wiring has already migrated to `NewManagerWithPorts`, so the compatibility aggregate remains only for tests/legacy callers pending M6 cleanup.
+
+Source audit confirms that the compatibility `Store` aggregate still contains exactly the same 17 durable methods as the pre-M5 Store when expressed as the union of definition/occurrence/attempt/recovery ports. Every previously optional interface also has an identical exported replacement method set. Compile-time SQLite tests fence both `*sqlite.Store` and `*sqlite.ResourceStore` against the complete core and optional port set, and `StorePortsFromStore` is tested to preserve every optional capability. A schedule-only Manager test constructs only `StorePorts{Schedules: ...}`, proving schedule responsibility tests no longer need a giant Store mock.
+
+Architecture fences now require the narrow `JobClient`/`ScheduleClient` method sets, reject concrete `jobs.Manager` dependencies from production plugins, require `Manager.stores StorePorts` instead of a broad store field, keep `manager_schedule.go` isolated from unrelated store ports, prevent the scheduler plugin from regaining `CapJobs`, and require production app wiring through `NewManagerWithPorts`.
+
+Gate status:
+
+- **PASS by source/API audit:** plugins no longer receive `*jobs.Manager` from PluginContext;
+- **PASS by capability/API audit:** schedule-only access cannot invoke recovery, lifecycle, retry, diagnostics, or unrelated job mutation APIs;
+- **PASS by focused source test design:** responsibility tests can provide only the relevant durable store port;
+- **PASS by compatibility audit:** SQLite persistence semantics and method sets are preserved without creating duplicate stores/transactions;
+- **PENDING local execution:** run Jobs/SQLite, plugin, app, and architecture regression suites before final maintainability closure. CI must not be inspected unless explicitly requested.
+
+Next: **M6 — Final cleanup and acceptance**. First inventory remaining compatibility `NewManager` aggregate callers and obsolete mocks before deleting anything; do not remove compatibility solely because production wiring has migrated.
 
 ### M6 — Final cleanup and acceptance
 
