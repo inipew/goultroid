@@ -44,6 +44,9 @@ type Engine struct {
 	db     Repository
 	logger *zap.Logger
 	access privilegedChecker
+	// Prevent startup recovery from treating an in-flight registration as an
+	// abandoned prepared schedule in this Engine instance.
+	registrationMu sync.Mutex
 
 	tasks   tasks.Client
 	jobsMgr *jobs.Manager
@@ -407,6 +410,8 @@ func (e *Engine) PeriodicTaskSnapshots() []PeriodicTaskSnapshot {
 }
 
 func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string, accessHash int64, when time.Time, actionType string, payload string, creatorID ...int64) (*ScheduledJob, error) {
+	e.registrationMu.Lock()
+	defer e.registrationMu.Unlock()
 	if err := validateActionType(actionType); err != nil {
 		return nil, err
 	}
@@ -446,6 +451,8 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 }
 
 func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType string, accessHash int64, interval time.Duration, actionType string, payload string, creatorID ...int64) (*ScheduledJob, error) {
+	e.registrationMu.Lock()
+	defer e.registrationMu.Unlock()
 	if err := validateActionType(actionType); err != nil {
 		return nil, err
 	}

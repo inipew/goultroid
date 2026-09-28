@@ -35,6 +35,8 @@ func (e *Engine) recoverPreparedScheduleRegistrations(ctx context.Context) error
 	if e == nil || e.db == nil || e.jobsMgr == nil {
 		return nil
 	}
+	e.registrationMu.Lock()
+	defer e.registrationMu.Unlock()
 	recoveryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 

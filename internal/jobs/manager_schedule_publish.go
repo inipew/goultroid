@@ -2,6 +2,15 @@ package jobs
 
 import "context"
 
+// ScheduleRegistrationPublishError marks a publication failure known to have
+// occurred before commit. Errors without this marker may have committed.
+type ScheduleRegistrationPublishError struct {
+	Err error
+}
+
+func (e *ScheduleRegistrationPublishError) Error() string { return e.Err.Error() }
+func (e *ScheduleRegistrationPublishError) Unwrap() error { return e.Err }
+
 type scheduleRegistrationPublisher interface {
 	PublishScheduleRegistration(context.Context, string, int64) error
 }

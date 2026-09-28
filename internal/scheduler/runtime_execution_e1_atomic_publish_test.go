@@ -12,6 +12,7 @@ import (
 type executionAtomicScheduleStore struct {
 	*executionLifecycleScheduleStore
 	publishCalls int
+	publishErr   error
 }
 
 func (s *executionAtomicScheduleStore) PublishScheduleRegistration(_ context.Context, scheduleID string, _ int64) error {
@@ -28,7 +29,7 @@ func (s *executionAtomicScheduleStore) PublishScheduleRegistration(_ context.Con
 	schedule.Enabled = true
 	schedule.Revision++
 	s.schedules[scheduleID] = schedule
-	return nil
+	return s.publishErr
 }
 
 type executionAtomicPublishRepository struct {
@@ -68,5 +69,30 @@ func TestRuntimeExecutionE1_AtomicPublisherOwnsActivationAndSchedulePublish(t *t
 	schedule, ok := schedules.schedule(redesignedScheduleID(job.ID))
 	if !ok || !schedule.Enabled || schedule.Revision != 2 {
 		t.Fatalf("published schedule = %+v exists=%t, want enabled revision 2", schedule, ok)
+	}
+}
+
+func TestRuntimeExecutionE1_AmbiguousAtomicPublishRetainsWrapper(t *testing.T) {
+	definitions := newExecutionLifecycleDefinitionStore()
+	schedules := &executionAtomicScheduleStore{
+		executionLifecycleScheduleStore: newExecutionLifecycleScheduleStore(),
+		publishErr:                      errors.New("commit result uncertain"),
+	}
+	repo := &executionLifecycleRepository{}
+	manager := jobs.NewManagerWithPorts(nil, jobs.StorePorts{Definitions: definitions, Schedules: schedules}, nil)
+	if err := manager.RegisterHandler("scheduler.action", func(context.Context, jobs.JobDefinition) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(repo, nil)
+	engine.SetJobsManager(manager)
+	_, err := engine.ScheduleOnce(context.Background(), 8, "chat", 0, time.Now().Add(time.Hour), ActionMessage, "hello")
+	if !errors.Is(err, schedules.publishErr) {
+		t.Fatalf("schedule error = %v, want ambiguous publish error", err)
+	}
+	if _, ok := manager.Definition(scheduledDefinitionID(1)); !ok {
+		t.Fatal("owned wrapper was deleted after an ambiguous commit")
+	}
+	if schedule, ok := schedules.schedule(redesignedScheduleID(1)); !ok || schedule.Enabled {
+		t.Fatalf("schedule after compensation = %+v, exists=%t, want disabled retained schedule", schedule, ok)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/inipew/goultroid/internal/jobs"
 )
 
 // PublishScheduleRegistration atomically publishes the scheduler compatibility
@@ -13,7 +15,13 @@ import (
 // the base Store intentionally does not expose this cross-table capability so
 // split-database tests and alternate stores keep using the conservative staged
 // fallback.
-func (s *ResourceStore) PublishScheduleRegistration(ctx context.Context, scheduleID string, scheduledJobID int64) error {
+func (s *ResourceStore) PublishScheduleRegistration(ctx context.Context, scheduleID string, scheduledJobID int64) (retErr error) {
+	commitAttempted := false
+	defer func() {
+		if retErr != nil && !commitAttempted {
+			retErr = &jobs.ScheduleRegistrationPublishError{Err: retErr}
+		}
+	}()
 	if s == nil || s.Store == nil || s.db == nil {
 		return errors.New("schedule registration store is not configured")
 	}
@@ -57,6 +65,7 @@ func (s *ResourceStore) PublishScheduleRegistration(ctx context.Context, schedul
 		return fmt.Errorf("redesigned schedule %s is not prepared", scheduleID)
 	}
 
+	commitAttempted = true
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit schedule registration publish: %w", err)
 	}

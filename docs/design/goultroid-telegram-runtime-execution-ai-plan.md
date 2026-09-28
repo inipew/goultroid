@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Execution Audit — AI Session Plan
 
-Status: **OPEN — E0-E2 correctness work landed; R5/R6 measurement harnesses and R5 path controls landed; executable focused/acceptance runs plus actual R5/R6 measurements remain pending**
+Status: **OPEN — E0-E2 correctness work and R2 follow-up fixes landed; focused, race, vet, build, and local R5/R6 harness runs passed; representative production-like R5/R6 evidence and optimization decisions remain pending**
 
 Audit baseline:
 
@@ -242,3 +242,14 @@ For R5, record scheduler-pool occupancy, child waiting depth, child queue p50/p9
 Persistence compatibility remains intentionally conservative: recurring API inputs are whole-second only because both compatibility and redesigned schedule stores persist seconds; no persisted representation migration is required. R4 remains best effort and non-durable. R2 registration/recovery is a staged cross-store protocol with compensation and restart cleanup, not an atomic transaction.
 
 Any R5/R6 optimization remains measurement-gated. Historical ingress/TaskEngine microbenchmarks and the historical full-race pass are background evidence only; they are not acceptance for this execution-plan lineage.
+
+### R2 follow-up audit and local verification — 29 September 2026
+
+On `test-next` HEAD `7cf219a55d2eed5e78286f0883f27cef9bc8f69c`, a real checkout exposed two remaining R2 failure paths:
+
+- An error from the shared-SQLite publication transaction's `Commit` had an uncertain outcome. Compensation could delete a scheduler-owned wrapper definition even when commit had published the schedule, cascading into the schedule and any materialized occurrence. The publisher now identifies errors known to occur before commit; an ambiguous commit result retains the wrapper while compensation disables the schedule. A fault-injection regression covers this case.
+- Startup recovery could overlap an in-flight registration on the same Engine. It could classify the disabled prepared schedule as abandoned and remove its compatibility row before registration activated it. Registration and prepared-schedule recovery now share an Engine mutex. A deterministic overlap regression covers the interleaving. The previously flaky `TestScheduledManagedJobTracksTargetOccurrenceFailure` passed 20 consecutive runs after the change.
+
+Local verification of these working-tree fixes passed: focused six-package tests (`taskengine`, `jobs`, `jobs/sqlite`, `scheduler`, `app`, `telegram`), targeted scheduler regressions repeated 20 times, package race tests, full `go test -race ./... -count=1 -timeout=180s`, `go vet ./...`, `go build ./cmd/goultroid`, `gofmt`, and `git diff --check`. CI was not inspected. These results supersede the checkout limitation recorded above for this local lineage; that earlier paragraph describes the 28 September session.
+
+The R5 contention harness and R6 reconciliation harness also ran locally before these fixes. They measure synthetic in-memory workloads, not production end-to-end latency or database load. No production performance change is justified from them alone. The shared-SQLite registration is atomic only when the resource store and scheduler compatibility store share its transaction; the alternate-store path remains a staged protocol with compensation.
