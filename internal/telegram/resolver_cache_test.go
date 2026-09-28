@@ -158,6 +158,58 @@ func TestPeerCache_ChurnKeepsOneOrderingNodePerLiveEntry(t *testing.T) {
 	}
 }
 
+func TestPeerCache_InvalidateIDReinsertDoesNotLetStaleOrderEvictNewGeneration(t *testing.T) {
+	cache := NewPeerCache(ResolverCacheConfig{MaxEntries: 2})
+	cache.Set("user", "alice", "user", 1, 100)
+	cache.Set("user", "bob", "user", 2, 200)
+	cache.InvalidateID(1)
+
+	cache.Set("user", "alice", "user", 1, 101)
+	cache.Set("user", "charlie", "user", 3, 300)
+
+	alice, hit := cache.Get("user", "alice")
+	if !hit || alice.AccessHash != 101 {
+		t.Fatalf("new alice generation was evicted by InvalidateID tombstone: hit=%v entry=%+v", hit, alice)
+	}
+	if _, hit := cache.Get("user", "bob"); hit {
+		t.Fatal("expected older bob entry to be evicted")
+	}
+}
+
+func TestPeerCache_NegativeExpireReinsertKeepsOrderingExact(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	cache := NewPeerCache(ResolverCacheConfig{
+		MaxEntries:  2,
+		NegativeTTL: time.Second,
+		Clock:       clock,
+	})
+	cache.SetNegative("user", "missing")
+	cache.Set("user", "bob", "user", 2, 200)
+
+	clock.Advance(2 * time.Second)
+	if _, hit := cache.Get("user", "missing"); hit {
+		t.Fatal("expected negative entry to expire")
+	}
+	cache.SetNegative("user", "missing")
+	cache.Set("user", "charlie", "user", 3, 300)
+
+	missing, hit := cache.Get("user", "missing")
+	if !hit || !missing.Negative {
+		t.Fatalf("reinserted negative entry missing: hit=%v entry=%+v", hit, missing)
+	}
+	if _, hit := cache.Get("user", "bob"); hit {
+		t.Fatal("expected older bob entry to be evicted")
+	}
+	cache.mu.RLock()
+	entries := len(cache.entries)
+	ordered := cache.order.Len()
+	indexed := len(cache.orderIndex)
+	cache.mu.RUnlock()
+	if entries != 2 || ordered != 2 || indexed != 2 {
+		t.Fatalf("negative churn retained entries/order/index=%d/%d/%d, want 2/2/2", entries, ordered, indexed)
+	}
+}
+
 func TestResolver_MemoryHit_ZeroStorageAndRPC(t *testing.T) {
 	resolver := NewResolver(nil, nil)
 	resolver.cache.Set("user", "alice", "user", 12345, 99999)
