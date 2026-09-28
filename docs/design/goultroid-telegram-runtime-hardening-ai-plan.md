@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T9-T11 remain pending**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented with executed acceptance pending; T4 and T9 ownership/inventory are reconciled; T10-T11 plus executed acceptance remain pending**
 
 Audit authority:
 
@@ -1071,7 +1071,7 @@ Fresh focused execution is not claimed in this session because the valid checkou
 
 ### T9 — Define callback extension ownership and compatibility exit conditions
 
-Status: **PENDING**
+Status: **CLOSED FOR SOURCE/OWNERSHIP AUDIT — T9-A closed by prior audit; T9-B retained compatibility surfaces based on current caller/fence evidence**
 
 #### T9-A — EventBus callback contract
 
@@ -1086,16 +1086,28 @@ Do not create another generic callback router.
 
 #### T9-B — capability compatibility inventory
 
-Re-audit current production callers of:
+Status: **AUDITED / RETAIN COMPATIBILITY SURFACES** — no speculative deletion justified on current evidence.
 
-- `Context.Svc`;
-- broad `TelegramServicer`;
-- broad dispatcher service aggregates;
-- legacy UI Telegram renderer adapters.
+Current caller/fence evidence on refreshed HEAD:
 
-Only remove compatibility code with caller evidence. Otherwise keep it fenced and documented.
+- `Context.Svc` remains a `CommandTelegramServicer` compatibility fallback inside `internal/core/context_telegram.go`; it is not the production command transport.
+- `TestM2ProductionContextLiteralsDoNotBindSvc` walks production Go source and rejects any production `core.Context` literal that binds `Svc`.
+- `TestM2ProductionHandlersDoNotReadContextSvc` walks production Go source and rejects direct `ctx.Svc` reads outside the core compatibility adapter.
+- `TestM2CoreOnlyCompatibilityAdapterReadsContextSvc` fences core reads so the fallback remains centralized in `context_telegram.go`.
+- `TestM2ProductionCommandPathUsesCapabilityBundle` requires command execution and dispatcher storage to use `TelegramCapabilities` rather than `CommandTelegramServicer`.
+- `TestM2AppDoesNotUseLegacyTelegramAggregates` forbids application wiring from returning to `.client.Service()`, `.dispatcher.Service()`, or `.dispatcher.CommandService()`.
+- Assistant command transport advertises only its supported narrow capabilities; the architecture fence rejects restoration of the former broad mock/mega-interface behavior.
+- `internal/ui/render.ToTelegramMarkup` remains an explicit compatibility adapter, but delegates physical Telegram keyboard construction to canonical `presentation/telegram.EncodeMarkup`; the P1-B architecture fence prevents it from becoming a second Telegram keyboard serializer.
 
-**Gate:** no ambiguous callback answer owner and no new production dependency on broad compatibility transport interfaces.
+No compatibility surface is removed in T9-B because the current environment cannot produce an exhaustive fresh repository-wide symbol reference list: GitHub code-search returns no indexed results for this repository, while a local checkout is unavailable. Existing repository-wide AST/walk architecture tests provide concrete negative production-caller evidence for `Context.Svc` and app aggregate paths, but not sufficient evidence to delete the broad interface definitions or legacy renderer adapter themselves.
+
+Therefore:
+
+- keep `TelegramServicer`, `CommandTelegramServicer`, `Context.Svc`, dispatcher/service compatibility accessors, and legacy UI renderer only as fenced compatibility surfaces;
+- add no new production caller;
+- future deletion requires an executable repository-wide caller inventory plus migration of any remaining tests/external compatibility users.
+
+**Gate:** callback answer ownership remains unambiguous from T9-A, production Context/app wiring remains capability-sized through existing architecture fences, and no compatibility deletion was performed without caller evidence.
 
 ---
 
