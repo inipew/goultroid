@@ -52,16 +52,31 @@ func (c *Compiler) CompileRows(ctx context.Context, sessionID string, rows []Row
 	if c == nil || c.sessions == nil {
 		return nil, fmt.Errorf("%w: session runtime unavailable", ErrInvalidView)
 	}
-	out := make([]CompiledRow, 0, len(rows))
+
+	actionIDs := make([]string, 0)
 	for _, row := range rows {
 		if len(row) == 0 {
 			return nil, ErrInvalidView
 		}
-		compiled := make(CompiledRow, 0, len(row))
 		for _, button := range row {
 			if err := button.Validate(); err != nil {
 				return nil, err
 			}
+			if button.Type == ButtonAction {
+				actionIDs = append(actionIDs, button.ActionID)
+			}
+		}
+	}
+
+	callbackData, err := c.sessions.CallbackDataBatch(ctx, sessionID, actionIDs)
+	if err != nil {
+		return nil, err
+	}
+	callbackIndex := 0
+	out := make([]CompiledRow, 0, len(rows))
+	for _, row := range rows {
+		compiled := make(CompiledRow, 0, len(row))
+		for _, button := range row {
 			result := CompiledButton{
 				Type:        button.Type,
 				Text:        button.Text,
@@ -70,11 +85,8 @@ func (c *Compiler) CompileRows(ctx context.Context, sessionID string, rows []Row
 				SamePeer:    button.SamePeer,
 			}
 			if button.Type == ButtonAction {
-				data, err := c.sessions.CallbackData(ctx, sessionID, button.ActionID)
-				if err != nil {
-					return nil, err
-				}
-				result.Data = data
+				result.Data = callbackData[callbackIndex]
+				callbackIndex++
 			}
 			compiled = append(compiled, result)
 		}

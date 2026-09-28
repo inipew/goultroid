@@ -4,15 +4,39 @@ import "context"
 
 // CallbackData builds callback data for the session's current state revision.
 func (r *Runtime) CallbackData(ctx context.Context, sessionID, actionID string) ([]byte, error) {
+	batch, err := r.CallbackDataBatch(ctx, sessionID, []string{actionID})
+	if err != nil {
+		return nil, err
+	}
+	return batch[0], nil
+}
+
+// CallbackDataBatch builds multiple callback tokens from one authoritative
+// session metadata snapshot. A concurrent state update may make the whole
+// rendered view stale, but it cannot mix revisions within one keyboard.
+func (r *Runtime) CallbackDataBatch(ctx context.Context, sessionID string, actionIDs []string) ([][]byte, error) {
 	resolved, err := r.currentSessionMetadataContext(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	actionID = normalizeFeatureID(actionID)
-	if !validIdentifier(actionID) || !r.catalog.HasAction(resolved.Session.FeatureID, actionID) {
-		return nil, ErrActionNotFound
+	out := make([][]byte, len(actionIDs))
+	for i, actionID := range actionIDs {
+		actionID = normalizeFeatureID(actionID)
+		if !validIdentifier(actionID) || !r.catalog.HasAction(resolved.Session.FeatureID, actionID) {
+			return nil, ErrActionNotFound
+		}
+		data, err := EncodeCallbackToken(
+			resolved.Session.FeatureID,
+			actionID,
+			resolved.Session.ID,
+			resolved.Session.Revision,
+		)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = data
 	}
-	return EncodeCallbackToken(resolved.Session.FeatureID, actionID, resolved.Session.ID, resolved.Session.Revision)
+	return out, nil
 }
 
 // ResolveCallback validates protocol version, session generation, revision,
