@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1/M2/M3 CLOSED; M4 NEXT**
+Status: **IN PROGRESS — M1–M3 and M5 CLOSED; M4/M6 final acceptance and N1–N4 closure pending**
 
 Audit baseline:
 
@@ -842,6 +842,38 @@ go vet ./...
 
 For final maintainability closure, also run `go test ./...` and selected `-race` suites if the local checkout is available. M6 must not be changed to `CLOSED` until the post-M6 validation above is green or any failures are audited and explicitly classified.
 
+### N1–N4 — Outcome review and maintenance closure
+
+These steps assess the original maintenance request after M1–M6. They do not authorize a new subsystem redesign. Refresh HEAD and inspect current source before applying any finding below; the file sizes and test results here are observations, not permanent invariants.
+
+#### N1 — Confirm the original three outcomes
+
+Status: **SOURCE-LEVEL OUTCOME SUBSTANTIALLY IMPLEMENTED; acceptance pending**
+
+1. **Telegram boundaries:** `core.TelegramCapabilities` and consumer-sized ports let command-context facades and other migrated consumers request the methods they use. The original 38-method `core.TelegramServicer` remains declared in `internal/core/context.go` as a compatibility aggregate. `Context.Svc` remains a `CommandTelegramServicer` fallback. Therefore the consumer-dependency narrowing is implemented, but removal of every broad compatibility type is not an achieved outcome. Verify the definition-of-done condition that no production consumer *requires* the 38-method aggregate; do not infer failure solely from the type declaration remaining.
+2. **TaskEngine source ownership:** the former approximately 2,039-line `engine.go` is split by state, configuration, admission, dispatch, completion, and API responsibility; at the N1 source review it is 461 lines. Preserve the sole `Engine`, coordinator, registry, and execution authority. M3's scoped local gate is recorded as passed.
+3. **Jobs Manager source ownership:** the former approximately 1,719-line `manager.go` is split into schedule, retry, attempt, and recovery responsibilities; at the N1 source review it is 718 lines. Preserve one logical `Manager` and one durable orchestration path over TaskEngine. Plugin Jobs/Schedules clients and durable store ports are narrow; M4's final acceptance still belongs to the M6 gate.
+
+N1 passes when a current-source audit confirms these three outcomes and records any remaining broad production dependency as a concrete caller, rather than treating file splitting or interface names alone as proof.
+
+#### N2 — Decide the Telegram compatibility exit by caller evidence
+
+Status: **AUDIT REQUIRED**
+
+Inventory production uses of `core.TelegramServicer`, `core.CommandTelegramServicer`, `Context.Svc`, and `TelegramCapabilitiesFrom`. Distinguish a declaration, a compatibility adapter, a test fixture, and a production consumer that actually needs a broad contract. If a production consumer still requires unrelated methods, migrate that consumer to the appropriate existing narrow port with focused regression coverage. Remove a compatibility API only when its callers and behavior have been accounted for; keeping a documented compatibility declaration is acceptable for this maintenance item if production consumers no longer require the 38-method aggregate. Do not create another broad interface under a new name.
+
+#### N3 — Finish M4/M6 local acceptance
+
+Status: **PENDING LOCAL EXECUTION**
+
+The post-M6 source corrections for the Scheduler caller, M5 fence formatting, and expanded M6 caller fence are present in `644a680a...`, `8f6fef81...`, and `034e502b...`; they still need current-HEAD local execution. Run the M6 gate listed above, then `go test ./...` and selected race suites. Record each failure with package, test, whether it predates the maintenance delta, and whether it affects a definition-of-done condition. A full-suite failure must not be silently described as green; an unrelated failure may be tracked separately only after its impact is explicitly assessed. Do not inspect CI unless the user requests it.
+
+#### N4 — Close the maintenance item with evidence
+
+Status: **BLOCKED ON N1–N3 EVIDENCE**
+
+After N1–N3, reconcile the M4 and M6 status lines, the top-level status, and the definition of done in Section 12. Mark the maintenance item `CLOSED` only when the required boundary and single-authority invariants hold and the relevant local regressions pass. Record the exact HEAD, commands, outcomes, and any separately tracked unrelated failures. If an original requirement remains unmet, state it explicitly and keep the item open. No new milestone follows automatically from closing N4.
+
 ## 9. Commit strategy
 
 Keep commits responsibility-scoped. Suggested sequence:
@@ -924,6 +956,4 @@ This maintenance item is closed only when all of the following are true:
 
 ## 13. Recommended next action
 
-Start with **M1 — Telegram capability contracts**.
-
-It has the highest testability payoff, has clear existing facade boundaries, and can be implemented additively before deleting any compatibility API. After M1/M2 are closed, perform the TaskEngine and Jobs file decompositions as mostly mechanical moves, then close the plugin Jobs/store boundary leaks.
+Use **N1–N4 — Outcome review and maintenance closure** after refreshing the current HEAD. First verify the original three outcomes and remaining Telegram compatibility callers; then execute the post-M6 local gate and reconcile M4/M6 and top-level status from actual results. The M1-first instruction above the completed milestone history is no longer the next action.
