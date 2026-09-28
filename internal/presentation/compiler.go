@@ -68,9 +68,13 @@ func (c *Compiler) CompileRows(ctx context.Context, sessionID string, rows []Row
 		}
 	}
 
-	callbackData, err := c.sessions.CallbackDataBatch(ctx, sessionID, actionIDs)
-	if err != nil {
-		return nil, err
+	var callbackData [][]byte
+	if len(actionIDs) > 0 {
+		var err error
+		callbackData, err = c.sessions.CallbackDataBatch(ctx, sessionID, actionIDs)
+		if err != nil {
+			return nil, err
+		}
 	}
 	callbackIndex := 0
 	out := make([]CompiledRow, 0, len(rows))
