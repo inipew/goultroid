@@ -60,12 +60,12 @@ func TestP8FLocalePresentationCoversAssistantShellAndInline(t *testing.T) {
 			"assistant.status.title",
 		},
 		filepath.Join(root, "internal", "assistant", "shell", "help.go"): {
-			"Locale     string",
+			"Locale   string",
 			"assistant.help.title",
 			"assistant.help.module_header",
 		},
 		filepath.Join(root, "internal", "assistant", "shell", "settings.go"): {
-			"Locale   string",
+			"Locale     string",
 			"LocalizedSettingDefinition",
 			"assistant.settings.header",
 		},

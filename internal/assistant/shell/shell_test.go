@@ -24,7 +24,7 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	for _, screenID := range []string{
 		InteractionHome,
 		InteractionStatus,
- 		InteractionSettings,
+		InteractionSettings,
 		InteractionLanguage,
 		InteractionSettingsCategory,
 		InteractionSettingDetail,
