@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1–M3 and M5 CLOSED; M4/M6 final acceptance and N1–N4 closure pending**
+Status: **IN PROGRESS — M1–M3 and M5 CLOSED; N1/N2 audit complete; M4/M6 final acceptance pending**
 
 Audit baseline:
 
@@ -848,7 +848,7 @@ These steps assess the original maintenance request after M1–M6. They do not a
 
 #### N1 — Confirm the original three outcomes
 
-Status: **SOURCE-LEVEL OUTCOME SUBSTANTIALLY IMPLEMENTED; acceptance pending**
+Status: **PASS BY CURRENT-SOURCE AUDIT at `d017f7bf709b41440cb3cd73b33edd1c3b3d0775`; final local acceptance remains N3**
 
 1. **Telegram boundaries:** `core.TelegramCapabilities` and consumer-sized ports let command-context facades and other migrated consumers request the methods they use. The original 38-method `core.TelegramServicer` remains declared in `internal/core/context.go` as a compatibility aggregate. `Context.Svc` remains a `CommandTelegramServicer` fallback. Therefore the consumer-dependency narrowing is implemented, but removal of every broad compatibility type is not an achieved outcome. Verify the definition-of-done condition that no production consumer *requires* the 38-method aggregate; do not infer failure solely from the type declaration remaining.
 2. **TaskEngine source ownership:** the former approximately 2,039-line `engine.go` is split by state, configuration, admission, dispatch, completion, and API responsibility; at the N1 source review it is 461 lines. Preserve the sole `Engine`, coordinator, registry, and execution authority. M3's scoped local gate is recorded as passed.
@@ -856,11 +856,22 @@ Status: **SOURCE-LEVEL OUTCOME SUBSTANTIALLY IMPLEMENTED; acceptance pending**
 
 N1 passes when a current-source audit confirms these three outcomes and records any remaining broad production dependency as a concrete caller, rather than treating file splitting or interface names alone as proof.
 
+N1 audit confirmed one production `taskengine.Engine` and one `runLoop`, plus one `jobs.Manager` and one durable coordinator loop. `engine.go` is 461 lines and `manager.go` is 718 lines at the audited HEAD. The split responsibility files remain present. The scoped M1/M2 and M6 architecture fences passed locally with `go test ./internal/architecture -run '^TestM[12]|^TestM6JobsCompatibilitySurfaceIsGone' -count=1 -timeout=180s`. This is source/architecture evidence, not the N3 package or repository acceptance gate.
+
 #### N2 — Decide the Telegram compatibility exit by caller evidence
 
-Status: **AUDIT REQUIRED**
+Status: **PASS BY CALLER AUDIT at `d017f7bf709b41440cb3cd73b33edd1c3b3d0775`; no production migration justified by this audit**
 
 Inventory production uses of `core.TelegramServicer`, `core.CommandTelegramServicer`, `Context.Svc`, and `TelegramCapabilitiesFrom`. Distinguish a declaration, a compatibility adapter, a test fixture, and a production consumer that actually needs a broad contract. If a production consumer still requires unrelated methods, migrate that consumer to the appropriate existing narrow port with focused regression coverage. Remove a compatibility API only when its callers and behavior have been accounted for; keeping a documented compatibility declaration is acceptable for this maintenance item if production consumers no longer require the 38-method aggregate. Do not create another broad interface under a new name.
+
+N2 caller classification on the audited HEAD:
+
+- **Production feature consumers:** AFK, Blacklist, and Filters module registration uses their `NewWithService`, `NewWithMessageDeleter`, and `NewWithCapabilities` paths. App wiring supplies narrow sender/admin/media providers to PM Permit, Broadcast, Userlog, and Moderation. Command handlers use `Context` capability accessors; production `Context` literals do not bind `Svc`. None of these paths requires the 38-method aggregate.
+- **Compatibility entry points:** `plugins/afk.New`, `plugins/blacklist.New`, `plugins/filters.New`, the `func() core.TelegramServicer` branches in reusable service constructors, `telegram.Client.Service`, and `Dispatcher.CommandService` remain declared in production files, but repository production wiring does not call those broad paths. Existing tests and external/legacy callers may still use them; deleting them is a separate compatibility decision.
+- **Composition adapter:** production `Client.Run` binds concrete `*telegram.Service` through `Dispatcher.setRuntimeService`; `dispatcherCapabilitiesFrom` accepts the broad `DispatcherService` union and immediately stores consumer-sized capability slots, using `TelegramCapabilitiesFrom` once at this binding boundary. `app.buildTelegramRuntime` constructs the dispatcher with `Service: nil`. This union is still broad and should be watched for growth, but no feature consumer is forced to implement it. Narrowing this one concrete composition parameter is optional cleanup, not an unmet original requirement.
+- **Proof-only references:** compile-time assertions against `core.TelegramServicer` and test fixtures establish compatibility; they are not production consumers. Direct `Context.Svc` reads remain inside `core/context_telegram.go` as a fallback, with architecture fences against production handler access.
+
+The original definition-of-done condition is therefore met at the audited HEAD: no identified production consumer *requires* all 38 methods of `core.TelegramServicer`. The declaration still exists, so N2 does not claim compatibility API removal. No Go code was changed during N1/N2. Recheck this inventory if HEAD advances before N4.
 
 #### N3 — Finish M4/M6 local acceptance
 
@@ -956,4 +967,4 @@ This maintenance item is closed only when all of the following are true:
 
 ## 13. Recommended next action
 
-Use **N1–N4 — Outcome review and maintenance closure** after refreshing the current HEAD. First verify the original three outcomes and remaining Telegram compatibility callers; then execute the post-M6 local gate and reconcile M4/M6 and top-level status from actual results. The M1-first instruction above the completed milestone history is no longer the next action.
+N1 and N2 source/caller audits are recorded above at `d017f7bf...`. Next run **N3 — M4/M6 local acceptance** on a refreshed HEAD, classify any failures, then use N4 to reconcile milestone and top-level status from actual evidence. Recheck the N1/N2 inventory if production callers change before closure.
