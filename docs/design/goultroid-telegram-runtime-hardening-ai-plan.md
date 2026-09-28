@@ -252,6 +252,8 @@ The priorities below distinguish concrete source defects from extension-contract
 
 ### P1-A — Non-idempotent text send can perform a second physical send after an ambiguous error
 
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — production fix `a59c075557ac24346c1837546a9945b429ad3aa0`; expanded regression `e91c466e7ef41cf36b386bc6284356f57a9398cd`.
+
 Affected source:
 
 - `internal/telegram/service.go`
@@ -795,7 +797,7 @@ Required targeted baseline areas:
 
 ### T1 — Fix non-idempotent message-send correctness
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING**
 
 Scope:
 
@@ -818,7 +820,16 @@ Tests:
 - transport transient/ambiguous error;
 - assert exactly one physical send invocation.
 
-**Gate:** P1-A closed.
+**Implementation evidence:**
+
+- `a59c075557ac24346c1837546a9945b429ad3aa0` moves HTML parsing/entity construction before transport and routes both `SendMessage` and `SendMessageWithMarkup` through one helper that emits one `MessagesSendMessageRequest` inside the existing shared non-idempotent RPC executor.
+- The logical send gets one locally generated Telegram `RandomID`; an RPC error is returned directly instead of being converted into a second plain-text send.
+- The regression uses a recording `tg.Invoker` to count physical `messages.sendMessage` calls and inspect the actual request. It covers rich HTML, markup preservation, and malformed HTML fallback before transport.
+- `e91c466e7ef41cf36b386bc6284356f57a9398cd` extends the regression across a transient/ambiguous connection-reset error and a permanent `MESSAGE_TOO_LONG` error. Both paths require exactly one physical call; the transient case must retain `RPCFailure.Ambiguous=true`.
+- Changed Go blocks were passed through `gofmt` before their commits and the committed diffs were inspected for unrelated changes.
+- Fresh focused Go test execution is not claimed in this session: the shell environment has Go 1.23.2 while this repository declares Go 1.27.0, and the repository checkout cannot be materialized because shell network access is unavailable. CI was not inspected or used as a substitute.
+
+**Gate status:** source defect is patched and regressions are committed, but P1-A remains pending executed acceptance until the focused tests run in a valid repository/toolchain environment.
 
 ---
 
