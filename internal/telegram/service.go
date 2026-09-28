@@ -195,7 +195,11 @@ func executeServiceRPC[T any](ctx context.Context, s *Service, meta RPCMeta, op 
 	if err != nil {
 		var failure *RPCFailure
 		if errors.As(err, &failure) {
-			return res, mapTelegramError(failure.Err)
+			mapped := mapTelegramError(failure.Err)
+			if mapped == nil {
+				return res, nil
+			}
+			return res, fmt.Errorf("%w: %w", mapped, failure)
 		}
 		return res, mapTelegramError(err)
 	}
@@ -693,6 +697,9 @@ func parseHTML(text string) (string, []tg.MessageEntityClass) {
 	var eb entity.Builder
 	if err := styling.Perform(&eb, html.String(nil, text)); err == nil {
 		plain, ents := eb.Complete()
+		if strings.ContainsRune(plain, '\uFFFD') && !strings.ContainsRune(text, '\uFFFD') {
+			return text, nil
+		}
 		return plain, ents
 	}
 	return text, nil

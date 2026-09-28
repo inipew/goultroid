@@ -95,6 +95,9 @@ func (c *testTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks
 	if spec.Handler != nil {
 		_ = spec.Handler(ctx)
 	}
+	if spec.OnComplete != nil {
+		spec.OnComplete(tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted})
+	}
 	return nil, nil
 }
 func (c *testTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {

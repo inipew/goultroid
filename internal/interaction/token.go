@@ -93,6 +93,9 @@ func ParseCallbackToken(data []byte) (CallbackToken, error) {
 		return CallbackToken{}, ErrInvalidCallbackToken
 	}
 	actionID := parts[1]
+	if normalizeFeatureID(actionID) != actionID {
+		return CallbackToken{}, ErrInvalidCallbackToken
+	}
 	if err := ValidateCallbackActionID(actionID); err != nil {
 		return CallbackToken{}, ErrInvalidCallbackToken
 	}

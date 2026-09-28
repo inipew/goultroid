@@ -20,12 +20,13 @@ import (
 )
 
 type p5CallbackAck struct {
-	mu      sync.Mutex
-	answers map[int64]int
+	mu        sync.Mutex
+	answers   map[int64]int
+	completed chan int64
 }
 
 func newP5CallbackAck() *p5CallbackAck {
-	return &p5CallbackAck{answers: make(map[int64]int)}
+	return &p5CallbackAck{answers: make(map[int64]int), completed: make(chan int64, 1024)}
 }
 
 func (a *p5CallbackAck) record(queryID int64) {
@@ -39,6 +40,7 @@ func (a *p5CallbackAck) record(queryID int64) {
 
 func (a *p5CallbackAck) ensureAnswered(_ context.Context, queryID int64, _ error) {
 	a.record(queryID)
+	a.completed <- queryID
 }
 
 func (a *p5CallbackAck) acknowledge(_ context.Context, queryID int64) {
@@ -68,7 +70,22 @@ func dispatchP5Shell(t *testing.T, client *AssistantClient, data []byte, queryID
 	if !handled {
 		t.Fatalf("P5 callback %d was not recognized as an a2 interaction", queryID)
 	}
-	return err
+	ack, ok := client.interactionIngress.ack.(*p5CallbackAck)
+	if !ok {
+		t.Fatal("P5 callback acknowledger is unavailable")
+	}
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case completedID := <-ack.completed:
+			if completedID == queryID {
+				return err
+			}
+		case <-deadline.C:
+			t.Fatalf("P5 callback %d did not complete", queryID)
+		}
+	}
 }
 
 func newP5SettingsService(t *testing.T) *settings.Service {
