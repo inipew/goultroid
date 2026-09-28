@@ -429,16 +429,18 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 	}
 	registration, err := e.prepareScheduledDefinition(ctx, res)
 	if err != nil {
-		if cleanupErr := e.db.DeleteScheduledJob(ctx, res.ID); cleanupErr != nil {
+		cleanupCtx, cancel := scheduleCompensationContext(ctx)
+		defer cancel()
+		if cleanupErr := e.db.DeleteScheduledJob(cleanupCtx, res.ID); cleanupErr != nil {
 			return nil, errors.Join(err, fmt.Errorf("delete initializing scheduled row: %w", cleanupErr))
 		}
 		return nil, err
 	}
 	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, true, err)
 	}
 	if err := e.saveRedesignedSchedule(ctx, res, registration.definitionID, true); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, false, err)
 	}
 	res.Status = JobStatusPending
 	e.notifyWake()
@@ -475,16 +477,18 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 	}
 	registration, err := e.prepareScheduledDefinition(ctx, res)
 	if err != nil {
-		if cleanupErr := e.db.DeleteScheduledJob(ctx, res.ID); cleanupErr != nil {
+		cleanupCtx, cancel := scheduleCompensationContext(ctx)
+		defer cancel()
+		if cleanupErr := e.db.DeleteScheduledJob(cleanupCtx, res.ID); cleanupErr != nil {
 			return nil, errors.Join(err, fmt.Errorf("delete initializing scheduled row: %w", cleanupErr))
 		}
 		return nil, err
 	}
 	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, true, err)
 	}
 	if err := e.saveRedesignedSchedule(ctx, res, registration.definitionID, true); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, false, err)
 	}
 	res.Status = JobStatusPending
 	e.notifyWake()
@@ -495,8 +499,15 @@ func scheduledDefinitionID(jobID int64) string { return fmt.Sprintf("scheduler:j
 func redesignedScheduleID(jobID int64) string  { return fmt.Sprintf("sched:scheduled:%d", jobID) }
 
 type scheduledRegistration struct {
-	definitionID string
+	definitionID   string
 	ownsDefinition bool
+}
+
+func scheduleCompensationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 }
 
 func (e *Engine) prepareScheduledDefinition(ctx context.Context, job *ScheduledJob) (scheduledRegistration, error) {
@@ -548,20 +559,28 @@ func (e *Engine) prepareScheduledDefinition(ctx context.Context, job *ScheduledJ
 	return registration, nil
 }
 
-func (e *Engine) compensateScheduledRegistration(ctx context.Context, job *ScheduledJob, registration scheduledRegistration, primary error) error {
+func (e *Engine) compensateScheduledRegistration(ctx context.Context, job *ScheduledJob, registration scheduledRegistration, removeOwnedDefinition bool, primary error) error {
 	errs := []error{primary}
+	cleanupCtx, cancel := scheduleCompensationContext(ctx)
+	defer cancel()
+
 	if e.jobsMgr != nil && job != nil {
-		if err := e.jobsMgr.DisableSchedule(ctx, redesignedScheduleID(job.ID)); err != nil {
+		if err := e.jobsMgr.DisableSchedule(cleanupCtx, redesignedScheduleID(job.ID)); err != nil {
 			errs = append(errs, fmt.Errorf("disable redesigned schedule: %w", err))
 		}
-		if registration.ownsDefinition && registration.definitionID != "" {
-			if err := e.jobsMgr.DeleteDefinition(ctx, registration.definitionID); err != nil {
+		// Before activation the prepared schedule is known disabled, so an owned
+		// wrapper has no executable occurrence and can be removed. After the
+		// final enable write returns an error its outcome may be ambiguous; keep
+		// the wrapper so any occurrence materialized before compensation remains
+		// recoverable and its durable history is not cascaded away.
+		if removeOwnedDefinition && registration.ownsDefinition && registration.definitionID != "" {
+			if err := e.jobsMgr.DeleteDefinition(cleanupCtx, registration.definitionID); err != nil {
 				errs = append(errs, fmt.Errorf("delete scheduler wrapper definition: %w", err))
 			}
 		}
 	}
 	if job != nil {
-		if err := e.db.DeleteScheduledJob(ctx, job.ID); err != nil {
+		if err := e.db.DeleteScheduledJob(cleanupCtx, job.ID); err != nil {
 			errs = append(errs, fmt.Errorf("delete scheduled row: %w", err))
 		}
 	}

@@ -51,11 +51,14 @@ func (s *executionLifecycleDefinitionStore) DeleteDefinition(_ context.Context, 
 }
 
 type executionLifecycleScheduleStore struct {
-	mu         sync.Mutex
-	schedules  map[string]jobs.JobSchedule
-	saveErr    error
-	disableErr error
-	cutover    bool
+	mu                   sync.Mutex
+	schedules            map[string]jobs.JobSchedule
+	saveErr              error
+	saveErrOnCall        int
+	persistBeforeSaveErr bool
+	saveCalls            int
+	disableErr           error
+	cutover              bool
 }
 
 func newExecutionLifecycleScheduleStore() *executionLifecycleScheduleStore {
@@ -63,15 +66,20 @@ func newExecutionLifecycleScheduleStore() *executionLifecycleScheduleStore {
 }
 
 func (s *executionLifecycleScheduleStore) SaveSchedule(_ context.Context, schedule *jobs.JobSchedule) error {
-	if s.saveErr != nil {
-		return s.saveErr
-	}
 	if schedule == nil {
 		return errors.New("nil schedule")
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saveCalls++
+	shouldFail := s.saveErr != nil && (s.saveErrOnCall == 0 || s.saveErrOnCall == s.saveCalls)
+	if shouldFail && !s.persistBeforeSaveErr {
+		return s.saveErr
+	}
 	s.schedules[schedule.ID] = *schedule
-	s.mu.Unlock()
+	if shouldFail {
+		return s.saveErr
+	}
 	return nil
 }
 
@@ -323,6 +331,36 @@ func TestRuntimeExecutionE0_CompensationFailurePreservesPrimaryError(t *testing.
 	}
 	if !errors.Is(err, cleanupErr) {
 		t.Fatalf("schedule error = %v, want cleanup failure reported", err)
+	}
+}
+
+func TestRuntimeExecutionE0_AmbiguousPublishFailureRetainsWrapperForRecovery(t *testing.T) {
+	publishErr := errors.New("publish acknowledgement lost")
+	definitions := newExecutionLifecycleDefinitionStore()
+	schedules := newExecutionLifecycleScheduleStore()
+	schedules.cutover = true
+	schedules.saveErr = publishErr
+	schedules.saveErrOnCall = 2
+	schedules.persistBeforeSaveErr = true
+	repo := &executionLifecycleRepository{}
+	engine, manager := newExecutionLifecycleEngine(t, repo, definitions, schedules)
+
+	_, err := engine.ScheduleOnce(context.Background(), 7, "chat", 0, time.Now().Add(-time.Second), ActionMessage, "hello")
+	if !errors.Is(err, publishErr) {
+		t.Fatalf("schedule error = %v, want ambiguous publish failure", err)
+	}
+	schedule, ok := schedules.schedule(redesignedScheduleID(1))
+	if !ok {
+		t.Fatal("ambiguous publish schedule disappeared; want disabled durable recovery record")
+	}
+	if schedule.Enabled {
+		t.Fatal("ambiguous publish schedule remained executable after compensation")
+	}
+	if _, ok := manager.Definition(scheduledDefinitionID(1)); !ok {
+		t.Fatal("ambiguous publish removed wrapper definition needed by a possibly materialized occurrence")
+	}
+	if len(repo.deleted) != 1 {
+		t.Fatalf("deleted compatibility rows = %v, want one", repo.deleted)
 	}
 }
 
