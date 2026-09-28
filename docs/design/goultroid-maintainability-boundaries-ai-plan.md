@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1–M3 and M5 CLOSED; N1–N3 evidence recorded; N4 closure review pending**
+Status: **CLOSED — M1–M6 and N1–N4 scoped acceptance complete; full repository suite retains documented pre-M1 failures**
 
 Audit baseline:
 
@@ -694,7 +694,7 @@ Gate:
 
 ### M4 — Split Jobs Manager by responsibility
 
-Status: **IMPLEMENTED — Jobs/SQLite regression groups passed during M5 local acceptance; final architecture acceptance remains part of M6**
+Status: **CLOSED — Jobs responsibility split and scoped post-M6 local acceptance passed at `028c86ba`**
 
 Implementation commits:
 
@@ -728,13 +728,13 @@ Gate status:
 
 - **PASS by source/mechanical audit:** `manager.go` no longer owns lifecycle + schedule + retry + attempt + recovery implementation in one file;
 - **PASS by source/mechanical audit:** no new Manager-family goroutine or queue was introduced by the split;
-- **PENDING local execution:** run the regression groups above before treating M4 acceptance as fully closed. CI must not be inspected unless explicitly requested.
+- **PASS local execution:** full `internal/jobs`, `internal/jobs/sqlite`, and `internal/scheduler` package tests, their selected race runs, and the M4–M6 ownership fences passed during N3 and again for the affected checks at `028c86ba`. The full repository suite remains non-green with the baseline comparison recorded under N3. CI was not inspected.
 
 Next: **M5 — Narrow Jobs external/store boundaries**. Do not re-merge these responsibility files while migrating callers/store ports.
 
 ### M5 — Narrow Jobs external/store boundaries
 
-Status: **CLOSED — M5 local acceptance passed; M6 final cleanup remains**
+Status: **CLOSED — M5 local acceptance passed; M6 cleanup subsequently completed**
 
 Implementation commits:
 
@@ -782,7 +782,7 @@ Next: **M6 — Final cleanup and acceptance**. First inventory remaining compati
 
 ### M6 — Final cleanup and acceptance
 
-Status: **IMPLEMENTATION COMPLETE — post-cleanup blockers corrected; final local validation still required before closure**
+Status: **CLOSED — concrete port cleanup and scoped post-M6 local acceptance passed at `028c86ba`**
 
 Implementation commits:
 
@@ -823,7 +823,7 @@ Local validation status:
 - the immediately preceding M5 closure commit `f0b96c0733e5f1ff460412690fe5743becaf3885` recorded passing `go test -race ./internal/jobs ./internal/jobs/sqlite ./internal/plugin ./internal/app -count=1 -timeout=180s` and `go test ./internal/architecture -run '^TestM5' -count=1 -timeout=180s`;
 - those results predate the M6 compatibility-removal delta and therefore are **not** treated as M6 acceptance;
 - a post-M6 audit at HEAD `3d3fcdb2...` found two concrete acceptance failures: Scheduler no longer compiled because `engine_timing_test.go` still referenced `jobs.NewManager`, and `gofmt -l` reported `internal/architecture/jobs_boundary_m5_test.go`; both source defects are corrected in `644a680a...` and `8f6fef81...`, with the caller fence strengthened in `034e502b...`;
-- a local checkout became available for the N3 run at `cf20910da4670c2a6ee4f7075dba9b4b360544f6`; the results and remaining failures are recorded under N3 below;
+- a local checkout became available for N3 at `cf20910da4670c2a6ee4f7075dba9b4b360544f6`; its fixture/fence corrections were committed as `028c86ba359770237dd0559754dc036cf656a99a`, then the affected architecture, vet, and selected race checks passed again on that commit; results and baseline failures are recorded under N3/N4;
 - CI was not inspected.
 
 Required final local validation, without CI polling:
@@ -840,7 +840,7 @@ go test ./internal/architecture
 go vet ./...
 ```
 
-For final maintainability closure, also run `go test ./...` and selected `-race` suites if the local checkout is available. M6 must not be changed to `CLOSED` until the post-M6 validation above is green or any failures are audited and explicitly classified.
+For final maintainability closure, `go test ./...` and selected `-race` suites were run. The full suite is non-green, with every current failing top-level test name also failing on the pre-M1 baseline; the scoped boundary/regression suite and selected race runs passed. This evidence is classified under N3/N4 rather than represented as a green full-suite result.
 
 ### N1–N4 — Outcome review and maintenance closure
 
@@ -848,7 +848,7 @@ These steps assess the original maintenance request after M1–M6. They do not a
 
 #### N1 — Confirm the original three outcomes
 
-Status: **PASS BY CURRENT-SOURCE AUDIT at `d017f7bf709b41440cb3cd73b33edd1c3b3d0775`; final local acceptance remains N3**
+Status: **PASS BY CURRENT-SOURCE AUDIT at `d017f7bf709b41440cb3cd73b33edd1c3b3d0775`; scoped local acceptance subsequently completed in N3/N4**
 
 1. **Telegram boundaries:** `core.TelegramCapabilities` and consumer-sized ports let command-context facades and other migrated consumers request the methods they use. The original 38-method `core.TelegramServicer` remains declared in `internal/core/context.go` as a compatibility aggregate. `Context.Svc` remains a `CommandTelegramServicer` fallback. Therefore the consumer-dependency narrowing is implemented, but removal of every broad compatibility type is not an achieved outcome. Verify the definition-of-done condition that no production consumer *requires* the 38-method aggregate; do not infer failure solely from the type declaration remaining.
 2. **TaskEngine source ownership:** the former approximately 2,039-line `engine.go` is split by state, configuration, admission, dispatch, completion, and API responsibility; at the N1 source review it is 461 lines. Preserve the sole `Engine`, coordinator, registry, and execution authority. M3's scoped local gate is recorded as passed.
@@ -879,7 +879,7 @@ Status: **COMPLETE WITH BASELINE-CLASSIFIED FAILURES — scoped M4/M6 gate passe
 
 The post-M6 source corrections for the Scheduler caller, M5 fence formatting, and expanded M6 caller fence are present in `644a680a...`, `8f6fef81...`, and `034e502b...`; they still need current-HEAD local execution. Run the M6 gate listed above, then `go test ./...` and selected race suites. Record each failure with package, test, whether it predates the maintenance delta, and whether it affects a definition-of-done condition. A full-suite failure must not be silently described as green; an unrelated failure may be tracked separately only after its impact is explicitly assessed. Do not inspect CI unless the user requests it.
 
-N3 local execution and classification at the recorded HEAD, with the focused fixture/fence corrections still uncommitted:
+N3 local execution and classification at the recorded HEAD; the focused fixture/fence corrections were subsequently committed in `028c86ba...`:
 
 - **PASS:** `gofmt -l` across all Go files changed since M5 closure and the N3 changes printed nothing; `git diff --check` passed; `go vet ./...` passed; `go test ./... -run '^$' -count=1 -timeout=180s` compiled every package.
 - **PASS:** full package tests for `internal/taskengine`, `internal/jobs`, `internal/jobs/sqlite`, `internal/scheduler`, `internal/plugin`, and `internal/app`; selected `-race` runs for those same six packages; focused M1–M6 architecture fences and the corrected retry/default-config ownership fences.
@@ -892,9 +892,13 @@ The scoped ownership and Jobs acceptance evidence supports the original maintain
 
 #### N4 — Close the maintenance item with evidence
 
-Status: **READY FOR CLOSURE REVIEW — N1–N3 evidence recorded**
+Status: **CLOSED — original maintenance definition of done met by scoped evidence at `028c86ba359770237dd0559754dc036cf656a99a`**
 
 After N1–N3, reconcile the M4 and M6 status lines, the top-level status, and the definition of done in Section 12. Mark the maintenance item `CLOSED` only when the required boundary and single-authority invariants hold and the relevant local regressions pass. Record the exact HEAD, commands, outcomes, and any separately tracked unrelated failures. If an original requirement remains unmet, state it explicitly and keep the item open. No new milestone follows automatically from closing N4.
+
+N4 review at `028c86ba...` confirmed the original three outcomes: production callers use Telegram capability-sized boundaries while the 38-method declaration remains compatibility-only; one TaskEngine coordinator and one Jobs Manager remain split by responsibility; plugin Jobs/Schedules and durable store access use narrow ports. The M1–M6 architecture fences, `go vet ./...`, and `go test -race ./internal/taskengine ./internal/jobs ./internal/jobs/sqlite ./internal/scheduler ./internal/plugin ./internal/app -count=1 -timeout=180s` passed after the N3 commit. `gofmt -l` on changed Go files printed nothing, and `git diff --check` passed. CI was not inspected.
+
+`go test ./... -count=1 -timeout=180s` is **not green**: 47 current failing top-level test names were also present among 49 baseline failures at pre-M1 commit `1f0077a8...`; representative Core/Telegram/Architecture failures and the MyXL outside-sandbox failures matched in detail. Shared test names do not prove every root cause is identical. Those full-suite failures remain visible repository debt and are not described as passing. The original maintenance item closes on its verified boundary and targeted-regression criteria, without treating the non-green baseline as a successful repository-wide test gate.
 
 ## 9. Commit strategy
 
@@ -978,4 +982,4 @@ This maintenance item is closed only when all of the following are true:
 
 ## 13. Recommended next action
 
-N1 and N2 source/caller audits are recorded above at `d017f7bf...`; N3 scoped acceptance and pre-M1 baseline comparison are recorded at `cf20910d...` with focused fixture/fence corrections in the worktree. Next perform **N4 — closure review** on a refreshed HEAD, rerun the affected checks after any commit, and reconcile milestone and top-level status from actual evidence. Keep the non-green full-suite baseline explicit.
+M1–M6 and N1–N4 are closed by the scoped evidence above. Follow-up work on the pre-existing full-suite failures should be tracked separately by owning package, with the non-green baseline and root-cause uncertainty retained in that record. Recheck the boundary fences whenever these areas are changed; no additional maintainability milestone is implied here.
