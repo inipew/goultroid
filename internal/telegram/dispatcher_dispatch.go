@@ -37,10 +37,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 
 	chatID := extractChatIDFromPeer(msg.PeerID)
-	commandIdentity := fmt.Sprintf("%d:%d", chatID, msg.ID)
-	if typedIdentity, ok := telegramMessageIdentity(msg.PeerID, msg.ID); ok {
-		commandIdentity = typedIdentity
-	}
+	commandIdentity, hasCommandIdentity := telegramMessageIdentity(msg.PeerID, msg.ID)
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
 		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))
@@ -94,6 +91,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	// idempotency, peer resolution, or TaskEngine submission. Permission remains
 	// a separate authorization check inside CommandExecutor.
 	if cmdExists {
+		if !hasCommandIdentity {
+			d.logger.Warn("dispatcher: command has no stable telegram message identity")
+			return nil
+		}
 		senderID := invocationSenderID(msg, d.getSelfID())
 		if !cmd.CanInvoke(core.ExecutionInteractive, senderID, msg.Out, d.perms) {
 			d.logger.Debug("dispatcher: command invocation denied",

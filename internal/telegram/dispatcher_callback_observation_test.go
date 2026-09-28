@@ -85,7 +85,7 @@ func TestDispatcherCallbackEventBusIsObservationOnlyForUnknownAndNoop(t *testing
 				err := d.OnInlineBotCallbackQuery(context.Background(), tg.Entities{}, &tg.UpdateInlineBotCallbackQuery{
 					QueryID: tc.queryID,
 					UserID:  42,
-					MsgID:   &tg.InputBotInlineMessageID64{DCID: 1, ID: tc.queryID, AccessHash: 7},
+					MsgID:   &tg.InputBotInlineMessageID64{DCID: 1, ID: int(tc.queryID), AccessHash: 7},
 					Data:    tc.data,
 				})
 				if err != nil {
@@ -150,7 +150,7 @@ func TestDispatcherCallbackEventBusDoesNotStealA2AnswerOwnership(t *testing.T) {
 				err := d.OnInlineBotCallbackQuery(context.Background(), tg.Entities{}, &tg.UpdateInlineBotCallbackQuery{
 					QueryID: tc.queryID,
 					UserID:  42,
-					MsgID:   &tg.InputBotInlineMessageID64{DCID: 1, ID: tc.queryID, AccessHash: 7},
+					MsgID:   &tg.InputBotInlineMessageID64{DCID: 1, ID: int(tc.queryID), AccessHash: 7},
 					Data:    data,
 				})
 				if err != nil {

@@ -66,6 +66,18 @@ func TestDispatcherCommandIdentitySeparatesPeerNamespaces(t *testing.T) {
 	}
 }
 
+func TestDispatcherCommandIdentityRejectsInvalidPeer(t *testing.T) {
+	client := &retryAdmissionTaskClient{}
+	d, _ := newRetryCommandDispatcher(t, client)
+	msg := &tg.Message{ID: 96, PeerID: &tg.PeerChat{}, FromID: &tg.PeerUser{UserID: 200}, Message: ".retry"}
+	if err := d.dispatch(context.Background(), tg.Entities{}, msg); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := client.submissions.Load(); got != 0 {
+		t.Fatalf("invalid peer reached TaskEngine: submissions=%d", got)
+	}
+}
+
 func TestDispatcherCommandIdentityHonorsLegacyClaimDuringRollout(t *testing.T) {
 	client := &retryAdmissionTaskClient{}
 	d, mgr := newRetryCommandDispatcher(t, client)

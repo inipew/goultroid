@@ -251,7 +251,7 @@ func TestDispatcher_MessageHandler(t *testing.T) {
 		return nil
 	}})
 	err = dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
-		Message: &tg.Message{Out: true, Message: ".ping"},
+		Message: &tg.Message{ID: 1, PeerID: &tg.PeerChat{ChatID: 1}, Out: true, Message: ".ping"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -364,7 +364,7 @@ func TestDispatcher_RootContextCancellation(t *testing.T) {
 	})
 
 	_ = dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
-		Message: &tg.Message{Out: true, Message: ".longcmd"},
+		Message: &tg.Message{ID: 2, PeerID: &tg.PeerChat{ChatID: 1}, Out: true, Message: ".longcmd"},
 	})
 
 	select {
@@ -725,7 +725,7 @@ func TestDispatcher_StopWaitsForRunningCommand(t *testing.T) {
 	})
 
 	err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
-		Message: &tg.Message{Out: true, Message: ".slowcmd"},
+		Message: &tg.Message{ID: 3, PeerID: &tg.PeerChat{ChatID: 1}, Out: true, Message: ".slowcmd"},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error on new message: %v", err)

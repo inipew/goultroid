@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Audit — AI Session Plan
 
-Status: **IMPLEMENTED — T1–T4 source changes are present; fresh local acceptance and benchmark execution pending**
+Status: **IMPLEMENTED — targeted acceptance passed; full repository race suite remains red**
 
 Audit baseline:
 
@@ -246,24 +246,21 @@ No numerical latency improvement is claimed until those benchmarks are run on a 
   go test ./internal/telegram -run 'TestTelegramMessageIdentity|TestDispatcherCommandIdentity|TestDispatcher.*CallbackClaim|TestDispatcherAcceptedCallbackClaim|TestDispatcherCallbackEventBus' -count=1
   go test ./internal/assistant/client -run 'TestAssistant.*Callback.*Resolver' -count=1
 
-  go test ./internal/telegram -run '^
+  go test ./internal/telegram -run '^$' -bench 'BenchmarkDispatcher(CallbackIngressObservation|DecisionIngressNoop)' -benchtime=200ms -count=1
 
   go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1
   go vet ./...
   go build ./cmd/goultroid
   ```
 - Record the benchmark p50/p95/p99 values and classify any failing tests against the Section 3 baseline before changing the top-level status to `CLOSED`.
- -bench 'BenchmarkDispatcher(CallbackIngressObservation|DecisionIngressNoop)
 
-  go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1
-  go vet ./...
-  go build ./cmd/goultroid
-  ```
-- Record the benchmark p50/p95/p99 values and classify any failing tests against the Section 3 baseline before changing the top-level status to `CLOSED`.
- -benchmem -count=3
+### Local verification, 28 September 2026
 
-  go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1
-  go vet ./...
-  go build ./cmd/goultroid
-  ```
-- Record the benchmark p50/p95/p99 values and classify any failing tests against the Section 3 baseline before changing the top-level status to `CLOSED`.
+- Corrected the two inline callback test fixtures whose `InputBotInlineMessageID64.ID` fields were assigned `int64` values. The targeted package test command above now passes.
+- Added a regression for a recognized command with an invalid peer identity. It failed before the dispatcher stopped using an untyped numeric fallback, then passed after that change. Valid peer namespace and rollout tests also pass.
+- `go build ./cmd/goultroid` and `go vet ./...` passed.
+- Short local benchmark on Linux amd64, AMD Ryzen 7 5700U: callback observation ingress 8,826 ns/op (p50 2,023 ns; p95 6,472 ns; p99 38,933 ns); decision noop ingress 17,355 ns/op (p50 6,141 ns; p95 20,929 ns; p99 120,668 ns). These isolated benchmarks do not represent production end-to-end latency or a before/after improvement.
+- `go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1 -timeout=90s` passed. Three older dispatcher fixtures needed valid Telegram message IDs and peers after the new invalid-identity guard.
+- `go test -race ./...` failed in unrelated architecture and plugin packages. The output includes source-text contract assertions and UI-string expectations; do not classify all failures as Telegram regressions.
+- Legacy command claims encode no peer kind. The temporary legacy replay fence can therefore suppress a different peer with the same numeric IDs during its rollout window. There is no lossless mapping from an old claim to a typed peer; removing that fence trades this collision risk for replay of old commands. Keep this tradeoff explicit until the rollout window expires.
+- A callback claim `Accept` failure after task admission remains a residual persistence risk. The processing claim blocks duplicates until its TTL, but permanent storage failure prevents a durable at-most-once guarantee beyond that window. A failure-injection test and recovery design are required before claiming the T2 gate unconditionally.
