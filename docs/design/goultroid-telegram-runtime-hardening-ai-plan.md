@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented; T4 and T9 reconciled; T10 focused executable acceptance passed locally on 2026-09-28. A second full-race rerun reduced the residual failures to seven packages, and those exact residuals are remediated at `617195727c0a2646e1a9da850ed781731105d4bf`; one clean full-race rerun is still required before T10 can close. T11 must not start before that gate.**
+Status: **OPEN — prior-audit overlap reconciled; T1-T10 CLOSED. T10 full repository race acceptance is user-confirmed green on the current `test-next` lineage through `31445f849ab4a6ce617df70eda8a6e70d856f102`. T11 final cleanup/closure is READY; no compatibility surface may be removed without concrete caller evidence.**
 
 Audit authority:
 
@@ -1113,7 +1113,7 @@ Therefore:
 
 ### T10 — Performance/resource acceptance
 
-Status: **FOCUSED ACCEPTANCE PASSED / FULL-RACE REMEDIATION PUSHED / RERUN PENDING** — harness from `435c51081abf44c2ffa97234863493bfd56819ee` (`test(telegram): add T10 resource acceptance`); the locally reported full-race failure set was remediated through `cf109f3d527ed0ff3603e2820ecda8506c4273ac`.
+Status: **CLOSED** — harness from `435c51081abf44c2ffa97234863493bfd56819ee` (`test(telegram): add T10 resource acceptance`), focused/race/resource evidence recorded below, full-race regressions remediated through the later cleanup lineage, and a final full repository race rerun was reported green on the current `test-next` lineage through `31445f849ab4a6ce617df70eda8a6e70d856f102`.
 
 T10 remains an acceptance phase, not another architecture phase. The new harness composes the hardening-specific retained-state/performance checks with the already-existing P5/P8-H/P8-I lifecycle and resource acceptance instead of building a second runtime.
 
@@ -1249,13 +1249,15 @@ These seven residuals are fixed in:
 
 The batch changes test fixtures/expectations only; no production behavior, executor, callback runtime, task engine, cache, or transport path is changed. The commit diff was inspected after push and each edit maps to the reported failure.
 
-**Next gate:** rerun `go test -race ./... -count=1 -timeout=180s` from a clean checkout at or after `617195727c0a2646e1a9da850ed781731105d4bf`. Do not close T10 or start T11 until that run is green or any newly reported exact residual is audited.
+**Closure evidence:** after the seven-residual cleanup, the full `go test -race ./... -count=1 -timeout=180s` rerun was reported green by the user. The branch subsequently includes `d997cb79283a269bd9e2239a7f48d51d2e4d4dfa` (`fix(sticker): present safety limit error on decoded image violations`) and `31445f849ab4a6ce617df70eda8a6e70d856f102` (`fix(lint): remove dead callback code and retain diagnostics`); the latter also removes confirmed dead callback/scope-resolver helpers without introducing a second runtime or authority. This session does not independently reproduce the local race output because its environment lacks the repository Go 1.27 checkout, so the full-race result is recorded as user-supplied executable evidence rather than re-executed evidence.
+
+**T10 is CLOSED.** T11 may begin from `31445f849ab4a6ce617df70eda8a6e70d856f102` after refreshing HEAD.
 
 ---
 
 ### T11 — Final cleanup and closure
 
-Status: **PENDING**
+Status: **READY — T10 gate satisfied at current lineage through `31445f849ab4a6ce617df70eda8a6e70d856f102`.**
 
 Only after T1–T10 acceptance:
 
