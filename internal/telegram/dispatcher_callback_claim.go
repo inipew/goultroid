@@ -26,13 +26,13 @@ func (d *Dispatcher) beginCallbackClaim(ctx context.Context, key string) (dispat
 	return dispatcherCallbackClaim{claim: claim, key: key}, true, nil
 }
 
-func (d *Dispatcher) acceptCallbackClaim(ctx context.Context, claim dispatcherCallbackClaim) error {
+func (d *Dispatcher) reserveCallbackClaim(ctx context.Context, claim dispatcherCallbackClaim) error {
 	if claim.claim == nil {
 		return nil
 	}
 	claimCtx, cancel := detachedCallbackClaimContext(ctx)
 	defer cancel()
-	return claim.claim.Accept(claimCtx, callbackIdempotencyTTL)
+	return claim.claim.Reserve(claimCtx, callbackIdempotencyTTL)
 }
 
 func (d *Dispatcher) releaseCallbackClaim(ctx context.Context, claim dispatcherCallbackClaim) {

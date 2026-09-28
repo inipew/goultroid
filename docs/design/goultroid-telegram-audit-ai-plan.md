@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Audit — AI Session Plan
 
-Status: **IMPLEMENTED — targeted acceptance passed; full repository race suite remains red**
+Status: **CLOSED — scoped T0–T4 acceptance verified; unrelated full-suite failures recorded below**
 
 Audit baseline:
 
@@ -102,7 +102,7 @@ Do not attribute these failures to a specific implementation change without a re
 
 ### T0 — Freeze baseline and diagnose existing failures
 
-Status: **SOURCE DIAGNOSIS COMPLETE — stale baseline fixtures corrected; fresh local execution still pending**
+Status: **VERIFIED — stale baseline fixtures corrected and targeted tests executed**
 
 Implementation-session findings:
 
@@ -127,7 +127,7 @@ Implementation-session findings:
 
 ### T1 — Make command identity peer-safe
 
-Status: **IMPLEMENTED at `295b26a6b7e8166ad7b28e5335b5ae975c88ba22`; fresh local test execution pending**
+Status: **VERIFIED — implemented at `295b26a6b7e8166ad7b28e5335b5ae975c88ba22` with follow-up invalid-peer guard**
 
 Implemented:
 
@@ -147,28 +147,32 @@ Implemented:
 
 ### T2 — Make userbot callback admission retry-safe
 
-Status: **IMPLEMENTED at `7efb886816d050263b4f4f254e2d6dfd6515eddc`; fresh local test execution pending**
+Status: **VERIFIED — durable reservation now precedes native TaskEngine admission**
 
 Implemented:
 
 - replaced callback `CheckAndSet` ownership with the existing two-phase `idempotency.ExecutionClaim`;
-- callback query IDs are provisional before native a2 admission;
-- pre-admission native failures release the generation-owned claim through a bounded detached context;
-- successful native admission accepts the claim and keeps at-most-once action semantics;
-- unknown/noop callbacks accept the claim before the dispatcher-owned terminal answer;
+- callback query IDs begin as provisional claims, then become durable `reserved` claims before native a2 admission;
+- a failed reservation prevents native/TaskEngine admission, including when the persistence outcome is ambiguous;
+- known pre-admission native failures release the generation-owned reservation through a bounded detached context;
+- successful native admission retains the reservation for the five-minute callback replay window; no post-admission `Accept` write is required;
+- unknown/noop callbacks retain the reservation before the dispatcher-owned terminal answer;
 - duplicate callback queries receive a silent terminal ACK instead of returning with the Telegram spinner potentially active;
 - message and inline callback paths share the same lifecycle;
 - added focused regressions for release/retry, accepted duplicate suppression, and duplicate ACK behavior.
+- fault-injection coverage proves a failed reservation prevents adapter admission and that an `AcceptClaim` failure cannot occur after admission because the callback path never calls it. SQLite coverage proves reservation survives manager recreation and remains releasable on known pre-admission failure.
+
+**Recovery semantics:** a persisted reservation blocks the same callback query ID across process restarts until its five-minute expiry. A crash between reservation and TaskEngine submission can lose that action but cannot duplicate it within that replay window. A known submission rejection releases the reservation; an uncertain reservation write is not released. This is a bounded replay guarantee, not perpetual exactly-once execution after arbitrary TTL expiry.
 
 - Cover message and inline callback failures before task acceptance, including invalid target, stale action, unavailable TaskEngine, and rejected admission. Assert the acknowledgement behavior and query-claim state for each.
 - Establish a single transition from provisional claim to accepted work, with release on pre-acceptance failure. Keep accepted work deduplicated and preserve immediate ACK behavior.
 - Record answer-RPC failures in diagnostics without turning a successful action into a duplicate execution.
 
-**Gate:** each callback action executes at most once; a failed pre-admission attempt does not block a safe retry; each rejected callback has a defined user-visible answer.
+**Gate:** each callback action is admitted at most once within the five-minute replay window; a known pre-admission rejection permits safe retry, while an uncertain persistence result remains blocked until expiry; each rejected callback has a defined user-visible answer when transport is available.
 
 ### T3 — Order assistant callback work by need
 
-Status: **IMPLEMENTED at `f7b295bb4366330af0b2d6a692cf58c0edd8f251`; fresh local test execution pending**
+Status: **VERIFIED — implemented at `f7b295bb4366330af0b2d6a692cf58c0edd8f251`**
 
 Implemented:
 
@@ -188,7 +192,7 @@ Implemented:
 
 ### T4 — Define callback event ownership and measure ingress
 
-Status: **CONTRACT + REGRESSION/BENCHMARK HARNESS IMPLEMENTED at `ec41a80a329e1d5a56a3b8de78632c57a6094ad4`; benchmark execution pending**
+Status: **VERIFIED — contract, regressions, and local benchmark executed**
 
 Contract decision:
 
@@ -205,7 +209,7 @@ Implemented evidence:
 - bounded benchmark harnesses for callback ingress with an active observation subscriber and synchronous decision ingress;
 - benchmark harness reports `p50-ns`, `p95-ns`, and `p99-ns` in addition to normal Go benchmark metrics.
 
-No numerical latency improvement is claimed until those benchmarks are run on a real local checkout.
+The local benchmark measurements appear in Section 5. They are isolated measurements, not evidence of a before/after latency improvement.
 
 - Choose and document an explicit EventBus callback contract. If callback subscribers are observational, fence them from answering through the dispatcher-owned acknowledgement path. If claiming is required, use a synchronous ownership decision before fallback answering.
 - Test one-answer behavior for known a2, unknown, noop, and subscriber-present callbacks on message and inline origins.
@@ -263,4 +267,5 @@ No numerical latency improvement is claimed until those benchmarks are run on a 
 - `go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1 -timeout=90s` passed. Three older dispatcher fixtures needed valid Telegram message IDs and peers after the new invalid-identity guard.
 - `go test -race ./...` failed in unrelated architecture and plugin packages. The output includes source-text contract assertions and UI-string expectations; do not classify all failures as Telegram regressions.
 - Legacy command claims encode no peer kind. The temporary legacy replay fence can therefore suppress a different peer with the same numeric IDs during its rollout window. There is no lossless mapping from an old claim to a typed peer; removing that fence trades this collision risk for replay of old commands. Keep this tradeoff explicit until the rollout window expires.
-- A callback claim `Accept` failure after task admission remains a residual persistence risk. The processing claim blocks duplicates until its TTL, but permanent storage failure prevents a durable at-most-once guarantee beyond that window. A failure-injection test and recovery design are required before claiming the T2 gate unconditionally.
+- Callback reservation hardening was verified with `go test ./internal/idempotency ./internal/telegram ./internal/interaction/native ./internal/assistant/client ./internal/presentation/...` and `go test -race ./internal/idempotency ./internal/telegram ./internal/interaction/native ./internal/assistant/client ./internal/presentation/... -count=1 -timeout=90s`. Both passed. `go vet ./...`, `go build ./cmd/goultroid`, `gofmt`, and `git diff --check` also passed.
+- The callback at-most-once claim applies to the five-minute replay window, including process restart and an `AcceptClaim` outage. Query-ID reuse after that window remains outside this bounded deduplication contract.

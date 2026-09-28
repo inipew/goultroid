@@ -132,12 +132,30 @@ func (r *SQLiteRepository) AcceptClaim(ctx context.Context, key, token string, e
 	return rows == 1, nil
 }
 
+func (r *SQLiteRepository) ReserveClaim(ctx context.Context, key, token string, expiresAt time.Time) (bool, error) {
+	r.claimMu.Lock()
+	defer r.claimMu.Unlock()
+	result, err := r.db.ExecContext(ctx, `
+		UPDATE idempotency_keys
+		SET status = 'reserved', expires_at_ms = ?
+		WHERE key = ? AND status = 'processing' AND claim_token = ?;
+	`, expiresAt.UnixMilli(), key, token)
+	if err != nil {
+		return false, fmt.Errorf("reserve idempotency claim: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return rows == 1, nil
+}
+
 func (r *SQLiteRepository) ReleaseClaim(ctx context.Context, key, token string) (bool, error) {
 	r.claimMu.Lock()
 	defer r.claimMu.Unlock()
 	result, err := r.db.ExecContext(ctx, `
 		DELETE FROM idempotency_keys
-		WHERE key = ? AND status = 'processing' AND claim_token = ?;
+		WHERE key = ? AND status IN ('processing', 'reserved') AND claim_token = ?;
 	`, key, token)
 	if err != nil {
 		return false, fmt.Errorf("release idempotency claim: %w", err)

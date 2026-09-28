@@ -21,6 +21,7 @@ type claimStatus uint8
 const (
 	claimStatusAccepted claimStatus = iota
 	claimStatusProcessing
+	claimStatusReserved
 )
 
 // ClaimLifecycleRepository extends durable idempotency with a two-phase claim.
@@ -30,6 +31,13 @@ type ClaimLifecycleRepository interface {
 	BeginClaim(context.Context, string, string, time.Time, time.Time) (bool, error)
 	AcceptClaim(context.Context, string, string, time.Time) (bool, error)
 	ReleaseClaim(context.Context, string, string) (bool, error)
+}
+
+// ClaimReservationRepository persists an execution fence before submitting
+// work. A reserved claim may be released only by its generation owner when
+// admission is known to have failed.
+type ClaimReservationRepository interface {
+	ReserveClaim(context.Context, string, string, time.Time) (bool, error)
 }
 
 // ExecutionClaim represents ownership of one processing idempotency claim.
@@ -145,6 +153,51 @@ func (c *ExecutionClaim) Accept(ctx context.Context, ttl time.Duration) error {
 	return nil
 }
 
+// Reserve persists the duplicate-suppression fence before execution admission.
+// A failed reservation must never be followed by task submission.
+func (c *ExecutionClaim) Reserve(ctx context.Context, ttl time.Duration) error {
+	if c == nil || c.manager == nil {
+		return nil
+	}
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done {
+		return ErrClaimNotOwned
+	}
+	m := c.manager
+	expiresAt := time.Now().UTC().Add(ttl)
+	if m.repo != nil {
+		repo, ok := m.repo.(ClaimReservationRepository)
+		if !ok {
+			return ErrClaimLifecycleUnsupported
+		}
+		reserved, err := repo.ReserveClaim(ctx, c.key, c.token, expiresAt)
+		if err != nil {
+			return err
+		}
+		if !reserved {
+			return ErrClaimNotOwned
+		}
+		m.signalCleanup()
+		return nil
+	}
+	m.mu.Lock()
+	current, exists := m.entries[c.key]
+	if !exists || current.status != claimStatusProcessing || current.token != c.token {
+		m.mu.Unlock()
+		return ErrClaimNotOwned
+	}
+	current.status = claimStatusReserved
+	current.expiresAt = expiresAt
+	m.entries[c.key] = current
+	m.mu.Unlock()
+	m.signalCleanup()
+	return nil
+}
+
 // Release removes a processing claim only while this handle still owns it.
 // Accepted claims are never removed by Release.
 func (c *ExecutionClaim) Release(ctx context.Context) error {
@@ -178,7 +231,7 @@ func (c *ExecutionClaim) Release(ctx context.Context) error {
 
 	m.mu.Lock()
 	current, exists := m.entries[c.key]
-	if !exists || current.status != claimStatusProcessing || current.token != c.token {
+	if !exists || (current.status != claimStatusProcessing && current.status != claimStatusReserved) || current.token != c.token {
 		m.mu.Unlock()
 		return ErrClaimNotOwned
 	}

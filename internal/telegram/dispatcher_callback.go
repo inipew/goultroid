@@ -236,6 +236,13 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 			return nil
 		}
 	}
+	if err := d.reserveCallbackClaim(ctx, callbackClaim); err != nil {
+		d.logger.Error("callback reservation failed before task admission", zap.String("key", callbackClaim.key), zap.Error(err))
+		if svc := d.getCallbackAnswerer(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
+		}
+		return nil
+	}
 	inputPeer := d.callbackInputPeer(ctx, update.Peer, e)
 	evt := canonicalCallbackQueryEvent(update, inputPeer, time.Now())
 
@@ -250,22 +257,7 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 			d.releaseCallbackClaim(ctx, callbackClaim)
 			return nil
 		}
-		if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
-			d.logger.Error("callback idempotency accept failed after task admission",
-				zap.String("key", callbackClaim.key),
-				zap.Int64("query_id", update.QueryID),
-				zap.Error(err),
-			)
-		}
 		return nil
-	}
-
-	if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
-		d.logger.Error("callback idempotency accept failed for unknown callback",
-			zap.String("key", callbackClaim.key),
-			zap.Int64("query_id", update.QueryID),
-			zap.Error(err),
-		)
 	}
 	d.answerUnknownCallback(ctx, evt)
 	return nil
@@ -301,6 +293,13 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 			return nil
 		}
 	}
+	if err := d.reserveCallbackClaim(ctx, callbackClaim); err != nil {
+		d.logger.Error("inline callback reservation failed before task admission", zap.String("key", callbackClaim.key), zap.Error(err))
+		if svc := d.getCallbackAnswerer(); svc != nil {
+			_ = svc.AnswerCallbackQuery(ctx, update.QueryID, "Interaction service temporarily unavailable.", true)
+		}
+		return nil
+	}
 	evt := canonicalInlineCallbackQueryEvent(update, time.Now())
 
 	bus := d.getEventBus()
@@ -314,22 +313,7 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 			d.releaseCallbackClaim(ctx, callbackClaim)
 			return nil
 		}
-		if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
-			d.logger.Error("inline callback idempotency accept failed after task admission",
-				zap.String("key", callbackClaim.key),
-				zap.Int64("query_id", update.QueryID),
-				zap.Error(err),
-			)
-		}
 		return nil
-	}
-
-	if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
-		d.logger.Error("inline callback idempotency accept failed for unknown callback",
-			zap.String("key", callbackClaim.key),
-			zap.Int64("query_id", update.QueryID),
-			zap.Error(err),
-		)
 	}
 	d.answerUnknownCallback(ctx, evt)
 	return nil

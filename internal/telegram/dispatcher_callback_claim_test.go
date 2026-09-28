@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sync/atomic"
 	"testing"
@@ -11,7 +12,78 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/idempotency"
 	"go.uber.org/zap"
+	_ "modernc.org/sqlite"
 )
+
+type failingCallbackReservationRepository struct {
+	*idempotency.SQLiteRepository
+}
+
+func (r failingCallbackReservationRepository) ReserveClaim(context.Context, string, string, time.Time) (bool, error) {
+	return false, errors.New("reservation store unavailable")
+}
+
+type failingCallbackAcceptRepository struct {
+	*idempotency.SQLiteRepository
+	acceptCalls atomic.Int32
+}
+
+func (r *failingCallbackAcceptRepository) AcceptClaim(context.Context, string, string, time.Time) (bool, error) {
+	r.acceptCalls.Add(1)
+	return false, errors.New("accept store unavailable")
+}
+
+func TestDispatcherCallbackAdmissionDoesNotNeedPostAdmissionAccept(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo := &failingCallbackAcceptRepository{SQLiteRepository: idempotency.NewSQLiteRepository(db)}
+	if err := repo.InitSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	native := &callbackNativeStub{handled: true}
+	update := &tg.UpdateBotCallbackQuery{QueryID: 3002, UserID: 50, Peer: &tg.PeerChat{ChatID: 10}, MsgID: 20, Data: []byte("a2:test:valid.1")}
+	for i := 0; i < 2; i++ {
+		d, _, _ := newCallbackClaimDispatcher(native)
+		d.SetIdempotency(idempotency.NewManager(time.Minute, repo))
+		if err := d.OnBotCallbackQuery(context.Background(), tg.Entities{}, update); err != nil {
+			t.Fatalf("callback attempt %d: %v", i+1, err)
+		}
+	}
+	if got := native.calls.Load(); got != 1 {
+		t.Fatalf("callback calls across dispatcher restart=%d, want 1", got)
+	}
+	if got := repo.acceptCalls.Load(); got != 0 {
+		t.Fatalf("post-admission AcceptClaim calls=%d, want 0", got)
+	}
+}
+
+func TestDispatcherCallbackReservationFailurePreventsTaskAdmission(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo := failingCallbackReservationRepository{idempotency.NewSQLiteRepository(db)}
+	if err := repo.InitSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	native := &callbackNativeStub{handled: true}
+	d, _, svc := newCallbackClaimDispatcher(native)
+	d.SetIdempotency(idempotency.NewManager(time.Minute, repo))
+	update := &tg.UpdateBotCallbackQuery{QueryID: 3001, UserID: 50, Peer: &tg.PeerChat{ChatID: 10}, MsgID: 20, Data: []byte("a2:test:valid.1")}
+	if err := d.OnBotCallbackQuery(context.Background(), tg.Entities{}, update); err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	if got := native.calls.Load(); got != 0 {
+		t.Fatalf("reservation failure admitted callback: calls=%d", got)
+	}
+	if got := svc.callCount.Load(); got != 1 {
+		t.Fatalf("reservation failure ACK calls=%d, want 1", got)
+	}
+}
 
 type callbackNativeStub struct {
 	handled bool

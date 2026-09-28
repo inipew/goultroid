@@ -65,6 +65,44 @@ func TestSQLiteExecutionClaimLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteExecutionClaimReservationSurvivesManagerRestartAndCanBeReleased(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo := NewSQLiteRepository(db)
+	ctx := context.Background()
+	if err := repo.InitSchema(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first := NewManager(time.Hour, repo)
+	claim, fresh, err := first.Begin(ctx, "cb:reserved", time.Minute)
+	if err != nil || !fresh {
+		t.Fatalf("begin: fresh=%v err=%v", fresh, err)
+	}
+	if err := claim.Reserve(ctx, time.Minute); err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	var status, token string
+	if err := db.QueryRowContext(ctx, `SELECT status, claim_token FROM idempotency_keys WHERE key = ?`, "cb:reserved").Scan(&status, &token); err != nil {
+		t.Fatal(err)
+	}
+	if status != "reserved" || token == "" {
+		t.Fatalf("reserved row status=%q token=%q", status, token)
+	}
+	second := NewManager(time.Hour, repo)
+	if duplicate, fresh, err := second.Begin(ctx, "cb:reserved", time.Minute); err != nil || fresh || duplicate != nil {
+		t.Fatalf("restart duplicate: claim=%v fresh=%v err=%v", duplicate, fresh, err)
+	}
+	if err := claim.Release(ctx); err != nil {
+		t.Fatalf("release before admission: %v", err)
+	}
+	if retry, fresh, err := second.Begin(ctx, "cb:reserved", time.Minute); err != nil || !fresh || retry == nil {
+		t.Fatalf("retry after release: claim=%v fresh=%v err=%v", retry, fresh, err)
+	}
+}
+
 func TestSQLiteExecutionClaimReleaseIsGenerationFenced(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
