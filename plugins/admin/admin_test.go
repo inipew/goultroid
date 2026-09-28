@@ -5,11 +5,18 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/services/localization"
 )
+
+type adminTestDelayedActions struct{}
+
+func (adminTestDelayedActions) Schedule(context.Context, time.Duration, int64, func(context.Context) error) error {
+	return nil
+}
 
 type mockService struct {
 	core.MockTelegramServicer
@@ -92,7 +99,8 @@ func newAdminTestContext(svc *mockService) *core.Context {
 		Perms:    core.NewPermissions(1001, []int64{2002}),
 		Svc:      svc,
 		PeerID:   &tg.InputPeerChannel{ChannelID: 123456},
-		Resolver: &core.MockPeerResolver{UserID: 5555, UserPeer: &tg.InputPeerUser{UserID: 5555, AccessHash: 12345}},
+		Resolver:       &core.MockPeerResolver{UserID: 5555, UserPeer: &tg.InputPeerUser{UserID: 5555, AccessHash: 12345}},
+		DelayedActions: adminTestDelayedActions{},
 	}
 }
 

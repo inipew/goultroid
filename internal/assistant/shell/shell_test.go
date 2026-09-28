@@ -24,10 +24,7 @@ func TestFeatureSpecAndViews(t *testing.T) {
 	for _, screenID := range []string{
 		InteractionHome,
 		InteractionStatus,
-		InteractionHelp,
-		InteractionHelpModule,
-		InteractionHelpCommand,
-		InteractionSettings,
+ 		InteractionSettings,
 		InteractionLanguage,
 		InteractionSettingsCategory,
 		InteractionSettingDetail,
@@ -37,6 +34,12 @@ func TestFeatureSpecAndViews(t *testing.T) {
 		interaction, ok := findInteraction(spec, feature.InteractionScreen, screenID)
 		if !ok || !interaction.Surfaces.Supports(execution.SourceAssistant) || !interaction.Policy.PrivateOnly {
 			t.Fatalf("screen %q = %+v, ok=%v", screenID, interaction, ok)
+		}
+	}
+	for _, screenID := range []string{InteractionHelp, InteractionHelpModule, InteractionHelpCommand} {
+		interaction, ok := findInteraction(spec, feature.InteractionScreen, screenID)
+		if !ok || !interaction.Surfaces.Supports(execution.SourceAssistant) || !interaction.Surfaces.Supports(execution.SourceInline) || interaction.Policy.Permission != core.PermissionEveryone || interaction.Policy.PrivateOnly {
+			t.Fatalf("public help screen %q = %+v, ok=%v", screenID, interaction, ok)
 		}
 	}
 
@@ -78,7 +81,7 @@ func TestHelpViewUsesDeterministicCanonicalDirectGrid(t *testing.T) {
 	}
 	for _, actionID := range append(HelpModuleSlotActionIDs(), HelpCommandSlotActionIDs()...) {
 		interaction, ok := findInteraction(NewFeature().FeatureSpec(), feature.InteractionAction, actionID)
-		if !ok || !interaction.Policy.PrivateOnly {
+		if !ok || interaction.Policy.Permission != core.PermissionEveryone || interaction.Policy.PrivateOnly {
 			t.Fatalf("help slot interaction %q = %+v, ok=%v", actionID, interaction, ok)
 		}
 	}
@@ -112,7 +115,7 @@ func TestSettingsViewsUseDeterministicCanonicalDirectGrid(t *testing.T) {
 	if err := category.Validate(); err != nil {
 		t.Fatalf("SettingsCategoryView() invalid: %v", err)
 	}
-	if len(category.Rows) != 2 || len(category.Rows[0]) != 2 ||
+	if len(category.Rows) != 3 || len(category.Rows[0]) != 2 ||
 		category.Rows[0][0].Text != "Command Prefix" ||
 		category.Rows[0][1].Text != "Language" ||
 		category.Rows[0][0].ActionID != settingSlotActions[0] ||

@@ -98,28 +98,14 @@ func TestP2BResolveLocaleUsesCanonicalSettingsHierarchy(t *testing.T) {
 		t.Fatalf("default locale=%q, want %q", got, LocaleEnglish)
 	}
 
-	if err := repo.SetSetting(ctx, &settings.SettingItem{
-		ScopeType: string(settings.ScopeUser),
-		ScopeID:   11,
-		Namespace: LocaleSettingNamespace,
-		Key:       LocaleSettingKey,
-		ValueType: "enum",
-		Value:     LocaleIndonesian,
-	}); err != nil {
+	if err := service.Set(ctx, settings.ScopeUser, 11, LocaleSettingNamespace, LocaleSettingKey, LocaleIndonesian, 11); err != nil {
 		t.Fatal(err)
 	}
 	if got := ResolveLocale(ctx, service, 11, 22); got != LocaleIndonesian {
 		t.Fatalf("user locale=%q, want %q", got, LocaleIndonesian)
 	}
 
-	if err := repo.SetSetting(ctx, &settings.SettingItem{
-		ScopeType: string(settings.ScopeChat),
-		ScopeID:   22,
-		Namespace: LocaleSettingNamespace,
-		Key:       LocaleSettingKey,
-		ValueType: "enum",
-		Value:     LocaleEnglish,
-	}); err != nil {
+	if err := service.Set(ctx, settings.ScopeChat, 22, LocaleSettingNamespace, LocaleSettingKey, LocaleEnglish, 11); err != nil {
 		t.Fatal(err)
 	}
 	if got := ResolveLocale(ctx, service, 11, 22); got != LocaleEnglish {
