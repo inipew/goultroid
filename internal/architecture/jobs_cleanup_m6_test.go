@@ -42,7 +42,11 @@ func TestM6JobsCompatibilitySurfaceIsGone(t *testing.T) {
 				if spec.Name != nil {
 					alias = spec.Name.Name
 				}
-				if alias != "." && alias != "_" {
+				if alias == "." {
+					t.Errorf("dot import of internal/jobs bypasses compatibility fencing in %s", filepath.ToSlash(path))
+					continue
+				}
+				if alias != "_" {
 					jobsAliases[alias] = struct{}{}
 				}
 			}
