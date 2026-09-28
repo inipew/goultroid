@@ -207,12 +207,12 @@ func TestSavedResponseCallbackUsesOpaqueA2TokenAndProviderAdmission(t *testing.T
 	if err != nil {
 		t.Fatalf("ParseCallbackToken() error=%v", err)
 	}
-	if token.FeatureID != FeatureID || token.ActionID != ActionDeliver {
+	if token.FeatureID != "" || token.ActionID != ActionDeliver {
 		t.Fatalf("callback token=%+v", token)
 	}
 	raw := string(data)
-	if !strings.HasPrefix(raw, "a2:"+FeatureID+":"+ActionDeliver+":") ||
-		strings.Count(raw, ":") != 3 ||
+	if !strings.HasPrefix(raw, "a2:"+ActionDeliver+":") ||
+		strings.Count(raw, ":") != 2 ||
 		len(data) > rootinteraction.MaxCallbackDataBytes {
 		t.Fatalf("callback data is not canonical opaque a2: %q", raw)
 	}

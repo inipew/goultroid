@@ -77,9 +77,9 @@ func TestArchitecture_SettingsLayerIsolation(t *testing.T) {
 	}
 }
 
-// TestArchitecture_CallbackLayerIsolation ensures internal/services/callback never imports plugins or telegram client.
+// TestArchitecture_CallbackLayerIsolation ensures the canonical interaction layer never imports plugins or telegram client.
 func TestArchitecture_CallbackLayerIsolation(t *testing.T) {
-	callbackDir := "../services/callback"
+	callbackDir := "../interaction"
 	fset := token.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, callbackDir, func(fi os.FileInfo) bool {
 		return !strings.HasSuffix(fi.Name(), "_test.go")
@@ -172,7 +172,7 @@ func TestArchitecture_UILayerIsolation(t *testing.T) {
 
 // TestArchitecture_DomainNoTGImport ensures domain-adjacent layers never import raw tg.* (bug13 #40).
 func TestArchitecture_DomainNoTGImport(t *testing.T) {
-	dirs := []string{"../settings", "../services/callback"}
+	dirs := []string{"../settings", "../interaction"}
 	for _, dir := range dirs {
 		fset := token.NewFileSet()
 		pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
@@ -186,13 +186,7 @@ func TestArchitecture_DomainNoTGImport(t *testing.T) {
 				for _, imp := range file.Imports {
 					path := strings.Trim(imp.Path.Value, `"`)
 					if strings.Contains(path, "github.com/gotd/td/tg") {
-						// callback/types.go legitimately needs tg for CallbackContext.Edit.
-						// Forbid in settings and callback non-types files.
-						base := filepath.Base(fileName)
-						if base == "types.go" {
-							continue
-						}
-						t.Errorf("Architecture violation: %s in %s imports tg directly", base, dir)
+						t.Errorf("Architecture violation: %s in %s imports tg directly", filepath.Base(fileName), dir)
 					}
 				}
 			}

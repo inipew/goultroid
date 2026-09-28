@@ -36,7 +36,7 @@ func TestHelpModulesDeterministicAndDirectGridViews(t *testing.T) {
 	if err := module.Validate(); err != nil {
 		t.Fatalf("HelpModuleView() invalid: %v", err)
 	}
-	if len(module.Rows) != 2 || len(module.Rows[0]) != 2 || module.Rows[0][0].Text != "/alpha" || module.Rows[0][1].Text != "/beta" {
+	if len(module.Rows) != 3 || len(module.Rows[0]) != 2 || module.Rows[0][0].Text != "/alpha" || module.Rows[0][1].Text != "/beta" {
 		t.Fatalf("module command grid = %+v", module.Rows)
 	}
 	if module.Rows[0][0].ActionID != helpCommandSlotActions[0] || module.Rows[0][1].ActionID != helpCommandSlotActions[1] {

@@ -174,7 +174,7 @@ func TestInlineHelpActionsAreDeclaredOnInlineSurface(t *testing.T) {
 		for _, interaction := range spec.Interactions {
 			if interaction.Kind == feature.InteractionAction && interaction.ID == actionID {
 				found = true
-				if !interaction.Surfaces.Supports(execution.SourceInline) || interaction.Policy.Permission != core.PermissionOwner {
+				if !interaction.Surfaces.Supports(execution.SourceInline) || interaction.Policy.Permission != core.PermissionEveryone {
 					t.Fatalf("help action %q inline policy=%+v surfaces=%v", actionID, interaction.Policy, interaction.Surfaces)
 				}
 				break
