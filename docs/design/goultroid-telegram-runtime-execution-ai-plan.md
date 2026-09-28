@@ -135,6 +135,20 @@ Implemented source behavior:
 
 New boundary tests cover exact interval slots, between-slot advancement, 30-day downtime, saturated time arithmetic, fractional recurring interval rejection, and ambiguous publish compensation retaining the wrapper.
 
+
+Additional E1 restart-recovery hardening:
+
+- `e5e87ecebf1f73adc3a808b4c3660602e4d5a0b6` — `fix(scheduler): recover interrupted schedule registration`
+  - startup recovery identifies only disabled revision-1 `sched:scheduled:` rows, treating them as never-published registration state;
+  - wrapper-owned registrations are cleaned without deleting caller-owned `ActionJob` target definitions;
+  - higher-revision disabled schedules are excluded so ambiguous-publish compensation/cancel/quarantine state is not mistaken for never-published registration.
+- `3ea27d2504d80ee17b0b16009dee05252972a0c6` — `fix(scheduler): retain failed recovery marker`
+  - wrapper-cleanup failure retains the prepared schedule as a durable retry marker instead of removing the only restart evidence.
+- `60bf2db64fea8b4261f329233b590b01e9e6995a` — `fix(scheduler): drain prepared recovery batches`
+  - startup recovery now drains successive bounded batches instead of stopping after the first 256 candidates;
+  - each query remains capped at 256 and the whole recovery call remains bounded by the existing 10-second context;
+  - a regression covers 300 prepared `ActionJob` registrations and verifies the shared target definition survives cleanup.
+
 ### E2 — R4 delayed-action contract
 
 Contract commit:
@@ -176,55 +190,51 @@ These harnesses distinguish the three execution shapes required by R5 without ch
 
 ### Verification status and environment limit
 
-The source/diff was re-inspected after each pushed change and the newly added E2/E3 Go test files were passed through local `gofmt` before their commits. The first E1 production commit was pushed before a runnable repository checkout was available in this execution environment; therefore this document does **not** claim a successful post-change `gofmt -l`, focused `go test`, `git diff --check`, benchmark execution, race suite, vet, or build for the E1 lineage. The later formatting follow-up aligns the touched registration struct, but fresh executable verification remains mandatory.
+The branch was source-revalidated after the E0-E3 implementation and restart-recovery follow-ups. Go files added or rewritten in the latest recovery follow-up were run through `gofmt` before commit. This execution environment still does not provide a runnable repository checkout: direct GitHub clone from the shell cannot resolve `github.com`. Therefore this plan does **not** claim fresh focused-test, benchmark, race, vet, build, or `git diff --check` evidence for the current lineage. CI was not inspected.
 
-Do not close this plan until a real checkout runs, at minimum:
+Before closure, run the following from a real checkout of the current `test-next` HEAD:
 
 ```text
-gofmt -w <all Go files changed by E0-E3>
-gofmt -l <all Go files changed by E0-E3>   # must print nothing
+gofmt -w \
+  internal/app/runtime_execution_e2_test.go \
+  internal/app/runtime_execution_e3_r5_test.go \
+  internal/app/scheduled_action.go \
+  internal/jobs/manager.go \
+  internal/jobs/manager_schedule.go \
+  internal/jobs/manager_schedule_recovery.go \
+  internal/jobs/runtime_execution_e1_test.go \
+  internal/jobs/sqlite/runtime_execution_e1_cascade_test.go \
+  internal/jobs/sqlite/schedule_registration.go \
+  internal/jobs/sqlite/schedule_registration_test.go \
+  internal/jobs/sqlite/store.go \
+  internal/scheduler/engine.go \
+  internal/scheduler/registration_recovery.go \
+  internal/scheduler/runtime_execution_e0_test.go \
+  internal/scheduler/runtime_execution_e1_recovery_batch_test.go \
+  internal/scheduler/runtime_execution_e1_recovery_retry_test.go \
+  internal/scheduler/runtime_execution_e1_restart_test.go \
+  internal/scheduler/runtime_execution_e1_test.go \
+  internal/scheduler/runtime_execution_e3_benchmark_test.go \
+  internal/scheduler/runtime_execution_e3_control_test.go
+
+gofmt -l <same Go files>   # must print nothing
 git diff --check
 
 go test ./internal/taskengine ./internal/jobs ./internal/scheduler ./internal/app ./internal/telegram -count=1 -timeout=120s
-go test ./internal/scheduler -run 'TestRuntimeExecutionE0|TestRuntimeExecutionE1' -count=1
+go test ./internal/scheduler -run 'TestRuntimeExecutionE0|TestRuntimeExecutionE1|TestRuntimeExecutionE3' -count=1
 go test ./internal/app -run 'TestRuntimeExecutionE2|TestRuntimeExecutionE3' -count=1
 go test ./internal/jobs/sqlite -run 'TestRuntimeExecutionE1' -count=1
-go test ./internal/scheduler -run 'TestRuntimeExecutionE0|TestRuntimeExecutionE1|TestRuntimeExecutionE3' -count=1
 
-go test ./internal/scheduler -run '^
-go test -race ./... -count=1 -timeout=180s
-go vet ./...
-go build ./cmd/goultroid
-```
-
-Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
- -bench '^BenchmarkRuntimeExecutionE3_ReconcileSettledClaims
-go test -race ./... -count=1 -timeout=180s
-go vet ./...
-go build ./cmd/goultroid
-```
-
-Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
- -benchtime=500ms -count=3
-go test ./internal/app -run '^
-go test -race ./... -count=1 -timeout=180s
-go vet ./...
-go build ./cmd/goultroid
-```
-
-Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
- -bench '^BenchmarkRuntimeExecutionE3_ResourceScheduledCommandContention
-go test -race ./... -count=1 -timeout=180s
-go vet ./...
-go build ./cmd/goultroid
-```
-
-Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
- -benchtime=5x -count=3
+go test ./internal/scheduler -run '^$' -bench '^BenchmarkRuntimeExecutionE3_ReconcileSettledClaims$' -benchtime=500ms -count=3
+go test ./internal/app -run '^$' -bench '^BenchmarkRuntimeExecutionE3_ResourceScheduledCommandContention$' -benchtime=5x -count=3
 
 go test -race ./... -count=1 -timeout=180s
 go vet ./...
 go build ./cmd/goultroid
 ```
 
-Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
+For R5, record scheduler-pool occupancy, child waiting depth, child queue p50/p95, and wrapper-attempt p95 from the contention harness. For R6, record latency plus `scheduled_reads/op` and `occurrence_reads/op` for 1/100/1000 active claims. Do not make a production performance change unless those results demonstrate a material cost.
+
+Persistence compatibility remains intentionally conservative: recurring API inputs are whole-second only because both compatibility and redesigned schedule stores persist seconds; no persisted representation migration is required. R4 remains best effort and non-durable. R2 registration/recovery is a staged cross-store protocol with compensation and restart cleanup, not an atomic transaction.
+
+Any R5/R6 optimization remains measurement-gated. Historical ingress/TaskEngine microbenchmarks and the historical full-race pass are background evidence only; they are not acceptance for this execution-plan lineage.
