@@ -7,6 +7,10 @@ import (
 )
 
 var (
+	_ jobs.DefinitionStore         = (*Store)(nil)
+	_ jobs.OccurrenceStore         = (*Store)(nil)
+	_ jobs.AttemptStore            = (*Store)(nil)
+	_ jobs.RecoveryStore           = (*Store)(nil)
 	_ jobs.ScheduleStore           = (*Store)(nil)
 	_ jobs.OutboxStore             = (*Store)(nil)
 	_ jobs.DeferredDeadlineStore   = (*Store)(nil)
@@ -16,6 +20,10 @@ var (
 	_ jobs.RecoveryCandidateStore  = (*Store)(nil)
 	_ jobs.DefinitionLoaderStore   = (*Store)(nil)
 
+	_ jobs.DefinitionStore         = (*ResourceStore)(nil)
+	_ jobs.OccurrenceStore         = (*ResourceStore)(nil)
+	_ jobs.AttemptStore            = (*ResourceStore)(nil)
+	_ jobs.RecoveryStore           = (*ResourceStore)(nil)
 	_ jobs.ScheduleStore           = (*ResourceStore)(nil)
 	_ jobs.OutboxStore             = (*ResourceStore)(nil)
 	_ jobs.DeferredDeadlineStore   = (*ResourceStore)(nil)
