@@ -21,9 +21,16 @@ import (
 	"github.com/inipew/goultroid/internal/ui"
 )
 
-var ErrInteractionUnavailable = errors.New("assistant/client: interaction engine unavailable")
+var (
+	ErrInteractionUnavailable = errors.New("assistant/client: interaction engine unavailable")
+	ErrInteractionBusy        = errors.New("assistant/client: interaction already in progress")
+)
 
-const maxInteractionCallbackFlights = 4096
+const (
+	maxInteractionCallbackFlights   = 4096
+	interactionCallbackAnswerTimeout = 5 * time.Second
+	interactionBusyUserMessage       = "⏳ Another action is still running. Please try again."
+)
 
 type callbackAcknowledger interface {
 	ensureAnswered(context.Context, int64, error)
@@ -101,10 +108,15 @@ func (v *interactionIngress) dispatchCallback(
 	}
 	flightKey := fmt.Sprintf("%s:actor:%d", orderingKey, request.ActorID)
 	if !v.acquireCallbackFlight(flightKey) {
-		v.ack.ensureAnswered(ctx, request.QueryID, nil)
+		v.ack.ensureAnswered(ctx, request.QueryID, core.WithUserMessage(ErrInteractionBusy, interactionBusyUserMessage))
 		return nil
 	}
-	defer v.releaseCallbackFlight(flightKey)
+	releaseFlight := true
+	defer func() {
+		if releaseFlight {
+			v.releaseCallbackFlight(flightKey)
+		}
+	}()
 
 	if v.limiter != nil && !v.limiter.Allow(request.ActorID, "interaction") {
 		v.ack.ensureAnswered(ctx, request.QueryID, nil)
@@ -145,7 +157,7 @@ func (v *interactionIngress) dispatchCallback(
 	}
 
 	doneCh := make(chan error, 1)
-	ticket, submitErr := v.tasks.Submit(ctx, tasks.WorkSpec{
+	_, submitErr := v.tasks.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            prepared.Scope(),
 		QuotaOwner:       tasks.OwnerID(fmt.Sprintf("telegram:user:%d", request.ActorID)),
@@ -160,6 +172,17 @@ func (v *interactionIngress) dispatchCallback(
 			doneCh <- dispatchErr
 			return dispatchErr
 		},
+		OnComplete: func(result tasks.TaskResult) {
+			completionErr := callbackTaskResultError(result)
+			select {
+			case dispatchErr := <-doneCh:
+				if dispatchErr != nil || completionErr == nil {
+					completionErr = dispatchErr
+				}
+			default:
+			}
+			v.completeCallback(request.QueryID, flightKey, completionErr)
+		},
 	})
 	if submitErr != nil {
 		err = fmt.Errorf("interaction task submission failed: %w", submitErr)
@@ -168,35 +191,33 @@ func (v *interactionIngress) dispatchCallback(
 		v.ack.ensureAnswered(ctx, request.QueryID, err)
 		return err
 	}
+	// TaskEngine owns the action lifetime after admission. Completion releases
+	// the bounded flight and performs the final/fallback acknowledgement.
+	releaseFlight = false
+	return nil
+}
 
-	var ticketDone <-chan struct{}
-	if ticket != nil {
-		ticketDone = ticket.Done()
+func callbackTaskResultError(result tasks.TaskResult) error {
+	if result.IsSuccess() {
+		return nil
 	}
-	select {
-	case err = <-doneCh:
-	case <-ticketDone:
-		select {
-		case err = <-doneCh:
-		default:
-			if ticket != nil {
-				if result, ok := ticket.Result(); ok && !result.IsSuccess() {
-					if result.Failure.Message != "" {
-						err = errors.New(result.Failure.Message)
-					} else {
-						err = fmt.Errorf("interaction task finished with outcome %s (%s)", result.Outcome, result.Cause)
-					}
-				}
-			}
-		}
-	case <-ctx.Done():
-		if ticket != nil {
-			_, _ = v.tasks.Cancel(ticket.TaskID(), tasks.CauseTimeout)
-		}
-		err = ctx.Err()
+	if result.Failure.Message != "" {
+		return errors.New(result.Failure.Message)
 	}
-	v.ack.ensureAnswered(ctx, request.QueryID, err)
-	return err
+	return fmt.Errorf("interaction task finished with outcome %s (%s)", result.Outcome, result.Cause)
+}
+
+func (v *interactionIngress) completeCallback(queryID int64, flightKey string, dispatchErr error) {
+	if v == nil {
+		return
+	}
+	v.releaseCallbackFlight(flightKey)
+	if v.ack == nil || queryID == 0 {
+		return
+	}
+	ackCtx, cancel := context.WithTimeout(context.Background(), interactionCallbackAnswerTimeout)
+	defer cancel()
+	v.ack.ensureAnswered(ackCtx, queryID, dispatchErr)
 }
 
 func (v *interactionIngress) tryText(ctx context.Context, text string, userID, chatID int64, peer tg.InputPeerClass) (bool, error) {

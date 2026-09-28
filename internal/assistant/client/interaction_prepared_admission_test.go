@@ -80,6 +80,9 @@ func (c *preparedCallbackTasks) Submit(ctx context.Context, spec tasks.WorkSpec)
 		result.Outcome = tasks.OutcomeFailed
 		result.Failure.Message = err.Error()
 	}
+	if spec.OnComplete != nil {
+		spec.OnComplete(result)
+	}
 	done := make(chan struct{})
 	close(done)
 	return &preparedCallbackTicket{id: spec.ID, result: result, done: done}, nil
@@ -227,21 +230,31 @@ func TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine(t *testing
 }
 
 type blockingPreparedCallbackTasks struct {
-	mu      sync.Mutex
-	calls   int
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	mu           sync.Mutex
+	calls        int
+	started      chan struct{}
+	release      chan struct{}
+	completed    chan struct{}
+	startOnce    sync.Once
+	completeOnce sync.Once
 }
 
-func (c *blockingPreparedCallbackTasks) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+func (c *blockingPreparedCallbackTasks) Submit(_ context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
 	c.mu.Lock()
 	c.calls++
 	c.mu.Unlock()
 	go func() {
-		c.once.Do(func() { close(c.started) })
+		c.startOnce.Do(func() { close(c.started) })
 		<-c.release
-		_ = spec.Handler(ctx)
+		result := tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted}
+		if err := spec.Handler(context.Background()); err != nil {
+			result.Outcome = tasks.OutcomeFailed
+			result.Failure.Message = err.Error()
+		}
+		if spec.OnComplete != nil {
+			spec.OnComplete(result)
+		}
+		c.completeOnce.Do(func() { close(c.completed) })
 	}()
 	return nil, nil
 }
@@ -261,20 +274,28 @@ func (c *blockingPreparedCallbackTasks) Calls() int {
 }
 
 type concurrentPreparedCallbackAck struct {
-	mu    sync.Mutex
-	calls int
+	mu               sync.Mutex
+	calls            int
+	busy             int
+	cancelledContext int
 }
 
-func (a *concurrentPreparedCallbackAck) ensureAnswered(context.Context, int64, error) {
-	a.mu.Lock()
-	a.calls++
-	a.mu.Unlock()
-}
-
-func (a *concurrentPreparedCallbackAck) Calls() int {
+func (a *concurrentPreparedCallbackAck) ensureAnswered(ctx context.Context, _ int64, err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.calls
+	a.calls++
+	if ctx.Err() != nil {
+		a.cancelledContext++
+	}
+	if message, ok := core.ExplicitUserMessage(err); ok && message == interactionBusyUserMessage {
+		a.busy++
+	}
+}
+
+func (a *concurrentPreparedCallbackAck) snapshot() (calls, busy, cancelledContext int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls, a.busy, a.cancelledContext
 }
 
 func TestInteractionIngressSingleFlightCoalescesSameActorMessageBeforeTaskEngine(t *testing.T) {
@@ -335,8 +356,9 @@ func TestInteractionIngressSingleFlightCoalescesSameActorMessageBeforeTaskEngine
 	}
 
 	taskClient := &blockingPreparedCallbackTasks{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+		started:   make(chan struct{}),
+		release:   make(chan struct{}),
+		completed: make(chan struct{}),
 	}
 	ack := &concurrentPreparedCallbackAck{}
 	ingress := &interactionIngress{engine: engine, ack: ack, tasks: taskClient}
@@ -353,16 +375,27 @@ func TestInteractionIngressSingleFlightCoalescesSameActorMessageBeforeTaskEngine
 		}
 	}
 
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
 	firstDone := make(chan error, 1)
 	go func() {
 		firstDone <- ingress.dispatchCallback(
-			context.Background(),
+			firstCtx,
 			request(9101),
 			tasks.TaskID("single-flight:first"),
 			"callback:msg:42:77",
 		)
 	}()
 	<-taskClient.started
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first callback admission error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first callback ingress remained blocked after TaskEngine admission")
+	}
+	cancelFirst()
 
 	const duplicateBurst = 128
 	var duplicateWG sync.WaitGroup
@@ -390,15 +423,28 @@ func TestInteractionIngressSingleFlightCoalescesSameActorMessageBeforeTaskEngine
 	if got := taskClient.Calls(); got != 1 {
 		t.Fatalf("coalesced callback submissions=%d, want 1", got)
 	}
-	if got := ack.Calls(); got != duplicateBurst {
-		t.Fatalf("coalesced callback acknowledgements=%d, want %d before release", got, duplicateBurst)
+	calls, busy, cancelledContext := ack.snapshot()
+	if calls != duplicateBurst || busy != duplicateBurst {
+		t.Fatalf("coalesced callback acknowledgements calls/busy=%d/%d, want %d/%d", calls, busy, duplicateBurst, duplicateBurst)
+	}
+	if cancelledContext != 0 {
+		t.Fatalf("coalesced callback acknowledgements used cancelled contexts=%d, want 0", cancelledContext)
 	}
 
 	close(taskClient.release)
-	if err := <-firstDone; err != nil {
-		t.Fatalf("first callback error=%v", err)
+	select {
+	case <-taskClient.completed:
+	case <-time.After(time.Second):
+		t.Fatal("callback completion did not drain")
 	}
-	if got := ack.Calls(); got != duplicateBurst+1 {
-		t.Fatalf("total callback acknowledgements=%d, want %d", got, duplicateBurst+1)
+	calls, busy, cancelledContext = ack.snapshot()
+	if calls != duplicateBurst+1 {
+		t.Fatalf("total callback acknowledgements=%d, want %d", calls, duplicateBurst+1)
+	}
+	if busy != duplicateBurst {
+		t.Fatalf("busy callback acknowledgements=%d, want %d", busy, duplicateBurst)
+	}
+	if cancelledContext != 0 {
+		t.Fatalf("completion acknowledgement reused cancelled update context")
 	}
 }
