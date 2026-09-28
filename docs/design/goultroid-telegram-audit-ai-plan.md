@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Audit — AI Session Plan
 
-Status: **OPEN — audit documented; implementation and acceptance pending**
+Status: **IMPLEMENTED — T1–T4 source changes are present; fresh local acceptance and benchmark execution pending**
 
 Audit baseline:
 
@@ -8,7 +8,14 @@ Audit baseline:
 - Baseline HEAD: `5ab5a1196c0aaa1d1a57eb68dbd25898086b740c`
 - Baseline commit: `docs(maint): close boundary refactor milestones`
 - Audit date: 28 September 2026
-- Evidence: source inspection and targeted package tests; no production trace, CPU profile, load test, or full race-suite result.
+- Evidence: original source inspection and targeted package-test baseline plus implementation source review.
+- Implementation lineage:
+  - `295b26a6b7e8166ad7b28e5335b5ae975c88ba22` — `fix(telegram): make command identity peer safe`
+  - `7efb886816d050263b4f4f254e2d6dfd6515eddc` — `fix(telegram): make callback claims admission safe`
+  - `f7b295bb4366330af0b2d6a692cf58c0edd8f251` — `fix(assistant): classify callbacks before peer resolution`
+  - `ec41a80a329e1d5a56a3b8de78632c57a6094ad4` — `test(telegram): define callback observation ownership`
+- Current implementation HEAD before this document update: `ec41a80a329e1d5a56a3b8de78632c57a6094ad4`.
+- No production trace, CPU/heap profile, fresh benchmark result, full race-suite result, or CI result is claimed by this implementation session.
 
 This document hands the Telegram audit to a later AI session. Its goal is to make callback ownership, command identity, and failure handling reliable while preserving Goultroid's existing runtime boundaries. Findings below distinguish observed behavior from risks that need a reproducer or measurement.
 
@@ -90,7 +97,15 @@ Do not attribute these failures to a specific implementation change without a re
 
 ### T0 — Freeze baseline and diagnose existing failures
 
-Status: **PENDING**
+Status: **SOURCE BASELINE REFRESHED — fresh local execution still pending**
+
+Implementation-session findings:
+
+- refreshed `test-next` from `64735688...` before T1 and refreshed HEAD again before each later phase;
+- source inspection confirmed all four audit findings were still present before their corresponding changes;
+- no unrelated production Telegram redesign had landed between the original audit baseline and T1;
+- the session environment did not provide a runnable repository checkout, and shell network access could not materialize one, so the targeted command from Section 3 was not re-executed here;
+- the historical failures in Section 3 therefore remain baseline evidence, not fresh acceptance evidence.
 
 - Re-run the exact targeted command in Section 3 and preserve failing test names and output.
 - Trace why the dispatcher behavior matrix stops after decision handlers. Test the decision result, message decision flags, and TaskEngine wait/admission path before proposing a fix. Classify each assistant failure separately.
@@ -100,7 +115,16 @@ Status: **PENDING**
 
 ### T1 — Make command identity peer-safe
 
-Status: **PENDING**
+Status: **IMPLEMENTED at `295b26a6b7e8166ad7b28e5335b5ae975c88ba22`; fresh local test execution pending**
+
+Implemented:
+
+- introduced one canonical typed Telegram message identity: `user:<id>:<msg>`, `chat:<id>:<msg>`, or `channel:<id>:<msg>`;
+- durable command keys now use `msg:<typed-identity>`;
+- TaskEngine command IDs now use `cmd:<typed-identity>`;
+- command correlation/ordering IDs now use the same typed identity;
+- added rollout compatibility: old `msg:<numericChatID>:<messageID>` claims are read as a temporary replay fence but are no longer written;
+- added focused regressions for namespace separation, same-numeric-ID chat/channel admission, and legacy-claim rollout behavior.
 
 - Add a regression with two commands whose peer kinds differ but whose numeric peer IDs and message IDs match. Verify both can reach distinct durable claims and task admissions.
 - Use a canonical typed key across durable claim, TaskEngine ID, and correlation. Review any consumers of event metadata or correlation strings before changing their format.
@@ -110,7 +134,18 @@ Status: **PENDING**
 
 ### T2 — Make userbot callback admission retry-safe
 
-Status: **PENDING**
+Status: **IMPLEMENTED at `7efb886816d050263b4f4f254e2d6dfd6515eddc`; fresh local test execution pending**
+
+Implemented:
+
+- replaced callback `CheckAndSet` ownership with the existing two-phase `idempotency.ExecutionClaim`;
+- callback query IDs are provisional before native a2 admission;
+- pre-admission native failures release the generation-owned claim through a bounded detached context;
+- successful native admission accepts the claim and keeps at-most-once action semantics;
+- unknown/noop callbacks accept the claim before the dispatcher-owned terminal answer;
+- duplicate callback queries receive a silent terminal ACK instead of returning with the Telegram spinner potentially active;
+- message and inline callback paths share the same lifecycle;
+- added focused regressions for release/retry, accepted duplicate suppression, and duplicate ACK behavior.
 
 - Cover message and inline callback failures before task acceptance, including invalid target, stale action, unavailable TaskEngine, and rejected admission. Assert the acknowledgement behavior and query-claim state for each.
 - Establish a single transition from provisional claim to accepted work, with release on pre-acceptance failure. Keep accepted work deduplicated and preserve immediate ACK behavior.
@@ -120,7 +155,17 @@ Status: **PENDING**
 
 ### T3 — Order assistant callback work by need
 
-Status: **PENDING**
+Status: **IMPLEMENTED at `f7b295bb4366330af0b2d6a692cf58c0edd8f251`; fresh local test execution pending**
+
+Implemented:
+
+- Assistant message callback namespace classification now precedes peer resolution;
+- a2 query-ID dedupe now precedes peer resolution;
+- interaction-ingress availability is checked before resolver work;
+- unknown/noop callbacks perform no peer resolution;
+- duplicate a2 callbacks perform no peer resolution;
+- fresh a2 message callbacks still resolve the peer before target-bound interaction ingress;
+- added instrumented-resolver regressions proving the expected 0/1 resolver-call behavior.
 
 - Add focused tests proving unknown/noop and duplicate callbacks do not invoke the peer resolver, and that a2 message callbacks still receive the required target.
 - Move classification and dedupe ahead of resolution while keeping shutdown handling, inline callbacks, target binding, and authorization unchanged.
@@ -130,7 +175,24 @@ Status: **PENDING**
 
 ### T4 — Define callback event ownership and measure ingress
 
-Status: **PENDING**
+Status: **CONTRACT + REGRESSION/BENCHMARK HARNESS IMPLEMENTED at `ec41a80a329e1d5a56a3b8de78632c57a6094ad4`; benchmark execution pending**
+
+Contract decision:
+
+- `EventTypeCallbackQuery` is **observation-only**;
+- EventBus subscribers do not own Telegram callback namespaces and cannot determine the synchronous ACK result;
+- native a2 remains the answer owner for claimed a2 callbacks;
+- dispatcher fallback remains the answer owner for unknown/noop callbacks;
+- asynchronous EventBus publication remains independent of ACK ownership.
+
+Implemented evidence:
+
+- one-answer regressions with an active callback subscriber for message/inline unknown and noop callbacks;
+- one-answer regressions proving an active callback subscriber does not steal a2 answer ownership for message or inline targets;
+- bounded benchmark harnesses for callback ingress with an active observation subscriber and synchronous decision ingress;
+- benchmark harness reports `p50-ns`, `p95-ns`, and `p99-ns` in addition to normal Go benchmark metrics.
+
+No numerical latency improvement is claimed until those benchmarks are run on a real local checkout.
 
 - Choose and document an explicit EventBus callback contract. If callback subscribers are observational, fence them from answering through the dispatcher-owned acknowledgement path. If claiming is required, use a synchronous ownership decision before fallback answering.
 - Test one-answer behavior for known a2, unknown, noop, and subscriber-present callbacks on message and inline origins.
@@ -145,3 +207,31 @@ Status: **PENDING**
 - Confirm no new unbounded cache, queue, timer, or goroutine was introduced, and that callbacks and commands still drain correctly during shutdown.
 - Record configuration, persistence-key compatibility, user-visible callback text, and any migration effect in the pull request.
 - Do not mark this handoff closed until targeted behavior and the relevant acceptance gates are demonstrated by fresh test output.
+- Required fresh local acceptance for this implementation lineage:
+  ```text
+  gofmt -w internal/telegram/dispatcher_dispatch.go \
+    internal/telegram/dispatcher_command_claim_test.go \
+    internal/telegram/dispatcher_identity_test.go \
+    internal/telegram/dispatcher_callback.go \
+    internal/telegram/dispatcher_callback_claim.go \
+    internal/telegram/dispatcher_callback_claim_test.go \
+    internal/assistant/client/updates.go \
+    internal/assistant/client/updates_callback_order_test.go \
+    internal/telegram/dispatcher_callback_observation_test.go \
+    internal/telegram/dispatcher_latency_benchmark_test.go
+
+  gofmt -l <same files>   # must print nothing
+
+  go test ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/...
+  go test ./internal/telegram -run 'TestTelegramMessageIdentity|TestDispatcherCommandIdentity|TestDispatcher.*CallbackClaim|TestDispatcherAcceptedCallbackClaim|TestDispatcherCallbackEventBus' -count=1
+  go test ./internal/assistant/client -run 'TestAssistant.*Callback.*Resolver' -count=1
+
+  go test ./internal/telegram -run '^
+ -bench 'BenchmarkDispatcher(CallbackIngressObservation|DecisionIngressNoop)
+ -benchmem -count=3
+
+  go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1
+  go vet ./...
+  go build ./cmd/goultroid
+  ```
+- Record the benchmark p50/p95/p99 values and classify any failing tests against the Section 3 baseline before changing the top-level status to `CLOSED`.
