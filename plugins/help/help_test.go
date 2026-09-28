@@ -386,11 +386,11 @@ func TestHelpUserbotSendStageFailureDoesNotEmitNativeDuplicate(t *testing.T) {
 
 func userbotHelpContext(svc *mockService, args ...string) *core.Context {
 	return &core.Context{
-		Ctx:     context.Background(),
-		Source:  core.ExecutionInteractive,
-		Args:    args,
-		Message: &core.Message{ID: 77, IsOutgoing: true},
-		Svc:     svc,
+		Ctx:       context.Background(),
+		Source:    core.ExecutionInteractive,
+		Args:      args,
+		Message:   &core.Message{ID: 77, IsOutgoing: true},
+		Svc:       svc,
 		PeerID:    &tg.InputPeerChat{ChatID: 123},
 		Localizer: localization.New(localization.LocaleEnglish),
 	}

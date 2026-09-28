@@ -291,7 +291,7 @@ type Context struct {
 	// LastResponseID tracks the ID of the bot's most recent reply in this context
 	LastResponseID int
 
-	Telegram       TelegramCapabilities
+	Telegram TelegramCapabilities
 	// Svc is a compatibility-only aggregate for direct Context construction.
 	// Production wiring should populate Telegram with capability-sized ports.
 	Svc            CommandTelegramServicer

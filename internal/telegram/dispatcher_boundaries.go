@@ -81,9 +81,9 @@ type peerAwareBotOriginTracker interface {
 }
 
 var (
-	_ DispatcherService         = (*Service)(nil)
-	_ callbackQueryAnswerer     = (*Service)(nil)
-	_ botOriginTracker          = (*Service)(nil)
-	_ peerAwareBotOriginTracker = (*Service)(nil)
+	_ DispatcherService                = (*Service)(nil)
+	_ callbackQueryAnswerer            = (*Service)(nil)
+	_ botOriginTracker                 = (*Service)(nil)
+	_ peerAwareBotOriginTracker        = (*Service)(nil)
 	_ presentationselfinline.Transport = (*Service)(nil)
 )

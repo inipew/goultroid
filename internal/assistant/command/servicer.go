@@ -69,12 +69,12 @@ type assistantServicerAdapter struct {
 }
 
 var (
-	_ core.MessageActionServicer      = (*assistantServicerAdapter)(nil)
-	_ core.AdminServicer              = (*assistantServicerAdapter)(nil)
-	_ core.MediaSendServicer          = (*assistantServicerAdapter)(nil)
-	_ core.FullChatServicer           = (*assistantServicerAdapter)(nil)
-	_ core.ContextualMessageServicer  = (*assistantServicerAdapter)(nil)
-	_ core.ContextualMediaServicer    = (*assistantServicerAdapter)(nil)
+	_ core.MessageActionServicer     = (*assistantServicerAdapter)(nil)
+	_ core.AdminServicer             = (*assistantServicerAdapter)(nil)
+	_ core.MediaSendServicer         = (*assistantServicerAdapter)(nil)
+	_ core.FullChatServicer          = (*assistantServicerAdapter)(nil)
+	_ core.ContextualMessageServicer = (*assistantServicerAdapter)(nil)
+	_ core.ContextualMediaServicer   = (*assistantServicerAdapter)(nil)
 )
 
 func (a *assistantServicerAdapter) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {

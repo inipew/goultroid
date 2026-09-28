@@ -370,4 +370,3 @@ func TestControllerOwnerWeightChangeRefreshesActiveQuantum(t *testing.T) {
 		t.Fatalf("post-update owners = %s, %s; want heavy then light", second.Spec.QuotaOwner, third.Spec.QuotaOwner)
 	}
 }
-

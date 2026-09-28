@@ -27,7 +27,7 @@ var (
 )
 
 const (
-	maxInteractionCallbackFlights   = 4096
+	maxInteractionCallbackFlights    = 4096
 	interactionCallbackAnswerTimeout = 5 * time.Second
 	interactionBusyUserMessage       = "⏳ Another action is still running. Please try again."
 )

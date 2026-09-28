@@ -308,4 +308,3 @@ func NewEngine(cfg Config) *Engine {
 		configErr:           configErr,
 	}
 }
-

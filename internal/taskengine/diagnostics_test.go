@@ -246,4 +246,3 @@ func TestRuntimeStatsExposeLifecycleState(t *testing.T) {
 		t.Fatalf("quiesced lifecycle stats = %+v, want not accepting and quiesced", stats)
 	}
 }
-

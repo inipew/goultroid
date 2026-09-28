@@ -211,7 +211,7 @@ func TestCommandResourceTaskEngineGate_AllBuiltinCommands(t *testing.T) {
 		service: func() core.TelegramCapabilities {
 			return core.TelegramCapabilitiesFrom(tgSvc)
 		},
-		tasks:    client,
+		tasks: client,
 	}
 
 	for commandIndex, cmd := range resourceCommands {
@@ -391,7 +391,7 @@ func TestCommandResourceTaskEngineGate_HandlerRunsStrictlyInsideTaskEngine(t *te
 		service: func() core.TelegramCapabilities {
 			return core.TelegramCapabilitiesFrom(tgSvc)
 		},
-		tasks:    client,
+		tasks: client,
 	}
 
 	// 1. Userbot: client intercepts and does not run Handler

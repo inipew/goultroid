@@ -89,6 +89,7 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
+
 // Cancel cancels an execution attempt by ID.
 func (e *Engine) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceipt, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), e.decisionTimeoutOrDefault())

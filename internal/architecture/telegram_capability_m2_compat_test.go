@@ -155,7 +155,6 @@ func TestM2AssistantCommandTransportDoesNotEmbedTelegramMock(t *testing.T) {
 	}
 }
 
-
 func TestM2AssistantCommandTransportAdvertisesOnlySupportedCapabilities(t *testing.T) {
 	root := repositoryRoot(t)
 	path := filepath.Join(root, "internal", "assistant", "command", "servicer.go")

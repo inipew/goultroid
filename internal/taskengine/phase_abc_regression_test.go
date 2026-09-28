@@ -209,4 +209,3 @@ func TestWorkerStartedRequiresExactPermitAndEpoch(t *testing.T) {
 		t.Fatalf("stale epoch promoted task: state=%s started=%v", rec.state, rec.startedAt)
 	}
 }
-
