@@ -96,6 +96,68 @@ func TestPeerCache_NegativeCaching(t *testing.T) {
 	}
 }
 
+func TestPeerCache_ExpireReinsertDoesNotLetStaleOrderEvictNewGeneration(t *testing.T) {
+	clock := NewFakeClock(time.Now())
+	cache := NewPeerCache(ResolverCacheConfig{
+		MaxEntries:  2,
+		PositiveTTL: time.Minute,
+		Clock:       clock,
+	})
+
+	cache.Set("user", "alice", "user", 1, 100)
+	cache.Set("user", "bob", "user", 2, 200)
+	clock.Advance(2 * time.Minute)
+	if _, hit := cache.Get("user", "alice"); hit {
+		t.Fatal("expected alice to expire")
+	}
+
+	cache.Set("user", "alice", "user", 1, 101)
+	cache.Set("user", "charlie", "user", 3, 300)
+
+	alice, hit := cache.Get("user", "alice")
+	if !hit || alice.AccessHash != 101 {
+		t.Fatalf("new alice generation was evicted by stale ordering metadata: hit=%v entry=%+v", hit, alice)
+	}
+	if _, hit := cache.Get("user", "bob"); hit {
+		t.Fatal("expected older bob entry to be evicted")
+	}
+}
+
+func TestPeerCache_InvalidateReinsertDoesNotLetStaleOrderEvictNewGeneration(t *testing.T) {
+	cache := NewPeerCache(ResolverCacheConfig{MaxEntries: 2})
+	cache.Set("user", "alice", "user", 1, 100)
+	cache.Set("user", "bob", "user", 2, 200)
+	cache.Invalidate("user", "alice")
+
+	cache.Set("user", "alice", "user", 1, 101)
+	cache.Set("user", "charlie", "user", 3, 300)
+
+	alice, hit := cache.Get("user", "alice")
+	if !hit || alice.AccessHash != 101 {
+		t.Fatalf("new alice generation was evicted by invalidation tombstone: hit=%v entry=%+v", hit, alice)
+	}
+	if _, hit := cache.Get("user", "bob"); hit {
+		t.Fatal("expected older bob entry to be evicted")
+	}
+}
+
+func TestPeerCache_ChurnKeepsOneOrderingNodePerLiveEntry(t *testing.T) {
+	cache := NewPeerCache(ResolverCacheConfig{MaxEntries: 3})
+	for i := 0; i < 1000; i++ {
+		cache.Set("user", "alice", "user", int64(i+1), int64(i+100))
+		cache.Invalidate("user", "alice")
+	}
+
+	cache.mu.RLock()
+	entries := len(cache.entries)
+	ordered := cache.order.Len()
+	indexed := len(cache.orderIndex)
+	cache.mu.RUnlock()
+	if entries != 0 || ordered != 0 || indexed != 0 {
+		t.Fatalf("churn retained entries/order/index=%d/%d/%d, want 0/0/0", entries, ordered, indexed)
+	}
+}
+
 func TestResolver_MemoryHit_ZeroStorageAndRPC(t *testing.T) {
 	resolver := NewResolver(nil, nil)
 	resolver.cache.Set("user", "alice", "user", 12345, 99999)
@@ -292,32 +354,19 @@ func TestResolver_Len(t *testing.T) {
 	}
 }
 
-func TestPeerCache_TombstoneCompaction(t *testing.T) {
+func TestPeerCache_InvalidateRemovesOrderingMetadata(t *testing.T) {
 	cache := NewPeerCache(ResolverCacheConfig{MaxEntries: 2})
-
-	// Set 2 entries
 	cache.Set("user", "1", "user", 1, 100)
 	cache.Set("user", "2", "user", 2, 200)
-
-	// Invalidate both entries (leaves tombstones in order slice)
 	cache.Invalidate("user", "1")
-	cache.Invalidate("user", "2")
-
-	// Now add new entries to trigger compaction (len(order) > 2 * MaxEntries)
-	cache.Set("user", "3", "user", 3, 300)
-	cache.Set("user", "4", "user", 4, 400)
-	cache.Set("user", "5", "user", 5, 500)
 
 	cache.mu.RLock()
-	orderLen := len(cache.order)
-	cacheLen := len(cache.entries)
+	entries := len(cache.entries)
+	ordered := cache.order.Len()
+	indexed := len(cache.orderIndex)
 	cache.mu.RUnlock()
-
-	if cacheLen > 2 {
-		t.Fatalf("expected entries bounded to MaxEntries (2), got %d", cacheLen)
-	}
-	if orderLen > 2*cache.cfg.MaxEntries {
-		t.Fatalf("expected order slice bounded by compaction, got %d", orderLen)
+	if entries != 1 || ordered != 1 || indexed != 1 {
+		t.Fatalf("invalidation retained entries/order/index=%d/%d/%d, want 1/1/1", entries, ordered, indexed)
 	}
 }
 
@@ -326,8 +375,11 @@ func TestPeerCache_IdleStorageIsLazy(t *testing.T) {
 	if cache.entries != nil {
 		t.Fatalf("idle cache eagerly allocated entries map with len=%d", len(cache.entries))
 	}
-	if cache.order != nil {
-		t.Fatalf("idle cache eagerly allocated order slice with len=%d cap=%d", len(cache.order), cap(cache.order))
+	if cache.order.Len() != 0 {
+		t.Fatalf("idle cache order len=%d, want 0", cache.order.Len())
+	}
+	if cache.orderIndex != nil {
+		t.Fatalf("idle cache eagerly allocated order index with len=%d", len(cache.orderIndex))
 	}
 	if cache.Len() != 0 {
 		t.Fatalf("idle cache len=%d, want 0", cache.Len())
@@ -343,7 +395,7 @@ func TestPeerCache_IdleStorageIsLazy(t *testing.T) {
 	if got := cache.Len(); got != 1 {
 		t.Fatalf("cache len=%d after first write, want 1", got)
 	}
-	if cap(cache.order) >= cache.cfg.MaxEntries {
-		t.Fatalf("first write preallocated full order capacity: cap=%d max=%d", cap(cache.order), cache.cfg.MaxEntries)
+	if cache.order.Len() != 1 || len(cache.orderIndex) != 1 {
+		t.Fatalf("first write order/index=%d/%d, want 1/1", cache.order.Len(), len(cache.orderIndex))
 	}
 }

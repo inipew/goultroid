@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"container/list"
 	"strings"
 	"sync"
 	"time"
@@ -44,11 +45,12 @@ var DefaultResolverCacheConfig = defaultResolverCacheConfig()
 
 // PeerCache is a bounded, concurrency-safe in-memory cache for resolved Telegram peers.
 type PeerCache struct {
-	mu      sync.RWMutex
-	cfg     ResolverCacheConfig
-	entries map[peerCacheKey]peerCacheEntry
-	order   []peerCacheKey
-	clock   Clock
+	mu         sync.RWMutex
+	cfg        ResolverCacheConfig
+	entries    map[peerCacheKey]peerCacheEntry
+	order      list.List
+	orderIndex map[peerCacheKey]*list.Element
+	clock      Clock
 }
 
 // NewPeerCache initializes a bounded peer cache.
@@ -101,7 +103,7 @@ func (c *PeerCache) Get(kind, ref string) (peerCacheEntry, bool) {
 	if now.After(entry.ExpiresAt) {
 		c.mu.Lock()
 		if current, exists := c.entries[key]; exists && now.After(current.ExpiresAt) {
-			delete(c.entries, key)
+			c.deleteUnderLock(key)
 		}
 		c.mu.Unlock()
 		return peerCacheEntry{}, false
@@ -154,38 +156,38 @@ func (c *PeerCache) putUnderLock(key peerCacheKey, entry peerCacheEntry) {
 		// fraction of the configured bound and Go's map grows incrementally.
 		c.entries = make(map[peerCacheKey]peerCacheEntry)
 	}
-	if _, exists := c.entries[key]; !exists {
-		// Evict oldest if full
-		if len(c.entries) >= c.cfg.MaxEntries {
-			c.evictOneUnderLock()
-		}
-		c.order = append(c.order, key)
-		if len(c.order) > 2*c.cfg.MaxEntries {
-			c.compactOrderUnderLock()
-		}
+	if _, exists := c.entries[key]; exists {
+		c.entries[key] = entry
+		return
 	}
+	if len(c.entries) >= c.cfg.MaxEntries {
+		c.evictOneUnderLock()
+	}
+	if c.orderIndex == nil {
+		c.orderIndex = make(map[peerCacheKey]*list.Element)
+	}
+	elem := c.order.PushBack(key)
+	c.orderIndex[key] = elem
 	c.entries[key] = entry
 }
 
 func (c *PeerCache) evictOneUnderLock() {
-	for len(c.order) > 0 {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		if _, exists := c.entries[oldest]; exists {
-			delete(c.entries, oldest)
-			return
-		}
+	front := c.order.Front()
+	if front == nil {
+		return
 	}
+	key := front.Value.(peerCacheKey)
+	c.order.Remove(front)
+	delete(c.orderIndex, key)
+	delete(c.entries, key)
 }
 
-func (c *PeerCache) compactOrderUnderLock() {
-	newOrder := make([]peerCacheKey, 0, len(c.entries))
-	for _, k := range c.order {
-		if _, exists := c.entries[k]; exists {
-			newOrder = append(newOrder, k)
-		}
+func (c *PeerCache) deleteUnderLock(key peerCacheKey) {
+	delete(c.entries, key)
+	if elem, ok := c.orderIndex[key]; ok {
+		c.order.Remove(elem)
+		delete(c.orderIndex, key)
 	}
-	c.order = newOrder
 }
 
 // Invalidate removes a cached entry by kind and ref.
@@ -198,7 +200,7 @@ func (c *PeerCache) Invalidate(kind, ref string) {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, key)
+	c.deleteUnderLock(key)
 }
 
 // InvalidateID removes all entries matching a specific ID.
@@ -211,7 +213,7 @@ func (c *PeerCache) InvalidateID(id int64) {
 
 	for k, v := range c.entries {
 		if v.ID == id {
-			delete(c.entries, k)
+			c.deleteUnderLock(k)
 		}
 	}
 }
