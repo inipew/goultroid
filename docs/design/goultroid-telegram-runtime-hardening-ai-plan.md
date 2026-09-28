@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — overlap with the closed Telegram audit reconciled at `17e1af27b740ffc588e50c889e4c1884f805d8dc`; T1 and later non-overlap hardening pending**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T6-T11 remain pending**
 
 Audit authority:
 
@@ -423,6 +423,8 @@ The userbot path already has the correct design through a managed uploader clien
 
 ### P1-F — Assistant callback ingress waits synchronously for TaskEngine completion
 
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `e4e9e193bad196d224a89fdc0dbec3335a9aee16`.
+
 Affected source:
 
 - `internal/assistant/client/interaction_ingress.go`
@@ -461,6 +463,8 @@ TaskEngine should remain the action lifetime owner after successful admission.
 ---
 
 ### P1-G — Final Assistant fallback ACK can reuse an already-cancelled update context
+
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — folded into `e4e9e193bad196d224a89fdc0dbec3335a9aee16`.
 
 Affected source:
 
@@ -616,6 +620,8 @@ Unknown and duplicate callbacks can therefore perform unnecessary resolver work 
 ---
 
 ### P2-C — Assistant callback flight gate can silently drop a second valid click
+
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `e4e9e193bad196d224a89fdc0dbec3335a9aee16`; bounded flight gate retained with explicit busy feedback.
 
 Affected source:
 
@@ -948,7 +954,7 @@ Tests:
 
 ### T5 — Align Assistant callback lifecycle with native ownership
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING**
 
 This phase combines P1-F, P1-G, P2-B, and P2-C where possible.
 
@@ -960,34 +966,35 @@ Message callback ingress now performs namespace classification and a2 query-ID d
 
 #### T5-B — TaskEngine owns action lifetime after admission
 
-Remove synchronous wait from the update ingress after successful submission.
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `e4e9e193bad196d224a89fdc0dbec3335a9aee16`.
 
-Use TaskEngine completion callback/ticket completion ownership already available; do not add another goroutine pool.
+Assistant callback ingress now returns immediately after successful TaskEngine submission. The existing `WorkSpec.OnComplete` hook owns completion; no callback worker, goroutine pool, or second execution authority was added. The prepared action still executes inside TaskEngine with the existing scope, ordering key, resources, queue deadline, and execution timeout.
 
 #### T5-C — bounded detached final ACK
 
-Final/fallback ACK should use a short runtime-owned context after the original update context is gone.
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `e4e9e193bad196d224a89fdc0dbec3335a9aee16`.
+
+Completion releases the bounded per-target flight and invokes final/fallback acknowledgement with a five-second `context.Background()` timeout. The original update context is therefore no longer the completion ACK lifetime owner.
 
 #### T5-D — decide callback flight semantics
 
-Audit feature behavior and tests:
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `e4e9e193bad196d224a89fdc0dbec3335a9aee16`.
 
-- if flight suppression is unnecessary, remove it and rely on TaskEngine ordering + revisions;
-- if required, retain it but return explicit busy/stale feedback rather than silently dropping a different query.
+The bounded flight gate is retained because it prevents concurrent same-target action admission without creating retained work. A second click while the target/actor flight is active is no longer silently acknowledged: it receives the explicit user-safe message `⏳ Another action is still running. Please try again.`. Capacity exhaustion follows the same deterministic busy response.
 
-Tests:
+Regression updates in `interaction_prepared_admission_test.go` now require:
 
-- immediate ACK action;
-- handler-owned ACK action;
-- completion error;
-- original ctx cancellation;
-- duplicate query;
-- rapid distinct clicks;
-- inline target;
-- message target;
-- shutdown/quiesce.
+- ingress returns after TaskEngine admission while the action is still blocked;
+- rapid same-target callbacks are not admitted a second time and receive explicit busy feedback;
+- completion drains after task release;
+- cancelling the original update context after admission does not make the completion acknowledgement observe a cancelled context;
+- the synchronous TaskEngine fake invokes `OnComplete` so existing prepared-action admission coverage follows production completion ownership.
 
-**Gate:** Assistant callback update handler does not own action duration; zero unnecessary resolver calls; final ACK remains attempted under bounded context; no silent valid-click loss.
+Existing resolver-order regressions continue to cover T5-A. Existing integration/ACK-policy tests remain part of the required focused acceptance for message/inline and handler-owned acknowledgement semantics.
+
+Fresh focused execution is not claimed from this session: shell network access cannot materialize the repository checkout, so the available local Go 1.23.2 environment cannot run this Go 1.27.0 module. The committed diff was inspected directly through the repository API. CI was not inspected.
+
+**Gate status:** T5 source behavior and regressions are implemented; executed focused/race acceptance remains pending in a valid checkout/toolchain environment.
 
 ---
 
