@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented with executed acceptance pending; T4 and T9 ownership/inventory are reconciled; T10-T11 plus executed acceptance remain pending**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented; T4 and T9 reconciled; T10 acceptance harness implemented at `435c51081abf44c2ffa97234863493bfd56819ee` but executable acceptance/benchmark evidence remains pending; T11 must not start before T10 executes cleanly**
 
 Audit authority:
 
@@ -1113,52 +1113,1554 @@ Therefore:
 
 ### T10 — Performance/resource acceptance
 
+Status: **HARNESS IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `435c51081abf44c2ffa97234863493bfd56819ee` (`test(telegram): add T10 resource acceptance`).
+
+T10 remains an acceptance phase, not another architecture phase. The new harness composes the hardening-specific retained-state/performance checks with the already-existing P5/P8-H/P8-I lifecycle and resource acceptance instead of building a second runtime.
+
+#### T10-A — hardening-specific bounded-state acceptance
+
+`internal/telegram/runtime_hardening_t10_test.go` adds `TestT10TelegramBoundedStateHighCardinalityAcceptance`.
+
+The deterministic workload now drives:
+
+- bot-origin tracking through `100 * botSentCapacity` distinct sends and requires both the map and ordering list to remain exactly at the hard cap;
+- resolver `PeerCache` through positive, negative, invalidate, and reinsert churn at `100 * MaxEntries`, requiring `entries <= MaxEntries` and exactly one ordering/index node per live entry;
+- hierarchical RPC limiter bucket pressure to its configured hard cap and verifies one additional live identity fails closed rather than evicting rate state;
+- FloodWait penalty pressure far beyond `MaxPenalties`, requiring retained explicit penalties to stay bounded while overflow remains represented by the existing conservative account-wide cooldown;
+- process goroutine/heap samples before and after the deterministic retained-state workload for descriptive evidence. No new percentage/latency pass threshold is invented from those samples.
+
+This complements, rather than replaces, the existing P8-I process-settling harness which already measures baseline/peak/settled goroutines, heap, RSS, TaskEngine workers/resources, interaction state, inline cache, and managed resource snapshots.
+
+#### T10-B — hardening-specific benchmarks
+
+The same commit adds:
+
+- `BenchmarkT10BotOriginSteadyStateBurst` — measures steady-state high-cardinality bot-origin insertion once the hard cap is full and reports retained entries/order nodes;
+- `BenchmarkT10PeerCacheBoundedChurn` — measures 256-entry and 4096-entry cache churn with invalidate/reinsert pressure while asserting ordering metadata remains exact;
+- `BenchmarkT10AssistantCallbackIngressAdmission` — measures Assistant a2 callback prepare -> immediate ACK policy -> TaskEngine admission -> completion ownership with p50/p95/p99 ingress samples and exactly one TaskEngine admission per logical callback.
+
+The Assistant benchmark deliberately uses a synthetic TaskEngine client whose completion callback fires immediately. Its numbers are **isolated ingress/admission measurements**, not Telegram network ACK latency and not production end-to-end action latency.
+
+Existing benchmarks remain part of T10 evidence:
+
+- `BenchmarkDispatcherCallbackIngressObservation`;
+- `BenchmarkDispatcherDecisionIngressNoop`;
+- `BenchmarkHierarchicalRPCLimiterCardinality`;
+- `BenchmarkRPCExecutorSamePeerFloodWaitOccupancy`.
+
+The previously recorded callback/decision benchmark numbers remain historical isolated measurements only; T10 must record fresh results from the closing HEAD rather than treating those values as pass thresholds.
+
+#### T10-C — correctness/lifecycle composition matrix
+
+T10 executable acceptance must include the existing focused regressions that prove the hard invariants behind the measurements:
+
+- transport: `TestSendMessageSinglePhysicalAttemptOnTransportError`, `TestSendMessageMalformedHTMLFallsBackBeforeTransport`, `TestService_NonIdempotentMutationNoRetryOnTransient`;
+- bot-origin: `TestService_BotSentTrackingHardBounded`, `TestService_BotSentTrackingRefreshDoesNotGrowOrder`, `TestService_BotSentTrackingTTL`;
+- resolver cache: bounded eviction, expire/invalidate/reinsert generation safety, negative churn, exact ordering metadata, and lazy idle storage tests in `resolver_cache_test.go`;
+- callback lane: `TestAnswerCallbackQueryUsesCallbackLimiterFamily`;
+- userbot callback durable lifecycle/ownership: the callback claim and observation-only suites;
+- Assistant callback lifecycle: `TestInteractionIngressCarriesPreparedActionAdmissionToTaskEngine` and `TestInteractionIngressSingleFlightCoalescesSameActorMessageBeforeTaskEngine`;
+- physical Assistant upload accounting: `TestManagedUploadRPCClientAccountsEveryPhysicalPart` and retry-authority fence coverage;
+- decision failure policy: both `dispatcher_decision_failure_policy_test.go` matrix tests;
+- presentation revision atomicity: both `compiler_revision_test.go` tests;
+- a2 navigation/input/callback burst/reload/shutdown: `TestP5FinalAssistantUXLifecycleAcceptance`;
+- cross-surface generation unload/reload: `TestP8HCrossSurfaceUnloadReloadGenerationAcceptance`;
+- combined idle/high-load/process settling: `TestP8ICombinedResourceIdleHighLoadAcceptance`;
+- Telegram shutdown ingress/drain: `TestDispatcherDrainClosesIngressBeforeWaiting`.
+
+The P5 acceptance already exercises rapid Assistant callback navigation, 512 callback queries with exactly-one acknowledgement, input arm/take/cancel, stale revision fencing, plugin disable while scoped TaskEngine work is active, generation reload, worker retirement, manager shutdown, TaskEngine stop, and zero remaining interaction sessions/inputs/state bytes.
+
+#### T10-D — required local execution
+
+On a valid checkout with the repository-required Go toolchain, execute at least:
+
+```bash
+gofmt -w \
+  internal/telegram/runtime_hardening_t10_test.go \
+  internal/assistant/client/interaction_latency_benchmark_test.go
+
+git diff --check
+
+go test ./internal/telegram ./internal/assistant/client ./internal/assistant/interaction ./internal/presentation ./internal/interaction -count=1 -timeout=120s
+
+go test -race ./internal/telegram ./internal/assistant/client ./internal/assistant/interaction ./internal/presentation ./internal/interaction -count=1 -timeout=180s
+
+go test ./internal/assistant/client -run '^TestP5FinalAssistantUXLifecycleAcceptance
+
+---
+
+### T11 — Final cleanup and closure
+
 Status: **PENDING**
 
-After correctness phases are complete, run representative local acceptance. Do not use this phase to introduce new architecture.
+Only after T1–T10 acceptance:
 
-Workload should include:
+- remove dead helper/fallback paths made unreachable by the fixes;
+- update comments that still describe obsolete retry/fallback behavior;
+- update architecture fences where a stable invariant now exists;
+- re-scan for raw Telegram bypasses in the affected paths;
+- verify no duplicate executor/task/callback/cache authority was introduced;
+- update this document with exact closing HEADs and test/benchmark evidence.
 
-- ordinary non-command messages;
-- command bursts;
-- mixed decision/event handlers;
-- callback burst on userbot;
-- callback burst on Assistant;
-- rapid callback navigation;
-- a2 input session arm/take/cancel;
-- inline message edit;
-- self-inline query/send;
-- large media upload with many physical parts;
-- resolver high-cardinality/churn;
-- bot-origin high-cardinality send burst;
-- plugin reload during queued callback;
-- Assistant quiesce/stop;
-- Telegram shutdown/drain.
+Do not use final cleanup to start a new redesign.
 
-Measure/record where available:
+---
 
-- callback ACK latency;
-- dispatcher ingress latency;
-- resolver network call count;
-- TaskEngine queue/wait/execution outcomes;
-- RPC limiter buckets/penalties;
-- physical upload RPC count;
-- interaction session count/state bytes;
-- resolver cache entries + ordering metadata;
-- bot-origin tracking count;
-- goroutine count before/peak/settled;
-- heap/RSS before/peak/settled.
+## 8. Suggested commit sequence
 
-Do not invent target percentages without baseline measurements.
+Keep commits phase-scoped and reviewable. Suggested messages:
 
-Hard acceptance invariants:
+1. `docs(telegram): consolidate architecture and performance audit plan`
+2. `fix(telegram): make text sends single-attempt`
+3. `fix(telegram): bound bot origin tracking`
+4. `fix(telegram): make resolver cache eviction generation safe`
+5. `fix(telegram): isolate callback acknowledgement limiter lane`
+6. `fix(telegram): make callback claims admission safe`
+7. `refactor(assistant): detach callback completion from ingress`
+8. `fix(assistant): manage physical upload RPC parts`
+9. `fix(telegram): honor decision handler failure policy`
+10. `fix(presentation): compile one interaction revision`
+11. `fix(telegram): use typed command identity`
+12. `refactor(telegram): define callback event ownership`
+13. `test(telegram): add resource and lifecycle acceptance`
+14. `docs(telegram): close runtime audit plan`
+
+Exact grouping may change if two fixes share one minimal invariant. Do not combine unrelated P1 defects into a giant commit merely to reduce commit count.
+
+For every Go-changing commit:
+
+1. refresh/inspect the intended diff;
+2. run `gofmt` on all changed Go files;
+3. run focused tests;
+4. inspect `git diff --check`;
+5. commit;
+6. push;
+7. do **not** inspect CI unless the user asks.
+
+---
+
+## 9. Test and benchmark matrix
+
+The next session should prefer focused tests before expensive broad runs.
+
+### Transport correctness
+
+- text HTML success;
+- malformed HTML local fallback;
+- ambiguous send error = one physical send;
+- contextual reply/topic semantics unchanged;
+- markup send unchanged.
+
+### Callback correctness
+
+- userbot message callback;
+- userbot inline callback;
+- Assistant message callback;
+- Assistant inline callback;
+- stale revision;
+- stale feature generation;
+- copied target mismatch;
+- unknown callback;
+- duplicate query;
+- immediate ACK;
+- handler-owned ACK;
+- TaskEngine rejection;
+- shutdown/quiesce.
+
+### Cache/resource correctness
+
+- bot-origin cap;
+- bot-origin TTL;
+- resolver cap;
+- resolver same-key reinsertion;
+- negative cache churn;
+- Assistant peer cache cap remains unchanged;
+- interaction state cap remains unchanged.
+
+### RPC/media correctness
+
+- callback family = callback;
+- global/method limiter still active;
+- upload part and big-file-part individually pass through shared executor;
+- non-idempotent media final send remains one attempt unless durable random-ID semantics apply.
+
+### Dispatcher policy
+
+- fail-open handler + handler error;
+- fail-open handler + TaskEngine infrastructure error;
+- fail-closed handler + handler error;
+- fail-closed handler + TaskEngine infrastructure error;
+- shared decision deadline;
+- event lane remains asynchronous/TaskEngine-owned.
+
+### Presentation
+
+- all action buttons use one revision;
+- callback length <= Telegram 64-byte cap;
+- URL/switch-inline unchanged;
+- serializer remains single canonical Telegram keyboard encoder.
+
+---
+
+## 10. Non-goals
+
+Do not use this plan to:
+
+- redesign TaskEngine scheduling/fairness;
+- replace the Telegram client library;
+- replace a2 with a third callback protocol;
+- merge userbot and Assistant Telegram clients into one account/session;
+- create a second presentation runtime;
+- create another cache framework for the whole repository;
+- change downloader/provider architecture except where the Telegram media boundary itself requires the shared executor;
+- rewrite every command UI;
+- remove all compatibility APIs without caller evidence;
+- optimize unrelated Jobs/Scheduler/DB code;
+- fix unrelated baseline test failures unless they directly block a phase and are proven relevant.
+
+---
+
+## 11. Risks to watch
+
+### Ambiguous send risk
+
+Any fallback after a non-idempotent Telegram mutation must distinguish local preflight failure from remote ambiguous outcome. Never convert an arbitrary transport error into a second send.
+
+### Callback duplicate risk
+
+Releasing a callback claim too late can duplicate actions; never release after successful TaskEngine admission.
+
+### ACK latency risk
+
+ACK should be prioritized but still managed by the shared executor. Do not bypass global safety limits for latency.
+
+### Cache generation risk
+
+A capacity structure that keeps stale ordering metadata must not be considered bounded merely because its primary map has a cap.
+
+### Assistant raw API risk
+
+A raw Telegram client may be used as a low-level transport dependency only when every physical operation still crosses the intended managed boundary. Do not treat one wrapper around a multi-RPC library call as per-RPC management.
+
+### Policy semantics risk
+
+Fail-open/fail-closed is a business/security contract. It should not change depending on whether failure occurred in plugin code or scheduler infrastructure.
+
+### Compiler concurrency risk
+
+TaskEngine ordering reduces concurrent state changes but detached transitions exist. Presentation output must be internally consistent without relying on timing assumptions.
+
+### Compatibility-removal risk
+
+Broad compatibility types may still support tests or external callers. Fence new production usage first; delete only with explicit caller evidence.
+
+---
+
+## 12. Definition of done
+
+This Telegram audit plan is closed only when all of the following are true:
+
+- normal non-idempotent text send cannot issue a second physical send after an ambiguous first attempt;
+- bot-origin tracking has a hard cardinality bound and bounded insertion cost;
+- resolver cache ordering metadata is bounded and generation-safe;
+- userbot and Assistant callback ACKs use the intended callback limiter family;
+- userbot callback durable claim ownership is safe across pre-admission failure;
+- Assistant callback ingress returns after TaskEngine admission rather than waiting for the action lifetime;
+- final Assistant fallback ACK does not depend on an already-cancelled update context;
+- Assistant multipart upload is managed per physical RPC by the same shared executor;
+- decision-handler infrastructure failures obey explicit handler failure policy;
+- command durable/task identity includes Telegram peer kind;
+- one compiled presentation view cannot contain mixed callback revisions;
+- unknown/noop/duplicate Assistant callbacks do not perform unnecessary peer resolution;
+- callback extension answer ownership is explicit;
+- no new production feature depends on a broad compatibility Telegram aggregate;
+- a2 remains the only canonical interactive callback protocol;
+- TaskEngine remains the single finite-work execution authority;
+- RPC executor remains the single Telegram RPC policy authority;
+- all changed retained state is hard bounded;
+- targeted lifecycle/resource/performance acceptance is recorded with fresh evidence;
+- every Go-changing commit was formatted with `gofmt`;
+- CI was not inspected unless explicitly requested by the user.
+
+---
+
+## 13. Recommended next action
+
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
+
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+
+After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
+ -count=1 -timeout=120s
+go test ./internal/plugin -run '^TestP8HCrossSurfaceUnloadReloadGenerationAcceptance
+
+---
+
+### T11 — Final cleanup and closure
+
+Status: **PENDING**
+
+Only after T1–T10 acceptance:
+
+- remove dead helper/fallback paths made unreachable by the fixes;
+- update comments that still describe obsolete retry/fallback behavior;
+- update architecture fences where a stable invariant now exists;
+- re-scan for raw Telegram bypasses in the affected paths;
+- verify no duplicate executor/task/callback/cache authority was introduced;
+- update this document with exact closing HEADs and test/benchmark evidence.
+
+Do not use final cleanup to start a new redesign.
+
+---
+
+## 8. Suggested commit sequence
+
+Keep commits phase-scoped and reviewable. Suggested messages:
+
+1. `docs(telegram): consolidate architecture and performance audit plan`
+2. `fix(telegram): make text sends single-attempt`
+3. `fix(telegram): bound bot origin tracking`
+4. `fix(telegram): make resolver cache eviction generation safe`
+5. `fix(telegram): isolate callback acknowledgement limiter lane`
+6. `fix(telegram): make callback claims admission safe`
+7. `refactor(assistant): detach callback completion from ingress`
+8. `fix(assistant): manage physical upload RPC parts`
+9. `fix(telegram): honor decision handler failure policy`
+10. `fix(presentation): compile one interaction revision`
+11. `fix(telegram): use typed command identity`
+12. `refactor(telegram): define callback event ownership`
+13. `test(telegram): add resource and lifecycle acceptance`
+14. `docs(telegram): close runtime audit plan`
+
+Exact grouping may change if two fixes share one minimal invariant. Do not combine unrelated P1 defects into a giant commit merely to reduce commit count.
+
+For every Go-changing commit:
+
+1. refresh/inspect the intended diff;
+2. run `gofmt` on all changed Go files;
+3. run focused tests;
+4. inspect `git diff --check`;
+5. commit;
+6. push;
+7. do **not** inspect CI unless the user asks.
+
+---
+
+## 9. Test and benchmark matrix
+
+The next session should prefer focused tests before expensive broad runs.
+
+### Transport correctness
+
+- text HTML success;
+- malformed HTML local fallback;
+- ambiguous send error = one physical send;
+- contextual reply/topic semantics unchanged;
+- markup send unchanged.
+
+### Callback correctness
+
+- userbot message callback;
+- userbot inline callback;
+- Assistant message callback;
+- Assistant inline callback;
+- stale revision;
+- stale feature generation;
+- copied target mismatch;
+- unknown callback;
+- duplicate query;
+- immediate ACK;
+- handler-owned ACK;
+- TaskEngine rejection;
+- shutdown/quiesce.
+
+### Cache/resource correctness
+
+- bot-origin cap;
+- bot-origin TTL;
+- resolver cap;
+- resolver same-key reinsertion;
+- negative cache churn;
+- Assistant peer cache cap remains unchanged;
+- interaction state cap remains unchanged.
+
+### RPC/media correctness
+
+- callback family = callback;
+- global/method limiter still active;
+- upload part and big-file-part individually pass through shared executor;
+- non-idempotent media final send remains one attempt unless durable random-ID semantics apply.
+
+### Dispatcher policy
+
+- fail-open handler + handler error;
+- fail-open handler + TaskEngine infrastructure error;
+- fail-closed handler + handler error;
+- fail-closed handler + TaskEngine infrastructure error;
+- shared decision deadline;
+- event lane remains asynchronous/TaskEngine-owned.
+
+### Presentation
+
+- all action buttons use one revision;
+- callback length <= Telegram 64-byte cap;
+- URL/switch-inline unchanged;
+- serializer remains single canonical Telegram keyboard encoder.
+
+---
+
+## 10. Non-goals
+
+Do not use this plan to:
+
+- redesign TaskEngine scheduling/fairness;
+- replace the Telegram client library;
+- replace a2 with a third callback protocol;
+- merge userbot and Assistant Telegram clients into one account/session;
+- create a second presentation runtime;
+- create another cache framework for the whole repository;
+- change downloader/provider architecture except where the Telegram media boundary itself requires the shared executor;
+- rewrite every command UI;
+- remove all compatibility APIs without caller evidence;
+- optimize unrelated Jobs/Scheduler/DB code;
+- fix unrelated baseline test failures unless they directly block a phase and are proven relevant.
+
+---
+
+## 11. Risks to watch
+
+### Ambiguous send risk
+
+Any fallback after a non-idempotent Telegram mutation must distinguish local preflight failure from remote ambiguous outcome. Never convert an arbitrary transport error into a second send.
+
+### Callback duplicate risk
+
+Releasing a callback claim too late can duplicate actions; never release after successful TaskEngine admission.
+
+### ACK latency risk
+
+ACK should be prioritized but still managed by the shared executor. Do not bypass global safety limits for latency.
+
+### Cache generation risk
+
+A capacity structure that keeps stale ordering metadata must not be considered bounded merely because its primary map has a cap.
+
+### Assistant raw API risk
+
+A raw Telegram client may be used as a low-level transport dependency only when every physical operation still crosses the intended managed boundary. Do not treat one wrapper around a multi-RPC library call as per-RPC management.
+
+### Policy semantics risk
+
+Fail-open/fail-closed is a business/security contract. It should not change depending on whether failure occurred in plugin code or scheduler infrastructure.
+
+### Compiler concurrency risk
+
+TaskEngine ordering reduces concurrent state changes but detached transitions exist. Presentation output must be internally consistent without relying on timing assumptions.
+
+### Compatibility-removal risk
+
+Broad compatibility types may still support tests or external callers. Fence new production usage first; delete only with explicit caller evidence.
+
+---
+
+## 12. Definition of done
+
+This Telegram audit plan is closed only when all of the following are true:
+
+- normal non-idempotent text send cannot issue a second physical send after an ambiguous first attempt;
+- bot-origin tracking has a hard cardinality bound and bounded insertion cost;
+- resolver cache ordering metadata is bounded and generation-safe;
+- userbot and Assistant callback ACKs use the intended callback limiter family;
+- userbot callback durable claim ownership is safe across pre-admission failure;
+- Assistant callback ingress returns after TaskEngine admission rather than waiting for the action lifetime;
+- final Assistant fallback ACK does not depend on an already-cancelled update context;
+- Assistant multipart upload is managed per physical RPC by the same shared executor;
+- decision-handler infrastructure failures obey explicit handler failure policy;
+- command durable/task identity includes Telegram peer kind;
+- one compiled presentation view cannot contain mixed callback revisions;
+- unknown/noop/duplicate Assistant callbacks do not perform unnecessary peer resolution;
+- callback extension answer ownership is explicit;
+- no new production feature depends on a broad compatibility Telegram aggregate;
+- a2 remains the only canonical interactive callback protocol;
+- TaskEngine remains the single finite-work execution authority;
+- RPC executor remains the single Telegram RPC policy authority;
+- all changed retained state is hard bounded;
+- targeted lifecycle/resource/performance acceptance is recorded with fresh evidence;
+- every Go-changing commit was formatted with `gofmt`;
+- CI was not inspected unless explicitly requested by the user.
+
+---
+
+## 13. Recommended next action
+
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
+
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+
+After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
+ -count=1 -timeout=120s
+go test ./internal/assistant -run '^TestP8ICombinedResourceIdleHighLoadAcceptance
+
+---
+
+### T11 — Final cleanup and closure
+
+Status: **PENDING**
+
+Only after T1–T10 acceptance:
+
+- remove dead helper/fallback paths made unreachable by the fixes;
+- update comments that still describe obsolete retry/fallback behavior;
+- update architecture fences where a stable invariant now exists;
+- re-scan for raw Telegram bypasses in the affected paths;
+- verify no duplicate executor/task/callback/cache authority was introduced;
+- update this document with exact closing HEADs and test/benchmark evidence.
+
+Do not use final cleanup to start a new redesign.
+
+---
+
+## 8. Suggested commit sequence
+
+Keep commits phase-scoped and reviewable. Suggested messages:
+
+1. `docs(telegram): consolidate architecture and performance audit plan`
+2. `fix(telegram): make text sends single-attempt`
+3. `fix(telegram): bound bot origin tracking`
+4. `fix(telegram): make resolver cache eviction generation safe`
+5. `fix(telegram): isolate callback acknowledgement limiter lane`
+6. `fix(telegram): make callback claims admission safe`
+7. `refactor(assistant): detach callback completion from ingress`
+8. `fix(assistant): manage physical upload RPC parts`
+9. `fix(telegram): honor decision handler failure policy`
+10. `fix(presentation): compile one interaction revision`
+11. `fix(telegram): use typed command identity`
+12. `refactor(telegram): define callback event ownership`
+13. `test(telegram): add resource and lifecycle acceptance`
+14. `docs(telegram): close runtime audit plan`
+
+Exact grouping may change if two fixes share one minimal invariant. Do not combine unrelated P1 defects into a giant commit merely to reduce commit count.
+
+For every Go-changing commit:
+
+1. refresh/inspect the intended diff;
+2. run `gofmt` on all changed Go files;
+3. run focused tests;
+4. inspect `git diff --check`;
+5. commit;
+6. push;
+7. do **not** inspect CI unless the user asks.
+
+---
+
+## 9. Test and benchmark matrix
+
+The next session should prefer focused tests before expensive broad runs.
+
+### Transport correctness
+
+- text HTML success;
+- malformed HTML local fallback;
+- ambiguous send error = one physical send;
+- contextual reply/topic semantics unchanged;
+- markup send unchanged.
+
+### Callback correctness
+
+- userbot message callback;
+- userbot inline callback;
+- Assistant message callback;
+- Assistant inline callback;
+- stale revision;
+- stale feature generation;
+- copied target mismatch;
+- unknown callback;
+- duplicate query;
+- immediate ACK;
+- handler-owned ACK;
+- TaskEngine rejection;
+- shutdown/quiesce.
+
+### Cache/resource correctness
+
+- bot-origin cap;
+- bot-origin TTL;
+- resolver cap;
+- resolver same-key reinsertion;
+- negative cache churn;
+- Assistant peer cache cap remains unchanged;
+- interaction state cap remains unchanged.
+
+### RPC/media correctness
+
+- callback family = callback;
+- global/method limiter still active;
+- upload part and big-file-part individually pass through shared executor;
+- non-idempotent media final send remains one attempt unless durable random-ID semantics apply.
+
+### Dispatcher policy
+
+- fail-open handler + handler error;
+- fail-open handler + TaskEngine infrastructure error;
+- fail-closed handler + handler error;
+- fail-closed handler + TaskEngine infrastructure error;
+- shared decision deadline;
+- event lane remains asynchronous/TaskEngine-owned.
+
+### Presentation
+
+- all action buttons use one revision;
+- callback length <= Telegram 64-byte cap;
+- URL/switch-inline unchanged;
+- serializer remains single canonical Telegram keyboard encoder.
+
+---
+
+## 10. Non-goals
+
+Do not use this plan to:
+
+- redesign TaskEngine scheduling/fairness;
+- replace the Telegram client library;
+- replace a2 with a third callback protocol;
+- merge userbot and Assistant Telegram clients into one account/session;
+- create a second presentation runtime;
+- create another cache framework for the whole repository;
+- change downloader/provider architecture except where the Telegram media boundary itself requires the shared executor;
+- rewrite every command UI;
+- remove all compatibility APIs without caller evidence;
+- optimize unrelated Jobs/Scheduler/DB code;
+- fix unrelated baseline test failures unless they directly block a phase and are proven relevant.
+
+---
+
+## 11. Risks to watch
+
+### Ambiguous send risk
+
+Any fallback after a non-idempotent Telegram mutation must distinguish local preflight failure from remote ambiguous outcome. Never convert an arbitrary transport error into a second send.
+
+### Callback duplicate risk
+
+Releasing a callback claim too late can duplicate actions; never release after successful TaskEngine admission.
+
+### ACK latency risk
+
+ACK should be prioritized but still managed by the shared executor. Do not bypass global safety limits for latency.
+
+### Cache generation risk
+
+A capacity structure that keeps stale ordering metadata must not be considered bounded merely because its primary map has a cap.
+
+### Assistant raw API risk
+
+A raw Telegram client may be used as a low-level transport dependency only when every physical operation still crosses the intended managed boundary. Do not treat one wrapper around a multi-RPC library call as per-RPC management.
+
+### Policy semantics risk
+
+Fail-open/fail-closed is a business/security contract. It should not change depending on whether failure occurred in plugin code or scheduler infrastructure.
+
+### Compiler concurrency risk
+
+TaskEngine ordering reduces concurrent state changes but detached transitions exist. Presentation output must be internally consistent without relying on timing assumptions.
+
+### Compatibility-removal risk
+
+Broad compatibility types may still support tests or external callers. Fence new production usage first; delete only with explicit caller evidence.
+
+---
+
+## 12. Definition of done
+
+This Telegram audit plan is closed only when all of the following are true:
+
+- normal non-idempotent text send cannot issue a second physical send after an ambiguous first attempt;
+- bot-origin tracking has a hard cardinality bound and bounded insertion cost;
+- resolver cache ordering metadata is bounded and generation-safe;
+- userbot and Assistant callback ACKs use the intended callback limiter family;
+- userbot callback durable claim ownership is safe across pre-admission failure;
+- Assistant callback ingress returns after TaskEngine admission rather than waiting for the action lifetime;
+- final Assistant fallback ACK does not depend on an already-cancelled update context;
+- Assistant multipart upload is managed per physical RPC by the same shared executor;
+- decision-handler infrastructure failures obey explicit handler failure policy;
+- command durable/task identity includes Telegram peer kind;
+- one compiled presentation view cannot contain mixed callback revisions;
+- unknown/noop/duplicate Assistant callbacks do not perform unnecessary peer resolution;
+- callback extension answer ownership is explicit;
+- no new production feature depends on a broad compatibility Telegram aggregate;
+- a2 remains the only canonical interactive callback protocol;
+- TaskEngine remains the single finite-work execution authority;
+- RPC executor remains the single Telegram RPC policy authority;
+- all changed retained state is hard bounded;
+- targeted lifecycle/resource/performance acceptance is recorded with fresh evidence;
+- every Go-changing commit was formatted with `gofmt`;
+- CI was not inspected unless explicitly requested by the user.
+
+---
+
+## 13. Recommended next action
+
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
+
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+
+After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
+ -count=1 -timeout=180s
+
+go test ./internal/telegram -run '^
+
+---
+
+### T11 — Final cleanup and closure
+
+Status: **PENDING**
+
+Only after T1–T10 acceptance:
+
+- remove dead helper/fallback paths made unreachable by the fixes;
+- update comments that still describe obsolete retry/fallback behavior;
+- update architecture fences where a stable invariant now exists;
+- re-scan for raw Telegram bypasses in the affected paths;
+- verify no duplicate executor/task/callback/cache authority was introduced;
+- update this document with exact closing HEADs and test/benchmark evidence.
+
+Do not use final cleanup to start a new redesign.
+
+---
+
+## 8. Suggested commit sequence
+
+Keep commits phase-scoped and reviewable. Suggested messages:
+
+1. `docs(telegram): consolidate architecture and performance audit plan`
+2. `fix(telegram): make text sends single-attempt`
+3. `fix(telegram): bound bot origin tracking`
+4. `fix(telegram): make resolver cache eviction generation safe`
+5. `fix(telegram): isolate callback acknowledgement limiter lane`
+6. `fix(telegram): make callback claims admission safe`
+7. `refactor(assistant): detach callback completion from ingress`
+8. `fix(assistant): manage physical upload RPC parts`
+9. `fix(telegram): honor decision handler failure policy`
+10. `fix(presentation): compile one interaction revision`
+11. `fix(telegram): use typed command identity`
+12. `refactor(telegram): define callback event ownership`
+13. `test(telegram): add resource and lifecycle acceptance`
+14. `docs(telegram): close runtime audit plan`
+
+Exact grouping may change if two fixes share one minimal invariant. Do not combine unrelated P1 defects into a giant commit merely to reduce commit count.
+
+For every Go-changing commit:
+
+1. refresh/inspect the intended diff;
+2. run `gofmt` on all changed Go files;
+3. run focused tests;
+4. inspect `git diff --check`;
+5. commit;
+6. push;
+7. do **not** inspect CI unless the user asks.
+
+---
+
+## 9. Test and benchmark matrix
+
+The next session should prefer focused tests before expensive broad runs.
+
+### Transport correctness
+
+- text HTML success;
+- malformed HTML local fallback;
+- ambiguous send error = one physical send;
+- contextual reply/topic semantics unchanged;
+- markup send unchanged.
+
+### Callback correctness
+
+- userbot message callback;
+- userbot inline callback;
+- Assistant message callback;
+- Assistant inline callback;
+- stale revision;
+- stale feature generation;
+- copied target mismatch;
+- unknown callback;
+- duplicate query;
+- immediate ACK;
+- handler-owned ACK;
+- TaskEngine rejection;
+- shutdown/quiesce.
+
+### Cache/resource correctness
+
+- bot-origin cap;
+- bot-origin TTL;
+- resolver cap;
+- resolver same-key reinsertion;
+- negative cache churn;
+- Assistant peer cache cap remains unchanged;
+- interaction state cap remains unchanged.
+
+### RPC/media correctness
+
+- callback family = callback;
+- global/method limiter still active;
+- upload part and big-file-part individually pass through shared executor;
+- non-idempotent media final send remains one attempt unless durable random-ID semantics apply.
+
+### Dispatcher policy
+
+- fail-open handler + handler error;
+- fail-open handler + TaskEngine infrastructure error;
+- fail-closed handler + handler error;
+- fail-closed handler + TaskEngine infrastructure error;
+- shared decision deadline;
+- event lane remains asynchronous/TaskEngine-owned.
+
+### Presentation
+
+- all action buttons use one revision;
+- callback length <= Telegram 64-byte cap;
+- URL/switch-inline unchanged;
+- serializer remains single canonical Telegram keyboard encoder.
+
+---
+
+## 10. Non-goals
+
+Do not use this plan to:
+
+- redesign TaskEngine scheduling/fairness;
+- replace the Telegram client library;
+- replace a2 with a third callback protocol;
+- merge userbot and Assistant Telegram clients into one account/session;
+- create a second presentation runtime;
+- create another cache framework for the whole repository;
+- change downloader/provider architecture except where the Telegram media boundary itself requires the shared executor;
+- rewrite every command UI;
+- remove all compatibility APIs without caller evidence;
+- optimize unrelated Jobs/Scheduler/DB code;
+- fix unrelated baseline test failures unless they directly block a phase and are proven relevant.
+
+---
+
+## 11. Risks to watch
+
+### Ambiguous send risk
+
+Any fallback after a non-idempotent Telegram mutation must distinguish local preflight failure from remote ambiguous outcome. Never convert an arbitrary transport error into a second send.
+
+### Callback duplicate risk
+
+Releasing a callback claim too late can duplicate actions; never release after successful TaskEngine admission.
+
+### ACK latency risk
+
+ACK should be prioritized but still managed by the shared executor. Do not bypass global safety limits for latency.
+
+### Cache generation risk
+
+A capacity structure that keeps stale ordering metadata must not be considered bounded merely because its primary map has a cap.
+
+### Assistant raw API risk
+
+A raw Telegram client may be used as a low-level transport dependency only when every physical operation still crosses the intended managed boundary. Do not treat one wrapper around a multi-RPC library call as per-RPC management.
+
+### Policy semantics risk
+
+Fail-open/fail-closed is a business/security contract. It should not change depending on whether failure occurred in plugin code or scheduler infrastructure.
+
+### Compiler concurrency risk
+
+TaskEngine ordering reduces concurrent state changes but detached transitions exist. Presentation output must be internally consistent without relying on timing assumptions.
+
+### Compatibility-removal risk
+
+Broad compatibility types may still support tests or external callers. Fence new production usage first; delete only with explicit caller evidence.
+
+---
+
+## 12. Definition of done
+
+This Telegram audit plan is closed only when all of the following are true:
+
+- normal non-idempotent text send cannot issue a second physical send after an ambiguous first attempt;
+- bot-origin tracking has a hard cardinality bound and bounded insertion cost;
+- resolver cache ordering metadata is bounded and generation-safe;
+- userbot and Assistant callback ACKs use the intended callback limiter family;
+- userbot callback durable claim ownership is safe across pre-admission failure;
+- Assistant callback ingress returns after TaskEngine admission rather than waiting for the action lifetime;
+- final Assistant fallback ACK does not depend on an already-cancelled update context;
+- Assistant multipart upload is managed per physical RPC by the same shared executor;
+- decision-handler infrastructure failures obey explicit handler failure policy;
+- command durable/task identity includes Telegram peer kind;
+- one compiled presentation view cannot contain mixed callback revisions;
+- unknown/noop/duplicate Assistant callbacks do not perform unnecessary peer resolution;
+- callback extension answer ownership is explicit;
+- no new production feature depends on a broad compatibility Telegram aggregate;
+- a2 remains the only canonical interactive callback protocol;
+- TaskEngine remains the single finite-work execution authority;
+- RPC executor remains the single Telegram RPC policy authority;
+- all changed retained state is hard bounded;
+- targeted lifecycle/resource/performance acceptance is recorded with fresh evidence;
+- every Go-changing commit was formatted with `gofmt`;
+- CI was not inspected unless explicitly requested by the user.
+
+---
+
+## 13. Recommended next action
+
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
+
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+
+After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
+ \
+  -bench 'Benchmark(T10BotOriginSteadyStateBurst|T10PeerCacheBoundedChurn|DispatcherCallbackIngressObservation|DispatcherDecisionIngressNoop|HierarchicalRPCLimiterCardinality|RPCExecutorSamePeerFloodWaitOccupancy)
+
+---
+
+### T11 — Final cleanup and closure
+
+Status: **PENDING**
+
+Only after T1–T10 acceptance:
+
+- remove dead helper/fallback paths made unreachable by the fixes;
+- update comments that still describe obsolete retry/fallback behavior;
+- update architecture fences where a stable invariant now exists;
+- re-scan for raw Telegram bypasses in the affected paths;
+- verify no duplicate executor/task/callback/cache authority was introduced;
+- update this document with exact closing HEADs and test/benchmark evidence.
+
+Do not use final cleanup to start a new redesign.
+
+---
+
+## 8. Suggested commit sequence
+
+Keep commits phase-scoped and reviewable. Suggested messages:
+
+1. `docs(telegram): consolidate architecture and performance audit plan`
+2. `fix(telegram): make text sends single-attempt`
+3. `fix(telegram): bound bot origin tracking`
+4. `fix(telegram): make resolver cache eviction generation safe`
+5. `fix(telegram): isolate callback acknowledgement limiter lane`
+6. `fix(telegram): make callback claims admission safe`
+7. `refactor(assistant): detach callback completion from ingress`
+8. `fix(assistant): manage physical upload RPC parts`
+9. `fix(telegram): honor decision handler failure policy`
+10. `fix(presentation): compile one interaction revision`
+11. `fix(telegram): use typed command identity`
+12. `refactor(telegram): define callback event ownership`
+13. `test(telegram): add resource and lifecycle acceptance`
+14. `docs(telegram): close runtime audit plan`
+
+Exact grouping may change if two fixes share one minimal invariant. Do not combine unrelated P1 defects into a giant commit merely to reduce commit count.
+
+For every Go-changing commit:
+
+1. refresh/inspect the intended diff;
+2. run `gofmt` on all changed Go files;
+3. run focused tests;
+4. inspect `git diff --check`;
+5. commit;
+6. push;
+7. do **not** inspect CI unless the user asks.
+
+---
+
+## 9. Test and benchmark matrix
+
+The next session should prefer focused tests before expensive broad runs.
+
+### Transport correctness
+
+- text HTML success;
+- malformed HTML local fallback;
+- ambiguous send error = one physical send;
+- contextual reply/topic semantics unchanged;
+- markup send unchanged.
+
+### Callback correctness
+
+- userbot message callback;
+- userbot inline callback;
+- Assistant message callback;
+- Assistant inline callback;
+- stale revision;
+- stale feature generation;
+- copied target mismatch;
+- unknown callback;
+- duplicate query;
+- immediate ACK;
+- handler-owned ACK;
+- TaskEngine rejection;
+- shutdown/quiesce.
+
+### Cache/resource correctness
+
+- bot-origin cap;
+- bot-origin TTL;
+- resolver cap;
+- resolver same-key reinsertion;
+- negative cache churn;
+- Assistant peer cache cap remains unchanged;
+- interaction state cap remains unchanged.
+
+### RPC/media correctness
+
+- callback family = callback;
+- global/method limiter still active;
+- upload part and big-file-part individually pass through shared executor;
+- non-idempotent media final send remains one attempt unless durable random-ID semantics apply.
+
+### Dispatcher policy
+
+- fail-open handler + handler error;
+- fail-open handler + TaskEngine infrastructure error;
+- fail-closed handler + handler error;
+- fail-closed handler + TaskEngine infrastructure error;
+- shared decision deadline;
+- event lane remains asynchronous/TaskEngine-owned.
+
+### Presentation
+
+- all action buttons use one revision;
+- callback length <= Telegram 64-byte cap;
+- URL/switch-inline unchanged;
+- serializer remains single canonical Telegram keyboard encoder.
+
+---
+
+## 10. Non-goals
+
+Do not use this plan to:
+
+- redesign TaskEngine scheduling/fairness;
+- replace the Telegram client library;
+- replace a2 with a third callback protocol;
+- merge userbot and Assistant Telegram clients into one account/session;
+- create a second presentation runtime;
+- create another cache framework for the whole repository;
+- change downloader/provider architecture except where the Telegram media boundary itself requires the shared executor;
+- rewrite every command UI;
+- remove all compatibility APIs without caller evidence;
+- optimize unrelated Jobs/Scheduler/DB code;
+- fix unrelated baseline test failures unless they directly block a phase and are proven relevant.
+
+---
+
+## 11. Risks to watch
+
+### Ambiguous send risk
+
+Any fallback after a non-idempotent Telegram mutation must distinguish local preflight failure from remote ambiguous outcome. Never convert an arbitrary transport error into a second send.
+
+### Callback duplicate risk
+
+Releasing a callback claim too late can duplicate actions; never release after successful TaskEngine admission.
+
+### ACK latency risk
+
+ACK should be prioritized but still managed by the shared executor. Do not bypass global safety limits for latency.
+
+### Cache generation risk
+
+A capacity structure that keeps stale ordering metadata must not be considered bounded merely because its primary map has a cap.
+
+### Assistant raw API risk
+
+A raw Telegram client may be used as a low-level transport dependency only when every physical operation still crosses the intended managed boundary. Do not treat one wrapper around a multi-RPC library call as per-RPC management.
+
+### Policy semantics risk
+
+Fail-open/fail-closed is a business/security contract. It should not change depending on whether failure occurred in plugin code or scheduler infrastructure.
+
+### Compiler concurrency risk
+
+TaskEngine ordering reduces concurrent state changes but detached transitions exist. Presentation output must be internally consistent without relying on timing assumptions.
+
+### Compatibility-removal risk
+
+Broad compatibility types may still support tests or external callers. Fence new production usage first; delete only with explicit caller evidence.
+
+---
+
+## 12. Definition of done
+
+This Telegram audit plan is closed only when all of the following are true:
+
+- normal non-idempotent text send cannot issue a second physical send after an ambiguous first attempt;
+- bot-origin tracking has a hard cardinality bound and bounded insertion cost;
+- resolver cache ordering metadata is bounded and generation-safe;
+- userbot and Assistant callback ACKs use the intended callback limiter family;
+- userbot callback durable claim ownership is safe across pre-admission failure;
+- Assistant callback ingress returns after TaskEngine admission rather than waiting for the action lifetime;
+- final Assistant fallback ACK does not depend on an already-cancelled update context;
+- Assistant multipart upload is managed per physical RPC by the same shared executor;
+- decision-handler infrastructure failures obey explicit handler failure policy;
+- command durable/task identity includes Telegram peer kind;
+- one compiled presentation view cannot contain mixed callback revisions;
+- unknown/noop/duplicate Assistant callbacks do not perform unnecessary peer resolution;
+- callback extension answer ownership is explicit;
+- no new production feature depends on a broad compatibility Telegram aggregate;
+- a2 remains the only canonical interactive callback protocol;
+- TaskEngine remains the single finite-work execution authority;
+- RPC executor remains the single Telegram RPC policy authority;
+- all changed retained state is hard bounded;
+- targeted lifecycle/resource/performance acceptance is recorded with fresh evidence;
+- every Go-changing commit was formatted with `gofmt`;
+- CI was not inspected unless explicitly requested by the user.
+
+---
+
+## 13. Recommended next action
+
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
+
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+
+After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
+ \
+  -benchmem -count=5
+
+go test ./internal/assistant/client -run '^
+
+---
+
+### T11 — Final cleanup and closure
+
+Status: **PENDING**
+
+Only after T1–T10 acceptance:
+
+- remove dead helper/fallback paths made unreachable by the fixes;
+- update comments that still describe obsolete retry/fallback behavior;
+- update architecture fences where a stable invariant now exists;
+- re-scan for raw Telegram bypasses in the affected paths;
+- verify no duplicate executor/task/callback/cache authority was introduced;
+- update this document with exact closing HEADs and test/benchmark evidence.
+
+Do not use final cleanup to start a new redesign.
+
+---
+
+## 8. Suggested commit sequence
+
+Keep commits phase-scoped and reviewable. Suggested messages:
+
+1. `docs(telegram): consolidate architecture and performance audit plan`
+2. `fix(telegram): make text sends single-attempt`
+3. `fix(telegram): bound bot origin tracking`
+4. `fix(telegram): make resolver cache eviction generation safe`
+5. `fix(telegram): isolate callback acknowledgement limiter lane`
+6. `fix(telegram): make callback claims admission safe`
+7. `refactor(assistant): detach callback completion from ingress`
+8. `fix(assistant): manage physical upload RPC parts`
+9. `fix(telegram): honor decision handler failure policy`
+10. `fix(presentation): compile one interaction revision`
+11. `fix(telegram): use typed command identity`
+12. `refactor(telegram): define callback event ownership`
+13. `test(telegram): add resource and lifecycle acceptance`
+14. `docs(telegram): close runtime audit plan`
+
+Exact grouping may change if two fixes share one minimal invariant. Do not combine unrelated P1 defects into a giant commit merely to reduce commit count.
+
+For every Go-changing commit:
+
+1. refresh/inspect the intended diff;
+2. run `gofmt` on all changed Go files;
+3. run focused tests;
+4. inspect `git diff --check`;
+5. commit;
+6. push;
+7. do **not** inspect CI unless the user asks.
+
+---
+
+## 9. Test and benchmark matrix
+
+The next session should prefer focused tests before expensive broad runs.
+
+### Transport correctness
+
+- text HTML success;
+- malformed HTML local fallback;
+- ambiguous send error = one physical send;
+- contextual reply/topic semantics unchanged;
+- markup send unchanged.
+
+### Callback correctness
+
+- userbot message callback;
+- userbot inline callback;
+- Assistant message callback;
+- Assistant inline callback;
+- stale revision;
+- stale feature generation;
+- copied target mismatch;
+- unknown callback;
+- duplicate query;
+- immediate ACK;
+- handler-owned ACK;
+- TaskEngine rejection;
+- shutdown/quiesce.
+
+### Cache/resource correctness
+
+- bot-origin cap;
+- bot-origin TTL;
+- resolver cap;
+- resolver same-key reinsertion;
+- negative cache churn;
+- Assistant peer cache cap remains unchanged;
+- interaction state cap remains unchanged.
+
+### RPC/media correctness
+
+- callback family = callback;
+- global/method limiter still active;
+- upload part and big-file-part individually pass through shared executor;
+- non-idempotent media final send remains one attempt unless durable random-ID semantics apply.
+
+### Dispatcher policy
+
+- fail-open handler + handler error;
+- fail-open handler + TaskEngine infrastructure error;
+- fail-closed handler + handler error;
+- fail-closed handler + TaskEngine infrastructure error;
+- shared decision deadline;
+- event lane remains asynchronous/TaskEngine-owned.
+
+### Presentation
+
+- all action buttons use one revision;
+- callback length <= Telegram 64-byte cap;
+- URL/switch-inline unchanged;
+- serializer remains single canonical Telegram keyboard encoder.
+
+---
+
+## 10. Non-goals
+
+Do not use this plan to:
+
+- redesign TaskEngine scheduling/fairness;
+- replace the Telegram client library;
+- replace a2 with a third callback protocol;
+- merge userbot and Assistant Telegram clients into one account/session;
+- create a second presentation runtime;
+- create another cache framework for the whole repository;
+- change downloader/provider architecture except where the Telegram media boundary itself requires the shared executor;
+- rewrite every command UI;
+- remove all compatibility APIs without caller evidence;
+- optimize unrelated Jobs/Scheduler/DB code;
+- fix unrelated baseline test failures unless they directly block a phase and are proven relevant.
+
+---
+
+## 11. Risks to watch
+
+### Ambiguous send risk
+
+Any fallback after a non-idempotent Telegram mutation must distinguish local preflight failure from remote ambiguous outcome. Never convert an arbitrary transport error into a second send.
+
+### Callback duplicate risk
+
+Releasing a callback claim too late can duplicate actions; never release after successful TaskEngine admission.
+
+### ACK latency risk
+
+ACK should be prioritized but still managed by the shared executor. Do not bypass global safety limits for latency.
+
+### Cache generation risk
+
+A capacity structure that keeps stale ordering metadata must not be considered bounded merely because its primary map has a cap.
+
+### Assistant raw API risk
+
+A raw Telegram client may be used as a low-level transport dependency only when every physical operation still crosses the intended managed boundary. Do not treat one wrapper around a multi-RPC library call as per-RPC management.
+
+### Policy semantics risk
+
+Fail-open/fail-closed is a business/security contract. It should not change depending on whether failure occurred in plugin code or scheduler infrastructure.
+
+### Compiler concurrency risk
+
+TaskEngine ordering reduces concurrent state changes but detached transitions exist. Presentation output must be internally consistent without relying on timing assumptions.
+
+### Compatibility-removal risk
+
+Broad compatibility types may still support tests or external callers. Fence new production usage first; delete only with explicit caller evidence.
+
+---
+
+## 12. Definition of done
+
+This Telegram audit plan is closed only when all of the following are true:
+
+- normal non-idempotent text send cannot issue a second physical send after an ambiguous first attempt;
+- bot-origin tracking has a hard cardinality bound and bounded insertion cost;
+- resolver cache ordering metadata is bounded and generation-safe;
+- userbot and Assistant callback ACKs use the intended callback limiter family;
+- userbot callback durable claim ownership is safe across pre-admission failure;
+- Assistant callback ingress returns after TaskEngine admission rather than waiting for the action lifetime;
+- final Assistant fallback ACK does not depend on an already-cancelled update context;
+- Assistant multipart upload is managed per physical RPC by the same shared executor;
+- decision-handler infrastructure failures obey explicit handler failure policy;
+- command durable/task identity includes Telegram peer kind;
+- one compiled presentation view cannot contain mixed callback revisions;
+- unknown/noop/duplicate Assistant callbacks do not perform unnecessary peer resolution;
+- callback extension answer ownership is explicit;
+- no new production feature depends on a broad compatibility Telegram aggregate;
+- a2 remains the only canonical interactive callback protocol;
+- TaskEngine remains the single finite-work execution authority;
+- RPC executor remains the single Telegram RPC policy authority;
+- all changed retained state is hard bounded;
+- targeted lifecycle/resource/performance acceptance is recorded with fresh evidence;
+- every Go-changing commit was formatted with `gofmt`;
+- CI was not inspected unless explicitly requested by the user.
+
+---
+
+## 13. Recommended next action
+
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
+
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+
+After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
+ \
+  -bench '^BenchmarkT10AssistantCallbackIngressAdmission
+
+---
+
+### T11 — Final cleanup and closure
+
+Status: **PENDING**
+
+Only after T1–T10 acceptance:
+
+- remove dead helper/fallback paths made unreachable by the fixes;
+- update comments that still describe obsolete retry/fallback behavior;
+- update architecture fences where a stable invariant now exists;
+- re-scan for raw Telegram bypasses in the affected paths;
+- verify no duplicate executor/task/callback/cache authority was introduced;
+- update this document with exact closing HEADs and test/benchmark evidence.
+
+Do not use final cleanup to start a new redesign.
+
+---
+
+## 8. Suggested commit sequence
+
+Keep commits phase-scoped and reviewable. Suggested messages:
+
+1. `docs(telegram): consolidate architecture and performance audit plan`
+2. `fix(telegram): make text sends single-attempt`
+3. `fix(telegram): bound bot origin tracking`
+4. `fix(telegram): make resolver cache eviction generation safe`
+5. `fix(telegram): isolate callback acknowledgement limiter lane`
+6. `fix(telegram): make callback claims admission safe`
+7. `refactor(assistant): detach callback completion from ingress`
+8. `fix(assistant): manage physical upload RPC parts`
+9. `fix(telegram): honor decision handler failure policy`
+10. `fix(presentation): compile one interaction revision`
+11. `fix(telegram): use typed command identity`
+12. `refactor(telegram): define callback event ownership`
+13. `test(telegram): add resource and lifecycle acceptance`
+14. `docs(telegram): close runtime audit plan`
+
+Exact grouping may change if two fixes share one minimal invariant. Do not combine unrelated P1 defects into a giant commit merely to reduce commit count.
+
+For every Go-changing commit:
+
+1. refresh/inspect the intended diff;
+2. run `gofmt` on all changed Go files;
+3. run focused tests;
+4. inspect `git diff --check`;
+5. commit;
+6. push;
+7. do **not** inspect CI unless the user asks.
+
+---
+
+## 9. Test and benchmark matrix
+
+The next session should prefer focused tests before expensive broad runs.
+
+### Transport correctness
+
+- text HTML success;
+- malformed HTML local fallback;
+- ambiguous send error = one physical send;
+- contextual reply/topic semantics unchanged;
+- markup send unchanged.
+
+### Callback correctness
+
+- userbot message callback;
+- userbot inline callback;
+- Assistant message callback;
+- Assistant inline callback;
+- stale revision;
+- stale feature generation;
+- copied target mismatch;
+- unknown callback;
+- duplicate query;
+- immediate ACK;
+- handler-owned ACK;
+- TaskEngine rejection;
+- shutdown/quiesce.
+
+### Cache/resource correctness
+
+- bot-origin cap;
+- bot-origin TTL;
+- resolver cap;
+- resolver same-key reinsertion;
+- negative cache churn;
+- Assistant peer cache cap remains unchanged;
+- interaction state cap remains unchanged.
+
+### RPC/media correctness
+
+- callback family = callback;
+- global/method limiter still active;
+- upload part and big-file-part individually pass through shared executor;
+- non-idempotent media final send remains one attempt unless durable random-ID semantics apply.
+
+### Dispatcher policy
+
+- fail-open handler + handler error;
+- fail-open handler + TaskEngine infrastructure error;
+- fail-closed handler + handler error;
+- fail-closed handler + TaskEngine infrastructure error;
+- shared decision deadline;
+- event lane remains asynchronous/TaskEngine-owned.
+
+### Presentation
+
+- all action buttons use one revision;
+- callback length <= Telegram 64-byte cap;
+- URL/switch-inline unchanged;
+- serializer remains single canonical Telegram keyboard encoder.
+
+---
+
+## 10. Non-goals
+
+Do not use this plan to:
+
+- redesign TaskEngine scheduling/fairness;
+- replace the Telegram client library;
+- replace a2 with a third callback protocol;
+- merge userbot and Assistant Telegram clients into one account/session;
+- create a second presentation runtime;
+- create another cache framework for the whole repository;
+- change downloader/provider architecture except where the Telegram media boundary itself requires the shared executor;
+- rewrite every command UI;
+- remove all compatibility APIs without caller evidence;
+- optimize unrelated Jobs/Scheduler/DB code;
+- fix unrelated baseline test failures unless they directly block a phase and are proven relevant.
+
+---
+
+## 11. Risks to watch
+
+### Ambiguous send risk
+
+Any fallback after a non-idempotent Telegram mutation must distinguish local preflight failure from remote ambiguous outcome. Never convert an arbitrary transport error into a second send.
+
+### Callback duplicate risk
+
+Releasing a callback claim too late can duplicate actions; never release after successful TaskEngine admission.
+
+### ACK latency risk
+
+ACK should be prioritized but still managed by the shared executor. Do not bypass global safety limits for latency.
+
+### Cache generation risk
+
+A capacity structure that keeps stale ordering metadata must not be considered bounded merely because its primary map has a cap.
+
+### Assistant raw API risk
+
+A raw Telegram client may be used as a low-level transport dependency only when every physical operation still crosses the intended managed boundary. Do not treat one wrapper around a multi-RPC library call as per-RPC management.
+
+### Policy semantics risk
+
+Fail-open/fail-closed is a business/security contract. It should not change depending on whether failure occurred in plugin code or scheduler infrastructure.
+
+### Compiler concurrency risk
+
+TaskEngine ordering reduces concurrent state changes but detached transitions exist. Presentation output must be internally consistent without relying on timing assumptions.
+
+### Compatibility-removal risk
+
+Broad compatibility types may still support tests or external callers. Fence new production usage first; delete only with explicit caller evidence.
+
+---
+
+## 12. Definition of done
+
+This Telegram audit plan is closed only when all of the following are true:
+
+- normal non-idempotent text send cannot issue a second physical send after an ambiguous first attempt;
+- bot-origin tracking has a hard cardinality bound and bounded insertion cost;
+- resolver cache ordering metadata is bounded and generation-safe;
+- userbot and Assistant callback ACKs use the intended callback limiter family;
+- userbot callback durable claim ownership is safe across pre-admission failure;
+- Assistant callback ingress returns after TaskEngine admission rather than waiting for the action lifetime;
+- final Assistant fallback ACK does not depend on an already-cancelled update context;
+- Assistant multipart upload is managed per physical RPC by the same shared executor;
+- decision-handler infrastructure failures obey explicit handler failure policy;
+- command durable/task identity includes Telegram peer kind;
+- one compiled presentation view cannot contain mixed callback revisions;
+- unknown/noop/duplicate Assistant callbacks do not perform unnecessary peer resolution;
+- callback extension answer ownership is explicit;
+- no new production feature depends on a broad compatibility Telegram aggregate;
+- a2 remains the only canonical interactive callback protocol;
+- TaskEngine remains the single finite-work execution authority;
+- RPC executor remains the single Telegram RPC policy authority;
+- all changed retained state is hard bounded;
+- targeted lifecycle/resource/performance acceptance is recorded with fresh evidence;
+- every Go-changing commit was formatted with `gofmt`;
+- CI was not inspected unless explicitly requested by the user.
+
+---
+
+## 13. Recommended next action
+
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
+
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+
+After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
+ \
+  -benchmem -count=5
+```
+
+Record the exact closing HEAD, Go version, benchmark `ns/op`/allocations and p50/p95/p99 fields, P8-I baseline/peak/settled process sample, and any TaskEngine/cache/RPC/resource snapshots emitted by the tests. Do not convert historical values into arbitrary percentage gates.
+
+#### Current execution limitation
+
+For the T10 Go-changing commit, both new files were passed through local `gofmt` before commit and their committed diff was inspected. A local checkout was then attempted from the execution environment, but DNS/network access to GitHub is unavailable; the local Go installation is also Go 1.23.2 rather than the repository's Go 1.27 toolchain. Therefore no focused `go test`, race run, or benchmark result is claimed for `435c51081abf44c2ffa97234863493bfd56819ee`. CI was not inspected.
+
+T10 **must remain open** until the execution matrix above runs against the refreshed closing HEAD.
+
+Hard acceptance invariants remain:
 
 - no retained structure exceeds its explicit bound;
 - no permanent per-callback/per-peer goroutine;
 - idle resource count settles;
-- callback completion drains on shutdown;
+- callback completion/lifecycle work drains under disable/shutdown;
 - one physical send for non-idempotent normal text send;
-- every physical multipart upload RPC is executor-managed.
+- every physical multipart upload RPC is executor-managed;
+- callback ACK remains on the dedicated callback limiter family;
+- no mixed-revision presentation keyboard;
+- no second TaskEngine/RPC executor/callback runtime/cache authority is introduced.
+
+**Gate status:** acceptance harness is implemented; T10 is not CLOSED until focused tests, race, lifecycle/resource acceptance, and benchmarks execute successfully on a valid checkout.
 
 ---
 
