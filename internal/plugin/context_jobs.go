@@ -32,8 +32,14 @@ type scopedScheduleClient struct {
 	owner   string
 }
 
+func encodePluginJobComponent(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "%", "%25")
+	return strings.ReplaceAll(value, ":", "%3A")
+}
+
 func pluginJobOwner(owner string) string {
-	return "plugin:" + strings.TrimSpace(owner)
+	return "plugin:" + encodePluginJobComponent(owner)
 }
 
 func pluginScopedName(owner, name string) string {
@@ -41,11 +47,7 @@ func pluginScopedName(owner, name string) string {
 	if name == "" {
 		return ""
 	}
-	prefix := pluginJobOwner(owner) + ":"
-	if strings.HasPrefix(name, prefix) {
-		return name
-	}
-	return prefix + name
+	return pluginJobOwner(owner) + ":" + encodePluginJobComponent(name)
 }
 
 func (c scopedJobClient) RegisterHandler(handlerType string, handler jobs.Handler) error {
