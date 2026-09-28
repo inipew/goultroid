@@ -182,6 +182,10 @@ Additional E3 measurement/control commits:
   - captures scheduler-pool running occupancy, child download waiting depth, child queue p50/p95, and wrapper-attempt p95;
   - adds a resource-free control asserting only the wrapper task is active, with no child TaskEngine job;
   - adds an ActionJob control proving the redesigned schedule targets the caller-owned definition directly and creates no scheduler.action wrapper.
+- `e3f64688e68610a5b2d2f47a0018d5698121a426` — `test(runtime): correct scheduler contention timing`
+  - corrects the R5 measurement boundary so child queue delay is measured from the actual child `Submit` call to the child's `TaskResult.StartedAt`;
+  - records wrapper attempt latency from wrapper submission to the wrapper `TaskResult.FinishedAt`, rather than from the test's later observation time;
+  - leaves production scheduler/TaskEngine orchestration unchanged.
 - `ce50f4995490bef3f6cd71772768243c33ca2697` — `test(jobs): verify scheduler wrapper cascade`
   - verifies the R2 cleanup assumption that deleting a scheduler-owned wrapper definition cascades its owned schedule when SQLite foreign-key enforcement is enabled;
   - production database configuration explicitly enables `foreign_keys(ON)` for pooled DSNs and the special `:memory:` path.
@@ -190,7 +194,7 @@ These harnesses distinguish the three execution shapes required by R5 without ch
 
 ### Verification status and environment limit
 
-The branch was source-revalidated after the E0-E3 implementation and restart-recovery follow-ups. Go files added or rewritten in the latest recovery follow-up were run through `gofmt` before commit. This execution environment still does not provide a runnable repository checkout: direct GitHub clone from the shell cannot resolve `github.com`. Therefore this plan does **not** claim fresh focused-test, benchmark, race, vet, build, or `git diff --check` evidence for the current lineage. CI was not inspected.
+The branch was source-revalidated after the E0-E3 implementation and restart-recovery follow-ups. Go files added or rewritten in the latest recovery and R5 measurement-correction follow-ups were run through `gofmt` before commit. This execution environment still does not provide a runnable repository checkout: direct GitHub clone from the shell cannot resolve `github.com`. Therefore this plan does **not** claim fresh focused-test, benchmark, race, vet, build, or `git diff --check` evidence for the current lineage. CI was not inspected.
 
 Before closure, run the following from a real checkout of the current `test-next` HEAD:
 
