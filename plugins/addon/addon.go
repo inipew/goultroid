@@ -291,7 +291,7 @@ func (p *Plugin) handleGrant(ctx *core.Context) error {
 		return ctx.Status(fmt.Sprintf("<code>%s</code> is not a privileged capability.", core.EscapeHTML(string(capability))))
 	}
 	if err := p.mgr.GrantPrivilegedCapability(ctx.Ctx, name, capability); err != nil {
-		return ctx.Error(fmt.Sprintf("Failed to grant <code>%s</code>: %v", core.EscapeHTML(string(capability)), err))
+		return ctx.Fail(err, fmt.Sprintf("Failed to grant <code>%s</code>.", core.EscapeHTML(string(capability))))
 	}
 	return ctx.EditOrReply(fmt.Sprintf(
 		"🔐 Granted <code>%s</code> to <code>%s</code> for this runtime session.",

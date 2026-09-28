@@ -324,7 +324,7 @@ func (b *nativeSettingsViewBuilder) add(text string, intent nativeSettingsIntent
 
 func (b *nativeSettingsViewBuilder) addRow(buttons ...presentation.Button) {
 	if len(buttons) > 0 {
-		b.rows = append(b.rows, presentation.Row(buttons))
+		b.rows = append(b.rows, append(presentation.Row(nil), buttons...))
 	}
 }
 

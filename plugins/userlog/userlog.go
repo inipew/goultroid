@@ -560,7 +560,7 @@ func (p *Plugin) handleSetLog(ctx *core.Context) error {
 	}
 	testMsg := "🧪 <b>UserLog Destination Verification</b>\n\n• <b>Status:</b> Verified\n• <b>System:</b> GoUltroid Audit Logging\n• <b>Time:</b> <code>" + time.Now().UTC().Format(time.RFC3339) + "</code>"
 	if _, err := messageSvc.SendMessage(ctx.Ctx, dest.InputPeer(), testMsg); err != nil {
-		return ctx.Error(fmt.Sprintf("<b>Verification failed:</b> Cannot post to target (%v). Make sure the bot/account has permission to post.", err))
+		return ctx.Fail(err, "<b>Verification failed:</b> Cannot post to target. Make sure the bot/account has permission to post.")
 	}
 
 	if err := p.svc.SetDestination(ctx.Ctx, dest); err != nil {

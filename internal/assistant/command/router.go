@@ -673,6 +673,9 @@ func (r *Router) dispatch(
 					_, _ = inter.SendMessage(ctx, peer, "⛔ <i>This command cannot be invoked by this account.</i>", nil)
 				}
 				return nil
+			case errors.Is(admissionErr, core.ErrGroupOnly):
+				sendContextualGroupFeedback(ctx, inter, peer, admissionErr)
+				return admissionErr
 			case errors.Is(admissionErr, core.ErrPermissionDenied):
 				if (effectivePermission == core.PermissionOwner || effectivePermission == core.PermissionSudo) && r.ownerID == 0 {
 					r.logger.Warn("assistant: owner_id not configured, rejecting privileged command",
