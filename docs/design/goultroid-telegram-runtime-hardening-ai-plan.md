@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — T1-T10 CLOSED. T11 source cleanup/audit is implemented through `13961fc07f87830a3949d5be120e679a458115ce`; executable T11 acceptance remains pending. No compatibility surface was removed without concrete caller evidence.**
+Status: **OPEN — T1-T10 CLOSED. T11 source cleanup is implemented through `13961fc07f87830a3949d5be120e679a458115ce`. The first T11 race run exposed an over-broad architecture fence rather than a demonstrated production race; that fence is corrected through `4613fa4b17dbb4c8328b24f941d075f3009b01a6`. Clean executable acceptance remains pending.**
 
 Audit authority:
 
@@ -1257,7 +1257,7 @@ The batch changes test fixtures/expectations only; no production behavior, execu
 
 ### T11 — Final cleanup and closure
 
-Status: **SOURCE IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — source cleanup and fences are at `13961fc07f87830a3949d5be120e679a458115ce`.
+Status: **SOURCE IMPLEMENTED / FIRST ACCEPTANCE RED / FENCE REMEDIATED / RERUN PENDING** — source cleanup is at `13961fc07f87830a3949d5be120e679a458115ce`; T11 fence remediation is at `4613fa4b17dbb4c8328b24f941d075f3009b01a6`.
 
 T11 audit/cleanup results:
 
@@ -1269,8 +1269,11 @@ T11 audit/cleanup results:
 - `internal/architecture/telegram_runtime_t11_test.go` now fences production Assistant shared-executor wiring, managed physical media upload ownership, absence of whole-transfer `saveFilePart` wrapping, and non-reintroduction of retired callback/scope-resolver helpers;
 - static post-commit inspection confirms three Assistant upload paths now call `c.uploadMediaFile(ctx, filePath)`, no `executeValue(... "upload.saveFilePart" ...)` whole-transfer wrapper remains, production Assistant wiring contains the shared executor adapter, and no `DirectExecutor` appears in production app wiring;
 - no second TaskEngine, RPC executor authority, callback protocol/runtime, interaction runtime, locale cache, downloader engine, or retry authority was introduced.
+- the first T11 race run was reported red. Audit found a concrete false-positive in the new architecture fence: it prohibited the generic substring `AcceptClaim(` across every production Go file, while `internal/idempotency/repository.go` legitimately exposes `AcceptClaim` as part of the reusable claim lifecycle API. T4 only forbids post-admission acceptance in the Telegram callback admission path.
+- `16b28bba7ad52d3bd474ba09120da346bca0c015` first scopes `AcceptClaim` checking to Telegram callback files. `4613fa4b17dbb4c8328b24f941d075f3009b01a6` then removes the redundant whole-repository legacy-callback scan because P1-F4/P1-F5/producer architecture tests already own that invariant, leaving T11 responsible only for its newly introduced shared-RPC/media boundary and callback-admission fence.
+- no evidence from the reported red run currently requires reverting the `UploadInlineMedia` production cleanup; the known deterministic T11 failure was the architecture false-positive above.
 
-The new T11 architecture test was run through local `gofmt` before commit. The two existing production files changed only by gofmt-neutral block/comment replacement; this environment still lacks a materialized repository checkout and the installed Go toolchain is 1.23.2 rather than the repository's Go 1.27, so no local compile/race result is claimed for `13961fc...`.
+The T11 architecture test changes were run through local `gofmt` before commit. The two existing production files changed only by gofmt-neutral block/comment replacement; this environment still lacks a materialized repository checkout and the installed Go toolchain is 1.23.2 rather than the repository's Go 1.27, so no local compile/race result is claimed for `13961fc...`.
 
 Before declaring T11 CLOSED, execute on a clean Go 1.27 checkout at or after `13961fc07f87830a3949d5be120e679a458115ce`:
 
