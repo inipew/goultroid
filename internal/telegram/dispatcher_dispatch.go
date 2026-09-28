@@ -114,7 +114,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if cmdExists && d.idempotencyMgr != nil {
 		key := "msg:" + commandIdentity
 		legacyKey := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
-		if key != legacyKey {
+		if key != legacyKey && time.Now().Before(d.legacyCommandIdentityUntil) {
 			legacyProcessed, legacyErr := d.idempotencyMgr.IsProcessedContext(ctx, legacyKey)
 			if legacyErr != nil {
 				ingressClaim.Release()

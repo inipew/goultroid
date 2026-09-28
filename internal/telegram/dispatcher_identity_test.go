@@ -95,3 +95,31 @@ func TestDispatcherCommandIdentityHonorsLegacyClaimDuringRollout(t *testing.T) {
 		t.Fatal("legacy replay unexpectedly created a new typed claim")
 	}
 }
+
+func TestDispatcherCommandIdentityStopsLegacyLookupAfterRolloutWindow(t *testing.T) {
+	client := &retryAdmissionTaskClient{}
+	d, mgr := newRetryCommandDispatcher(t, client)
+	d.legacyCommandIdentityUntil = time.Now().Add(-time.Second)
+	ctx := context.Background()
+
+	claimed, err := mgr.CheckAndSet(ctx, "msg:42:95", 5*time.Minute)
+	if err != nil || !claimed {
+		t.Fatalf("seed legacy claim: claimed=%v err=%v", claimed, err)
+	}
+	msg := &tg.Message{
+		ID:      95,
+		PeerID:  &tg.PeerChat{ChatID: 42},
+		FromID:  &tg.PeerUser{UserID: 200},
+		Message: ".retry",
+	}
+	if err := d.dispatch(ctx, tg.Entities{}, msg); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if got := client.submissions.Load(); got != 1 {
+		t.Fatalf("post-rollout typed command submissions=%d, want 1", got)
+	}
+	processed, err := mgr.IsProcessedContext(ctx, "msg:chat:42:95")
+	if err != nil || !processed {
+		t.Fatalf("typed claim after rollout processed=%v err=%v", processed, err)
+	}
+}

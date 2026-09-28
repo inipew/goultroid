@@ -41,8 +41,9 @@ type Dispatcher struct {
 	nativeInteractions NativeInteractionDispatcher
 	inlineEngine       *inline.Engine
 	normalizer         UpdateNormalizer
-	idempotencyMgr     *idempotency.Manager
-	ingressDedupe      *ingressMessageDedupe
+	idempotencyMgr             *idempotency.Manager
+	legacyCommandIdentityUntil time.Time
+	ingressDedupe              *ingressMessageDedupe
 	tasks              tasks.Client
 	scopeResolver      func(string) (tasks.ScopeIdentity, bool)
 
@@ -151,8 +152,9 @@ func NewDispatcher(
 		cooldown:      cooldown,
 		executor:      executor,
 		albumBuffer:   core.NewAlbumBuffer(10 * time.Minute),
-		normalizer:    NewNormalizer(),
-		ingressDedupe: newIngressMessageDedupe(defaultIngressDedupeTTL, defaultIngressDedupeCapacity),
+		normalizer:                 NewNormalizer(),
+		legacyCommandIdentityUntil: time.Now().Add(commandIdempotencyTTL),
+		ingressDedupe:              newIngressMessageDedupe(defaultIngressDedupeTTL, defaultIngressDedupeCapacity),
 		peerDone:      make(chan struct{}),
 	}
 	d.messageRouteIndex.Store(&messageHandlerIndex{})
