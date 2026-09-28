@@ -16,6 +16,7 @@ import (
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/services/download"
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
+	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -200,6 +201,95 @@ func (*p8ePort) Edit(context.Context, presentation.Target, presentation.Compiled
 	return nil
 }
 func (*p8ePort) Answer(context.Context, presentation.Answer) error { return nil }
+
+type expiringProbeProvider struct{ cancel context.CancelFunc }
+
+func (*expiringProbeProvider) Name() string      { return "extractor" }
+func (*expiringProbeProvider) Match(string) bool { return true }
+func (*expiringProbeProvider) Download(context.Context, string, storage.Storage, download.DownloadOptions) (*storage.Asset, error) {
+	return nil, errors.New("unused")
+}
+func (p *expiringProbeProvider) Probe(context.Context, string, download.ProbeOptions) (download.ProbeResult, error) {
+	p.cancel()
+	return download.ProbeResult{}, context.DeadlineExceeded
+}
+
+type deadlineAwarePort struct{ edited presentation.CompiledView }
+
+func (*deadlineAwarePort) Send(_ context.Context, target presentation.Target, _ presentation.CompiledView) (presentation.Target, error) {
+	return target, nil
+}
+func (p *deadlineAwarePort) Edit(ctx context.Context, _ presentation.Target, view presentation.CompiledView) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.edited = view
+	return nil
+}
+func (*deadlineAwarePort) Answer(context.Context, presentation.Answer) error { return nil }
+
+func TestVideoProbeTimeoutStillShowsFailure(t *testing.T) {
+	probeCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := New()
+	p.registry = download.NewRegistry(&expiringProbeProvider{cancel: cancel})
+	catalog := feature.NewRegistry()
+	scope := tasks.ScopeIdentity{Owner: "plugin:downloader", Generation: 1}
+	registration, err := catalog.Register(feature.Owner{ID: p.Name(), Scope: scope}, p.FeatureSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registration.Close()
+	sessions, err := rootinteraction.NewRuntime(catalog, rootinteraction.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sessions.Close()
+	port := &deadlineAwarePort{}
+	engine, err := orchestration.New(sessions, rootinteraction.NewDispatcher(sessions), port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := p.BindAssistant(assistantinteraction.DriverRuntime{
+		Engine: engine, Catalog: catalog,
+		Admit: func(string, feature.InteractionKind, string, int64, presentation.Target) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	state, err := encodeInteractiveState(interactiveState{URL: "https://youtu.be/dQw4w9WgXcQ", Provider: "extractor", Phase: phaseChoose})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := sessions.Create(context.Background(), rootinteraction.CreateRequest{
+		FeatureID: p.Name(), Binding: rootinteraction.Binding{ActorID: 42}, State: state, TTL: interactiveTTL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := sessions.CallbackData(context.Background(), created.Session.ID, actionVideo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := engine.PrepareCallback(probeCtx, orchestration.CallbackRequest{
+		Data: data, ActorID: 42, QueryID: 99,
+		Target: presentationtelegram.InlineTarget{BindingID: "inline:downloader:p8e"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profileAware, ok := prepared.(orchestration.ExecutionProfilePreparedCallback)
+	if !ok || profileAware.ExecutionProfile().ExecutionTimeout <= download.DefaultProbeTimeout {
+		t.Fatalf("video callback must outlive probe timeout; profile=%+v", profileAware)
+	}
+	if err := prepared.Dispatch(probeCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("dispatch error=%v, want deadline exceeded", err)
+	}
+	if !strings.Contains(port.edited.Text, "Error downloading media") {
+		t.Fatalf("failure view not delivered after probe timeout: %+v", port.edited)
+	}
+}
 
 func TestYTZZFinalCallbackDefersPhysicalResourcesToContinuation(t *testing.T) {
 	p := New()

@@ -215,7 +215,8 @@ func (p *Plugin) BindAssistant(rt assistantinteraction.DriverRuntime) (func(), e
 					return rootinteraction.ActionAdmission{
 						Scope: scope,
 						Profile: tasks.ExecutionProfile{
-							Resources: []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
+							ExecutionTimeout: download.DefaultProbeTimeout + 10*time.Second,
+							Resources:        []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
 						},
 						State:     probePreparation{State: state},
 						AckPolicy: rootinteraction.AckImmediate,
@@ -340,9 +341,15 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 			ctx.Cancel()
 			return err
 		}
+		showProbeFailure, err := ctx.PrepareStaticEdit(failedView(nil, state.Locale))
+		if err != nil {
+			return err
+		}
 		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{Timeout: download.DefaultProbeTimeout})
 		if err != nil {
-			_ = ctx.Edit(failedView(err, state.Locale))
+			editCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = showProbeFailure(editCtx)
+			cancel()
 			ctx.Cancel()
 			return err
 		}
