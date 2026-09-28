@@ -191,3 +191,19 @@ func TestM5SchedulerPluginDoesNotRequestJobsCapability(t *testing.T) {
 		t.Fatal("scheduler plugin still requests unrelated jobs capability")
 	}
 }
+
+func TestM5AppWiresJobsThroughStorePorts(t *testing.T) {
+	root := repositoryRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "internal", "app", "wiring_core.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(raw)
+	if !strings.Contains(source, "jobs.NewManagerWithPorts(") {
+		t.Fatal("production app no longer wires jobs through StorePorts")
+	}
+	if strings.Contains(source, "jobs.NewManager(taskEngine") {
+		t.Fatal("production app regressed to compatibility aggregate jobs constructor")
+	}
+}
+
