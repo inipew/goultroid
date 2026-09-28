@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — deep audit consolidated; implementation and acceptance pending**
+Status: **OPEN — overlap with the closed Telegram audit reconciled at `17e1af27b740ffc588e50c889e4c1884f805d8dc`; T1 and later non-overlap hardening pending**
 
 Audit authority:
 
@@ -9,12 +9,24 @@ Audit authority:
 - Source audit baseline commit: `docs(maint): close boundary refactor milestones`
 - Initial audit-plan commit: `d709ac47e3e8a414b4c71dd43c73aa3dded01516` — `docs(telegram): add audit handoff plan`
 - Audit date: 28 September 2026
+- Runtime-hardening reconciliation HEAD: `17e1af27b740ffc588e50c889e4c1884f805d8dc` — `fix(telegram): reserve callback claims before admission`
 - Scope: Telegram userbot + Assistant bot ingress, callbacks/a2 interaction, dispatcher, presentation/UI transport, peer resolution/cache, RPC executor/limiter, media transport, capability adapters, command response semantics, lifecycle/resource ownership.
 - Evidence class: source audit plus previously recorded targeted package-test evidence. No claim of current green full repository suite, current CPU/heap profile, production trace, or CI result.
 
 This document is the implementation plan produced by the later deep Telegram architecture/performance audit. It is intentionally separate from `docs/design/goultroid-telegram-audit-ai-plan.md`, which preserves the earlier audit of command identity, callback claim ownership, Assistant resolver ordering, EventBus ownership, and its targeted-test baseline. Read both documents before implementation. This plan is comparable in execution rigor to `docs/design/goultroid-maintainability-boundaries-ai-plan.md`.
 
 The target is **not** another Telegram redesign. The current architecture already has the correct major owners. The work below should close concrete correctness, bounded-state, callback latency, and physical-RPC coverage defects while preserving those owners.
+
+### Reconciliation with the closed Telegram audit
+
+At reconciliation HEAD `17e1af27b740ffc588e50c889e4c1884f805d8dc`, four findings in this later hardening plan are already closed by `docs/design/goultroid-telegram-audit-ai-plan.md` and must not be reimplemented:
+
+- **P1-I / typed command identity** — CLOSED by the audit-plan lineage, including invalid-peer fail-closed behavior and bounded legacy command-key rollout compatibility.
+- **P1-J / userbot callback durable admission** — CLOSED by the audit-plan lineage. The final design is `Begin -> Reserve -> native/TaskEngine admission`; there is no post-admission `AcceptClaim` write. Known pre-admission failures may release the generation-owned reservation, while uncertain reservation failure remains fail-closed.
+- **P2-B / Assistant callback classification before peer resolution** — CLOSED at `f7b295bb4366330af0b2d6a692cf58c0edd8f251` with zero resolver calls for unknown/noop/duplicate callbacks and preserved resolution for fresh a2 message callbacks.
+- **P2-D / EventBus callback answer ownership** — CLOSED at `ec41a80a329e1d5a56a3b8de78632c57a6094ad4`: callback EventBus publication is observation-only; native a2 or dispatcher fallback retains synchronous answer ownership.
+
+The first truly open implementation phase after this reconciliation is **T1 / P1-A — single-attempt non-idempotent text send correctness**.
 
 ---
 
@@ -490,6 +502,8 @@ The behavior is inconsistent with `failurePolicyForPriority`.
 
 ### P1-I — Command identity loses Telegram peer kind
 
+Status: **CLOSED — superseded by the closed Telegram audit plan; do not reimplement**
+
 Affected source:
 
 - `internal/telegram/dispatcher_ingress_dedupe.go`
@@ -516,6 +530,8 @@ This is a confirmed key-construction inconsistency; a real production collision 
 ---
 
 ### P1-J — Userbot callback durable claim is consumed before successful action admission
+
+Status: **CLOSED — superseded by the closed Telegram audit plan; final design reserves durably before admission and has no post-admission AcceptClaim write**
 
 Affected source:
 
@@ -564,6 +580,8 @@ Normal TaskEngine ordering makes this uncommon but does not make the compiler at
 ---
 
 ### P2-B — Assistant message callback resolves peer before callback classification/dedupe
+
+Status: **CLOSED — implemented at `f7b295bb4366330af0b2d6a692cf58c0edd8f251`**
 
 Affected source:
 
@@ -615,6 +633,8 @@ If retained, give a deterministic user-visible busy response. If removed, prove 
 ---
 
 ### P2-D — Callback EventBus answer ownership is not explicit
+
+Status: **CLOSED — observation-only EventBus contract verified at `ec41a80a329e1d5a56a3b8de78632c57a6094ad4` and later acceptance**
 
 Affected source:
 
@@ -745,7 +765,7 @@ Required invariants:
 
 ### T0 — Refresh baseline, reconcile tests, and freeze regression contracts
 
-Status: **PENDING**
+Status: **VERIFIED — reconciled against `17e1af27b740ffc588e50c889e4c1884f805d8dc`; prior-audit overlap fenced from reimplementation**
 
 Before coding:
 
@@ -859,7 +879,7 @@ Tests/benchmark:
 
 ### T4 — Make userbot callback durable admission retry-safe
 
-Status: **PENDING**
+Status: **CLOSED — satisfied by the prior audit-plan callback reservation hardening at `17e1af27b740ffc588e50c889e4c1884f805d8dc`**
 
 Scope:
 
@@ -902,7 +922,9 @@ This phase combines P1-F, P1-G, P2-B, and P2-C where possible.
 
 #### T5-A — classify/dedupe before peer resolution
 
-Reorder message callback ingress so resolver work is only done for a fresh callback path that needs a target.
+Status: **CLOSED — implemented at `f7b295bb4366330af0b2d6a692cf58c0edd8f251`**
+
+Message callback ingress now performs namespace classification and a2 query-ID dedupe before resolver work; only a fresh callback path that needs a target resolves the peer.
 
 #### T5-B — TaskEngine owns action lifetime after admission
 
@@ -1030,7 +1052,9 @@ Status: **PENDING**
 
 #### T9-A — EventBus callback contract
 
-Document and test whether callback EventBus publication is:
+Status: **CLOSED — observation-only contract and one-answer regressions verified by the prior audit plan**
+
+The selected contract is that callback EventBus publication is observation-only. Historical alternatives retained below for audit context were:
 
 - observation only; or
 - an explicit synchronous namespace claim.
@@ -1300,8 +1324,8 @@ This Telegram audit plan is closed only when all of the following are true:
 
 ## 13. Recommended next action
 
-Start with **T0**, then implement **T1 single-attempt non-idempotent send correctness** before performance tuning.
+T0 reconciliation is complete at `17e1af27b740ffc588e50c889e4c1884f805d8dc`. Start with **T1 single-attempt non-idempotent send correctness** before performance tuning.
 
-The first implementation session should not attempt to fix the entire plan at once. T1 is the highest-value safety correction because it can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
+The first non-overlap implementation phase is T1. It is the highest-value remaining safety correction because the current fallback can create a duplicate user-visible side effect despite the outer executor correctly classifying the operation as non-idempotent.
 
 After T1, T2 should close the two concrete bounded-state defects before callback/latency optimization proceeds.
