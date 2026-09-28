@@ -694,7 +694,7 @@ Gate:
 
 ### M4 — Split Jobs Manager by responsibility
 
-Status: **IMPLEMENTED — local package regression execution pending**
+Status: **IMPLEMENTED — P1 ownership collision corrected; local package regression execution pending**
 
 Implementation commits:
 
@@ -745,6 +745,10 @@ Implementation commits:
 - `f3b229bcb627575ac09a6693cefaefe257fc96bc` — `refactor(app): wire jobs through store ports`
 - `51addef3ec0b8d573859279db8bcf2c757bd7457` — `test(jobs): fence m5 production store ports`
 - `cd17d43c2b7eaa60740d352e89c90f98269e0a06` — `style(jobs): restore m5 gofmt`
+- `a35f4bb7c3d6e9c218315ac0421d976832a5feef` — `fix(plugin): make jobs namespace collision-free`
+- `82473b7ef38a5da98cd4f80a46d3af4bc192172d` — `test(plugin): fence jobs namespace collisions`
+- `b819b0633b6691dd0ee3158b0b94c85efe4335df` — `fix(plugin): preserve jobs owner cleanup compatibility`
+- `b512d5818eb3dd357984200308650756593da280` — `test(plugin): cover jobs registration namespace collision`
 
 Caller audit before implementation found no production plugin currently invoking `PluginContext.Jobs()`; existing PluginContext consumers use HTTP/files/process/secrets/tasks, while the scheduler plugin receives `scheduler.Service` from module wiring. M5 therefore does not replace the concrete manager with another broad speculative interface.
 
@@ -752,13 +756,13 @@ Plugin-facing boundaries now are consumer-sized:
 
 - `PluginContext.Jobs() (JobClient, error)` requires `CapJobs` only and exposes only `RegisterHandler`, `Register`, and `Trigger`;
 - `PluginContext.Schedules() (ScheduleClient, error)` requires `CapScheduler` only and exposes only `SaveSchedule` and `DisableSchedule`;
-- the scoped adapters stamp job IDs, handler names, `ScopeOwner`, `QuotaOwner`, schedule IDs, and schedule JobIDs into the `plugin:<owner>:` namespace rather than trusting caller-supplied ownership;
-- a foreign pre-prefixed identifier is nested under the current plugin namespace rather than being accepted as an ownership escape;
+- the scoped adapters stamp job IDs, handler names, `ScopeOwner`, `QuotaOwner`, schedule IDs, and schedule JobIDs into a component-encoded `plugin:<encoded-owner>:<encoded-local-id>` namespace rather than trusting caller-supplied ownership; `%` is escaped before `:`, preserving existing IDs for simple names while making owner/local boundaries unambiguous;
+- caller-supplied pre-prefixed identifiers are treated as local input and component-encoded rather than accepted as trusted canonical IDs, so `a / b:x` and `a:b / x` resolve to distinct IDs (`plugin:a:b%3Ax` vs `plugin:a%3Ab:x`); cleanup retains raw legacy-owner aliases plus the encoded owner so teardown covers both pre-fix durable rows and new rows;
 - the scheduler plugin no longer requests the unused `CapJobs` capability.
 
 The durable persistence boundary is now split into consumer-specific ports: `DefinitionStore`, `OccurrenceStore`, `AttemptStore`, `RecoveryStore`, `ScheduleStore`, `OutboxStore`, `DeferredDeadlineStore`, `DurableDiagnosticsStore`, `AttemptSummaryStore`, `NextAttemptLeaseStore`, `RecoveryCandidateStore`, and `DefinitionLoaderStore`. `Manager` owns a `StorePorts` value and each M4 responsibility file reads only its required ports. `manager_schedule.go`, for example, depends only on `Schedules`.
 
-`NewManagerWithPorts` is the narrow constructor. The existing `NewManager(client, Store, pump)` remains as a compatibility adapter and delegates through `StorePortsFromStore`; no second persistence implementation or transaction path was introduced. Production application wiring has already migrated to `NewManagerWithPorts`, so the compatibility aggregate remains only for tests/legacy callers pending M6 cleanup.
+`NewManagerWithPorts` is the narrow constructor. The existing `NewManager(client, Store, pump)` remains as a compatibility adapter and delegates through `StorePortsFromStore`; no second persistence implementation or transaction path was introduced. Production application wiring now calls `NewManagerWithPorts`, but it still constructs those ports with `StorePortsFromStore(jobStore)`. Therefore the constructor migration is complete while the production wiring still depends on the aggregate `Store` adapter. Removing that remaining aggregate dependency is explicitly deferred to M6 after caller inventory, rather than being counted as an M5 acceptance proof.
 
 Source audit confirms that the compatibility `Store` aggregate still contains exactly the same 17 durable methods as the pre-M5 Store when expressed as the union of definition/occurrence/attempt/recovery ports. Every previously optional interface also has an identical exported replacement method set. Compile-time SQLite tests fence both `*sqlite.Store` and `*sqlite.ResourceStore` against the complete core and optional port set, and `StorePortsFromStore` is tested to preserve every optional capability. A schedule-only Manager test constructs only `StorePorts{Schedules: ...}`, proving schedule responsibility tests no longer need a giant Store mock.
 
@@ -767,12 +771,14 @@ Architecture fences now require the narrow `JobClient`/`ScheduleClient` method s
 Gate status:
 
 - **PASS by source/API audit:** plugins no longer receive `*jobs.Manager` from PluginContext;
+- **PASS after P1 correction:** plugin Jobs/Schedules ownership namespace is component-encoded and regression-covered across RegisterHandler, Register, Trigger, DisableSchedule, plus literal escape-looking IDs; the documented `a / b:x` vs `a:b / x` collision is no longer possible;
 - **PASS by capability/API audit:** schedule-only access cannot invoke recovery, lifecycle, retry, diagnostics, or unrelated job mutation APIs;
 - **PASS by focused source test design:** responsibility tests can provide only the relevant durable store port;
 - **PASS by compatibility audit:** SQLite persistence semantics and method sets are preserved without creating duplicate stores/transactions;
+- **OPEN FOR M6 (not an M5 acceptance proof):** production wiring still obtains `StorePorts` through `StorePortsFromStore(jobStore)`, so aggregate `Store` removal requires a final caller/mocks inventory and direct port construction;
 - **PENDING local execution:** run Jobs/SQLite, plugin, app, and architecture regression suites before final maintainability closure. CI must not be inspected unless explicitly requested.
 
-Next: **M6 — Final cleanup and acceptance**. First inventory remaining compatibility `NewManager` aggregate callers and obsolete mocks before deleting anything; do not remove compatibility solely because production wiring has migrated.
+Next: **M6 — Final cleanup and acceptance**. First inventory remaining compatibility `NewManager` callers, direct `StorePortsFromStore` callers (including production wiring), and obsolete giant mocks. Replace production aggregate adaptation with explicit port construction only after confirming the concrete SQLite store supplies every required port; then remove compatibility aggregates/adapters only when their remaining callers reach zero.
 
 ### M6 — Final cleanup and acceptance
 
