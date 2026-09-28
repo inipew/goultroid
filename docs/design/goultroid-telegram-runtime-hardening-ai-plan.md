@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented; T4 and T9 reconciled; T10 focused executable acceptance passed locally on 2026-09-28 and the subsequently reported full-race failure set has been remediated through `cf109f3d527ed0ff3603e2820ecda8506c4273ac`; clean full-race rerun remains pending. T11 must not start until that rerun is reconciled.**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented; T4 and T9 reconciled; T10 focused executable acceptance passed locally on 2026-09-28. A second full-race rerun reduced the residual failures to seven packages, and those exact residuals are remediated at `617195727c0a2646e1a9da850ed781731105d4bf`; one clean full-race rerun is still required before T10 can close. T11 must not start before that gate.**
 
 Audit authority:
 
@@ -1228,6 +1228,28 @@ Two potentially ambiguous architecture failures were checked against repository 
 No second runtime, executor, callback protocol, locale cache, or delayed-work engine was introduced by this remediation.
 
 **Rerun gate:** T10 is still open until a clean checkout at or after this remediation lineage executes `go test -race ./... -count=1 -timeout=180s`. Any new failure must be classified from its exact test/error output rather than assumed to be baseline debt. Re-run the focused T10 matrix, `go vet ./...`, and `go build ./cmd/goultroid` if the full-race rerun exposes a production delta.
+
+#### T10-G — second full-race rerun and seven-residual cleanup
+
+The next local full-race rerun showed material progress: eleven previously failing packages passed, including all reported failures in `internal/architecture`, `internal/core`, `internal/assistant/command`, `internal/assistant/savedresponsecallback`, `internal/services/localization`, `plugins/admin`, `plugins/afk`, `plugins/calculator`, `plugins/clone`, `plugins/scheduler`, and `plugins/settings`.
+
+Seven exact residual failures remained and were individually reconciled against the current source before patching:
+
+- `plugins/sticker`: fix the test-local redeclaration introduced by the previous acceptance edit; reuse the existing `err` variable.
+- `internal/assistant/shell`: expect the canonical localized locale-setting button title `Assistant Language`.
+- `plugins/downloader`: make the direct-HTTP failed retry fixture use the only valid retained selection, `MediaModeDefault` + `MediaFormatDefault`.
+- `plugins/help`: register the synthetic test commands on both Userbot and Assistant surfaces so the Assistant-source help filter sees the intended catalog.
+- `plugins/media`: align the assertion with the current localized capitalization of `Unsupported target format`.
+- `plugins/myxl`: assert the compact dashboard QRIS banner (`⏳ <b>QRIS:</b>`) rather than the detail-screen heading.
+- `plugins/pin`: align the second permission-error assertion with the current capitalized `Bot/akun` text.
+
+These seven residuals are fixed in:
+
+- `617195727c0a2646e1a9da850ed781731105d4bf` — `test: close remaining full-race regressions`.
+
+The batch changes test fixtures/expectations only; no production behavior, executor, callback runtime, task engine, cache, or transport path is changed. The commit diff was inspected after push and each edit maps to the reported failure.
+
+**Next gate:** rerun `go test -race ./... -count=1 -timeout=180s` from a clean checkout at or after `617195727c0a2646e1a9da850ed781731105d4bf`. Do not close T10 or start T11 until that run is green or any newly reported exact residual is audited.
 
 ---
 
