@@ -78,7 +78,7 @@ func TestAssistantDirectHelpNavigationStaysOnA2(t *testing.T) {
 	if err := dispatchShell(t, engine, commandDetail, 711, peer); err != nil {
 		t.Fatalf("Dispatch(help command) error = %v", err)
 	}
-	if !strings.Contains(port.edited.Text, "Command") {
+	if !strings.Contains(port.edited.Text, "/help") || !strings.Contains(port.edited.Text, "Show help") {
 		t.Fatalf("help command detail = %q", port.edited.Text)
 	}
 

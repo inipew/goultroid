@@ -224,9 +224,9 @@ func TestSelfInlineDownloaderTrueEndToEndQueuesBoundedExtractorContinuation(t *t
 	if spec.Pool != tasks.PoolID("download") || !hasTaskResource(spec.Resources, "download") || !hasTaskResource(spec.Resources, "process") {
 		t.Fatalf("extractor continuation pool=%q resources=%+v", spec.Pool, spec.Resources)
 	}
-	input, ok := spec.Input.(string)
-	if !ok || input != rawURL {
-		t.Fatalf("extractor continuation input=%T(%v), want string(%q)", spec.Input, spec.Input, rawURL)
+	input, ok := spec.Input.([]byte)
+	if !ok || string(input) != rawURL {
+		t.Fatalf("extractor continuation input=%T(%v), want []byte(%q)", spec.Input, spec.Input, rawURL)
 	}
 	if ack.calls != 2 || ack.err != nil {
 		t.Fatalf("downloader callback completion ack calls=%d err=%v", ack.calls, ack.err)

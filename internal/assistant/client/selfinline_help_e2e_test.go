@@ -24,26 +24,32 @@ import (
 func TestSelfInlineHelpTrueEndToEndDispatchesCanonicalA2Action(t *testing.T) {
 	ctx := context.Background()
 	registry := inlineservice.NewRegistry()
-	manager := plugin.NewManager(core.NewRouter("."))
+	coreRouter := core.NewRouter(".")
+	if err := coreRouter.RegisterBatch([]core.Command{
+		{
+			Name:        "help",
+			Description: "Show help",
+			Category:    "Utility",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+			Handler:     func(*core.Context) error { return nil },
+		},
+		{
+			Name:        "ping",
+			Aliases:     []string{"p"},
+			Description: "Ping command",
+			Category:    "Utility",
+			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
+			Handler:     func(*core.Context) error { return nil },
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := plugin.NewManager(coreRouter)
 	manager.SetInlineRegistry(registry)
 
 	shellFeature := assistantshell.NewFeature()
 	shellFeature.SetHelpCommandProvider(func() []core.Command {
-		return []core.Command{
-			{
-				Name:        "help",
-				Description: "Show help",
-				Category:    "Utility",
-				Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
-			},
-			{
-				Name:        "ping",
-				Aliases:     []string{"p"},
-				Description: "Ping command",
-				Category:    "Utility",
-				Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
-			},
-		}
+		return coreRouter.CommandsForSurface(execution.SourceUserbot)
 	})
 	if err := manager.RegisterWithContext(ctx, shellFeature); err != nil {
 		t.Fatalf("RegisterWithContext(shell) error=%v", err)
@@ -114,6 +120,7 @@ func TestSelfInlineHelpTrueEndToEndDispatchesCanonicalA2Action(t *testing.T) {
 	}
 	actionClient := NewAssistantClient(1, "hash", "token", zap.NewNop())
 	actionClient.SetOwner(p1E2EOwnerID, nil)
+	actionClient.SetCoreRouter(coreRouter)
 	actionClient.SetInteractionFoundation(manager.FeatureCatalog(), manager.InteractionRuntime(), manager.ActionDispatcher())
 	if err := actionClient.syncShellActions(interactionEngine, manager.FeatureCatalog()); err != nil {
 		t.Fatalf("syncShellActions() error=%v", err)

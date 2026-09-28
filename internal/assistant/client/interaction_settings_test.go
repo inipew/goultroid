@@ -42,7 +42,9 @@ func (r *shellSettingsRepo) GetSetting(_ context.Context, scope string, scopeID 
 func (r *shellSettingsRepo) GetEffectiveSetting(_ context.Context, namespace, key string, chatID, userID int64) (*settings.SettingItem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.effectiveReads++
+	if namespace != assistantshell.LocaleSettingNamespace || key != assistantshell.LocaleSettingKey {
+		r.effectiveReads++
+	}
 	for _, ref := range []struct {
 		scope string
 		id    int64
