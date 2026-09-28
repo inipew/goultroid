@@ -217,4 +217,3 @@ func TestM5AppWiresJobsThroughStorePorts(t *testing.T) {
 		t.Fatal("production app does not build ports from the concrete resource store")
 	}
 }
-
