@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,16 @@ import (
 )
 
 const defaultFloodWaitRetryLimit = 5 * time.Second
+
+const (
+	botSentCapacity = 200
+	botSentTTL      = 5 * time.Minute
+)
+
+type botSentEntry struct {
+	key    string
+	sentAt time.Time
+}
 
 // mapTelegramError maps raw MTProto/RPC errors into core domain errors.
 func mapTelegramError(err error) error {
@@ -106,7 +117,8 @@ type Service struct {
 	resolver    *Resolver
 
 	botSentMu       sync.RWMutex
-	botSentMessages map[string]time.Time
+	botSentMessages map[string]*list.Element
+	botSentOrder    list.List
 }
 
 func newStandaloneServiceExecutor() *RPCExecutor {
@@ -138,7 +150,7 @@ func NewServiceWithExecutor(api *tg.Client, exec *RPCExecutor) *Service {
 		executor:        exec,
 		sender:          message.NewSender(api),
 		downloader:      downloader.NewDownloader(),
-		botSentMessages: make(map[string]time.Time),
+		botSentMessages: make(map[string]*list.Element),
 	}
 	if api != nil {
 		s.uploader = uploader.NewUploader(&managedUploadRPCClient{
@@ -397,6 +409,10 @@ func botSentPeerKey(peer tg.PeerClass, msgID int) string {
 }
 
 func (s *Service) recordBotSent(peer tg.InputPeerClass, msgID int) {
+	s.recordBotSentAt(peer, msgID, time.Now())
+}
+
+func (s *Service) recordBotSentAt(peer tg.InputPeerClass, msgID int, now time.Time) {
 	if s == nil || msgID == 0 {
 		return
 	}
@@ -404,21 +420,54 @@ func (s *Service) recordBotSent(peer tg.InputPeerClass, msgID int) {
 	if key == "" {
 		return
 	}
+
 	s.botSentMu.Lock()
 	defer s.botSentMu.Unlock()
 	if s.botSentMessages == nil {
-		s.botSentMessages = make(map[string]time.Time)
+		s.botSentMessages = make(map[string]*list.Element)
 	}
-	now := time.Now()
-	s.botSentMessages[key] = now
-	if len(s.botSentMessages) > 200 {
-		cutoff := now.Add(-5 * time.Minute)
-		for id, t := range s.botSentMessages {
-			if t.Before(cutoff) {
-				delete(s.botSentMessages, id)
-			}
+
+	cutoff := now.Add(-botSentTTL)
+	for front := s.botSentOrder.Front(); front != nil; front = s.botSentOrder.Front() {
+		entry := front.Value.(botSentEntry)
+		if entry.sentAt.After(cutoff) {
+			break
 		}
+		delete(s.botSentMessages, entry.key)
+		s.botSentOrder.Remove(front)
 	}
+
+	if elem, ok := s.botSentMessages[key]; ok {
+		elem.Value = botSentEntry{key: key, sentAt: now}
+		s.botSentOrder.MoveToBack(elem)
+		return
+	}
+
+	for len(s.botSentMessages) >= botSentCapacity {
+		front := s.botSentOrder.Front()
+		if front == nil {
+			clear(s.botSentMessages)
+			break
+		}
+		entry := front.Value.(botSentEntry)
+		delete(s.botSentMessages, entry.key)
+		s.botSentOrder.Remove(front)
+	}
+
+	elem := s.botSentOrder.PushBack(botSentEntry{key: key, sentAt: now})
+	s.botSentMessages[key] = elem
+}
+
+func (s *Service) botSentKeyActiveUnderLock(key string, now time.Time) bool {
+	if key == "" {
+		return false
+	}
+	elem, ok := s.botSentMessages[key]
+	if !ok || elem == nil {
+		return false
+	}
+	entry, ok := elem.Value.(botSentEntry)
+	return ok && entry.sentAt.After(now.Add(-botSentTTL))
 }
 
 // IsBotSentForPeer reports whether this bot instance sent msgID to the exact
@@ -429,15 +478,13 @@ func (s *Service) IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) b
 	}
 	keys := []string{botSentPeerKey(peer, msgID)}
 	if p, ok := peer.(*tg.PeerUser); ok && selfID != 0 && p.UserID == selfID {
-		keys = append(keys, fmt.Sprintf("self:%d", msgID))
+		keys = append(keys, botSentInputKey(&tg.InputPeerSelf{}, msgID))
 	}
+	now := time.Now()
 	s.botSentMu.RLock()
 	defer s.botSentMu.RUnlock()
 	for _, key := range keys {
-		if key == "" {
-			continue
-		}
-		if t, ok := s.botSentMessages[key]; ok && time.Since(t) < 5*time.Minute {
+		if s.botSentKeyActiveUnderLock(key, now) {
 			return true
 		}
 	}
@@ -451,11 +498,12 @@ func (s *Service) IsBotSent(msgID int) bool {
 		return false
 	}
 	suffix := fmt.Sprintf(":%d", msgID)
-	selfKey := fmt.Sprintf("self:%d", msgID)
+	selfKey := botSentInputKey(&tg.InputPeerSelf{}, msgID)
+	now := time.Now()
 	s.botSentMu.RLock()
 	defer s.botSentMu.RUnlock()
-	for key, t := range s.botSentMessages {
-		if (key == selfKey || strings.HasSuffix(key, suffix)) && time.Since(t) < 5*time.Minute {
+	for key := range s.botSentMessages {
+		if (key == selfKey || strings.HasSuffix(key, suffix)) && s.botSentKeyActiveUnderLock(key, now) {
 			return true
 		}
 	}

@@ -708,6 +708,75 @@ func TestService_BotSentTrackingSupportsSavedMessages(t *testing.T) {
 	}
 }
 
+func TestService_BotSentTrackingHardBounded(t *testing.T) {
+	svc := NewService(nil)
+	peer := &tg.InputPeerChat{ChatID: 10}
+	base := time.Now().Add(-time.Second)
+	total := botSentCapacity * 10
+
+	for msgID := 1; msgID <= total; msgID++ {
+		svc.recordBotSentAt(peer, msgID, base.Add(time.Duration(msgID)*time.Nanosecond))
+	}
+
+	svc.botSentMu.RLock()
+	retained := len(svc.botSentMessages)
+	ordered := svc.botSentOrder.Len()
+	svc.botSentMu.RUnlock()
+
+	if retained != botSentCapacity {
+		t.Fatalf("bot-sent retained entries=%d, want hard cap %d", retained, botSentCapacity)
+	}
+	if ordered != botSentCapacity {
+		t.Fatalf("bot-sent order entries=%d, want %d", ordered, botSentCapacity)
+	}
+	if svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 10}, 1, 0) {
+		t.Fatal("oldest entry survived capacity eviction")
+	}
+	if !svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 10}, total, 0) {
+		t.Fatal("newest entry missing after capacity eviction")
+	}
+}
+
+func TestService_BotSentTrackingRefreshDoesNotGrowOrder(t *testing.T) {
+	svc := NewService(nil)
+	peer := &tg.InputPeerChat{ChatID: 10}
+	base := time.Now().Add(-time.Second)
+
+	for i := 0; i < botSentCapacity*10; i++ {
+		svc.recordBotSentAt(peer, 77, base.Add(time.Duration(i)*time.Nanosecond))
+	}
+
+	svc.botSentMu.RLock()
+	retained := len(svc.botSentMessages)
+	ordered := svc.botSentOrder.Len()
+	svc.botSentMu.RUnlock()
+	if retained != 1 || ordered != 1 {
+		t.Fatalf("same-key refresh retained=%d order=%d, want 1/1", retained, ordered)
+	}
+}
+
+func TestService_BotSentTrackingTTL(t *testing.T) {
+	svc := NewService(nil)
+	peer := &tg.InputPeerChat{ChatID: 10}
+	svc.recordBotSentAt(peer, 91, time.Now().Add(-botSentTTL-time.Second))
+
+	if svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 10}, 91, 0) {
+		t.Fatal("expired bot-sent entry reported active")
+	}
+
+	svc.recordBotSent(peer, 91)
+	if !svc.IsBotSentForPeer(&tg.PeerChat{ChatID: 10}, 91, 0) {
+		t.Fatal("fresh bot-sent entry missing after expired entry replacement")
+	}
+	svc.botSentMu.RLock()
+	retained := len(svc.botSentMessages)
+	ordered := svc.botSentOrder.Len()
+	svc.botSentMu.RUnlock()
+	if retained != 1 || ordered != 1 {
+		t.Fatalf("expired replacement retained=%d order=%d, want 1/1", retained, ordered)
+	}
+}
+
 type captureDimensionsLimiter struct {
 	dimensions []LimitKey
 }
