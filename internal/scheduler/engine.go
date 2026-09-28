@@ -651,6 +651,10 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 		}
 	}()
 
+	if err := e.recoverPreparedScheduleRegistrations(ctx); err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		e.logger.Warn("recover prepared schedule registrations", zap.Error(err))
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return
