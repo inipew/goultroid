@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented; T4 and T9 reconciled; T10 focused executable acceptance passed locally on 2026-09-28; T11 pending. The full repository race suite has failures outside the focused T10 matrix (recorded below).**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented; T4 and T9 reconciled; T10 focused executable acceptance passed locally on 2026-09-28 and the subsequently reported full-race failure set has been remediated through `cf109f3d527ed0ff3603e2820ecda8506c4273ac`; clean full-race rerun remains pending. T11 must not start until that rerun is reconciled.**
 
 Audit authority:
 
@@ -1113,7 +1113,7 @@ Therefore:
 
 ### T10 — Performance/resource acceptance
 
-Status: **FOCUSED ACCEPTANCE PASSED / FULL SUITE RED** — harness from `435c51081abf44c2ffa97234863493bfd56819ee` (`test(telegram): add T10 resource acceptance`), executed locally on 2026-09-28 against the fixes in this commit.
+Status: **FOCUSED ACCEPTANCE PASSED / FULL-RACE REMEDIATION PUSHED / RERUN PENDING** — harness from `435c51081abf44c2ffa97234863493bfd56819ee` (`test(telegram): add T10 resource acceptance`); the locally reported full-race failure set was remediated through `cf109f3d527ed0ff3603e2820ecda8506c4273ac`.
 
 T10 remains an acceptance phase, not another architecture phase. The new harness composes the hardening-specific retained-state/performance checks with the already-existing P5/P8-H/P8-I lifecycle and resource acceptance instead of building a second runtime.
 
@@ -1206,7 +1206,28 @@ Record the exact HEAD, toolchain, focused/race results, benchmark workload and h
 - T10 bounded-state workload settled at 200 bot-origin entries and ordering nodes, 256 peer-cache entries/order/index nodes, 128 limiter buckets, and 32 penalties. Goroutines stayed at 2; sampled heap changed from 1,029,056 to 836,096 bytes after settling.
 - T10 benchmarks with `-benchtime=200ms -count=1`: bot-origin steady-state 425.7 ns/op with 200 resident entries/order nodes; peer-cache churn 481.3 ns/op at 256 entries and 562.0 ns/op at 4096 entries, with matching ordering nodes; Assistant callback ingress 3194 ns/op, p50/p95/p99 2204/4960/8015 ns and 1.000 TaskEngine admission/op. These are isolated local measurements, not Telegram network latency or a performance threshold.
 - Existing comparison benchmarks also passed: dispatcher callback observation 1599 ns/op, decision no-op 3579 ns/op; limiter cardinality 587.0 ns/op at 1 bucket to 1207 ns/op at 4096 buckets; RPC executor same-peer flood-wait occupancy retained its expected interactive/durable physical-RPC and inline-wait counts.
-- `go test -race ./... -count=1 -timeout=180s` failed outside the focused T10 packages. Failing packages included `internal/architecture`, `internal/assistant/command`, `internal/assistant/savedresponsecallback`, `internal/assistant/shell`, `internal/core`, `internal/services/localization`, and plugins `admin`, `afk`, `calculator`, `clone`, `downloader`, `help`, `media`, `myxl`, `pin`, `scheduler`, `settings`, and `sticker`. Several architecture tests reference the absent `internal/services/callback` directory; other failures concern unrelated feature contracts or presentation text. This full-suite result is not a passing repository gate and is not evidence that those failures predate this commit.
+- `go test -race ./... -count=1 -timeout=180s` failed outside the focused T10 packages. Failing packages included `internal/architecture`, `internal/assistant/command`, `internal/assistant/savedresponsecallback`, `internal/assistant/shell`, `internal/core`, `internal/services/localization`, and plugins `admin`, `afk`, `calculator`, `clone`, `downloader`, `help`, `media`, `myxl`, `pin`, `scheduler`, `settings`, and `sticker`. Several architecture tests referenced the absent `internal/services/callback` directory; other failures exposed either stale pre-a2/pre-localization expectations or concrete production/test-fixture defects. This run remains historical red evidence and is superseded only after a clean rerun.
+
+#### T10-F — full-race failure remediation
+
+The complete failure set reported from the local full-race run was audited rather than blanket-suppressed. Remediation is split between concrete production defects and stale acceptance assumptions:
+
+- `cc2ecb069be94d728b040e0849ba17421f679db7` — `fix(runtime): close full-race production regressions`:
+  - Assistant `ErrGroupOnly` preflight now emits the existing safe contextual group feedback before returning the typed error;
+  - Addon grant and UserLog destination verification no longer interpolate internal errors into user-visible text; both preserve the internal cause through `Context.Fail`;
+  - native Settings rows copy their button slice on insertion, removing backing-array aliasing that could mutate previously emitted action IDs.
+- `221d05e3ad51508361bc9a8ca97467a0e397553f` and `46ad3ecb953d06adf522cadcc9eefc575617559a` refresh architecture fences to the intentional current contracts: public Help cutover, Settings native/Assistant dual path, 10-second lazy EventBus retirement, canonical a2 interaction runtime, canonical localization service, and expanded inline benchmark cardinalities.
+- `1f05308d2917cde118d3eddcac12968fa8820858` aligns core/saved-response/shell acceptance with compact server-bound a2 identity and the canonical `internal/interaction` layer rather than the retired `internal/services/callback` package.
+- `950b5a75dbf62be27a1800740e1663a17aa92294` updates shell navigation, localization mutation/cache invalidation, and Admin delayed-action test fixtures without removing their original lifecycle assertions.
+- `4e7db89e09cb5edd9ba662c912de22ef2dbff46b` and `94dc74458439927fac33bf22ca43e868890efd3b` preserve the newer `Context.Fail` contract in Calculator/Clone/Media/Sticker tests: a presented failure remains non-nil for telemetry and must be recognized by `UserErrorWasPresented`; Downloader URL/retry fixtures and Help transport/localization fixtures are corrected without weakening side-effect assertions.
+- `7e90be137982c74d7a454f418722c0916ff93e0b` refreshes exact presentation expectations for MyXL, Pin, Scheduler, and AFK to their current user-visible output.
+- `cf109f3d527ed0ff3603e2820ecda8506c4273ac` performs final acceptance-fence/format cleanup after static review.
+
+Two potentially ambiguous architecture failures were checked against repository history before accepting the new fence values: public Help is intentional from `01f9f670b9e21fe676936d5e2d11b943ac9dad0c` (`fix(assistant): preserve public help cutover policy`), and the 10-second EventBus worker idle is intentional from `02c57c659f2414e1b63acf7271285aba9195be29` (`perf(runtime): shorten lazy worker idle settling`).
+
+No second runtime, executor, callback protocol, locale cache, or delayed-work engine was introduced by this remediation.
+
+**Rerun gate:** T10 is still open until a clean checkout at or after this remediation lineage executes `go test -race ./... -count=1 -timeout=180s`. Any new failure must be classified from its exact test/error output rather than assumed to be baseline debt. Re-run the focused T10 matrix, `go vet ./...`, and `go build ./cmd/goultroid` if the full-race rerun exposes a production delta.
 
 ---
 
@@ -1407,4 +1428,4 @@ This Telegram audit plan is closed only when all of the following are true:
 
 ## 13. Recommended next action
 
-Reconcile the full repository race-suite failures recorded in T10-E with the project's broader acceptance gate, then decide whether T10 can close. The focused T10 matrix, lifecycle tests, resource test, and benchmarks have fresh local evidence. Start T11 only after T10 closure is justified.
+Run the full repository race suite again on a clean checkout containing the T10-F remediation lineage. If it is green, record the exact tested HEAD/toolchain and close T10; if it is red, audit only the newly reported exact failures. The focused T10 matrix, lifecycle tests, resource test, and benchmarks already have fresh local evidence. Start T11 only after T10 closure is justified.
