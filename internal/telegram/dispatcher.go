@@ -24,28 +24,28 @@ type NativeInteractionDispatcher interface {
 // Dispatcher processes incoming Telegram updates and routes them to userbot commands.
 // Composition root is split across dispatcher_*.go files (peer, handlers, accessors, callback, dispatch).
 type Dispatcher struct {
-	router             *core.Router
-	perms              *core.Permissions
-	services           dispatcherCapabilities
-	compatService      DispatcherService
-	logger             *zap.Logger
-	cooldown           *core.CooldownTracker
-	executor           *core.CommandExecutor
-	selfID             int64
-	resolver           core.PeerResolver
-	rootCtx            context.Context
-	eventBus           *core.EventBus
-	albumBuffer        *core.AlbumBuffer
-	localizer          core.Localizer
-	localizerResolver  func(context.Context, int64, int64) core.Localizer
-	nativeInteractions NativeInteractionDispatcher
-	inlineEngine       *inline.Engine
-	normalizer         UpdateNormalizer
+	router                     *core.Router
+	perms                      *core.Permissions
+	services                   dispatcherCapabilities
+	compatService              DispatcherService
+	logger                     *zap.Logger
+	cooldown                   *core.CooldownTracker
+	executor                   *core.CommandExecutor
+	selfID                     int64
+	resolver                   core.PeerResolver
+	rootCtx                    context.Context
+	eventBus                   *core.EventBus
+	albumBuffer                *core.AlbumBuffer
+	localizer                  core.Localizer
+	localizerResolver          func(context.Context, int64, int64) core.Localizer
+	nativeInteractions         NativeInteractionDispatcher
+	inlineEngine               *inline.Engine
+	normalizer                 UpdateNormalizer
 	idempotencyMgr             *idempotency.Manager
 	legacyCommandIdentityUntil time.Time
 	ingressDedupe              *ingressMessageDedupe
-	tasks              tasks.Client
-	scopeResolver      func(string) (tasks.ScopeIdentity, bool)
+	tasks                      tasks.Client
+	scopeResolver              func(string) (tasks.ScopeIdentity, bool)
 
 	messageHandlers   []prioritizedHandler
 	messageRouteIndex atomic.Pointer[messageHandlerIndex]
@@ -144,18 +144,18 @@ func NewDispatcher(
 	cooldown := core.NewCooldownTracker()
 	executor := core.NewCommandExecutor(logger, cooldown, 30*time.Second)
 	d := &Dispatcher{
-		router:        router,
-		perms:         perms,
-		services:      dispatcherCapabilitiesFrom(svc),
-		compatService: svc,
-		logger:        logger,
-		cooldown:      cooldown,
-		executor:      executor,
-		albumBuffer:   core.NewAlbumBuffer(10 * time.Minute),
+		router:                     router,
+		perms:                      perms,
+		services:                   dispatcherCapabilitiesFrom(svc),
+		compatService:              svc,
+		logger:                     logger,
+		cooldown:                   cooldown,
+		executor:                   executor,
+		albumBuffer:                core.NewAlbumBuffer(10 * time.Minute),
 		normalizer:                 NewNormalizer(),
 		legacyCommandIdentityUntil: time.Now().Add(commandIdempotencyTTL),
 		ingressDedupe:              newIngressMessageDedupe(defaultIngressDedupeTTL, defaultIngressDedupeCapacity),
-		peerDone:      make(chan struct{}),
+		peerDone:                   make(chan struct{}),
 	}
 	d.messageRouteIndex.Store(&messageHandlerIndex{})
 	d.acceptingUpdates.Store(true)
@@ -165,8 +165,7 @@ func NewDispatcher(
 // SetNormalizer configures a custom update normalizer.
 func (d *Dispatcher) SetNormalizer(n UpdateNormalizer) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.normalizer = n
+	defer d.mu.Unlock()	dd.normalizer = n
 }
 
 // SetIdempotency configures durable deduplication for recognized commands and callbacks.
