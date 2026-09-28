@@ -137,7 +137,6 @@ func TestApp_UnifiedDAGComponents(t *testing.T) {
 		"taskengine",
 		"jobs",
 		"scheduler",
-		"callback_store",
 		"inline_cache",
 		"settings",
 		"settings-live",

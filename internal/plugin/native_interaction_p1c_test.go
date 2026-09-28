@@ -10,6 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/feature"
 	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -83,7 +84,7 @@ func TestP1CNativeDriverRebindsPerPluginGeneration(t *testing.T) {
 		manager.InteractionRuntime(),
 		manager.ActionDispatcher(),
 		tasksClient,
-		func() core.TelegramServicer { return service },
+		func() presentationtelegram.BridgeService { return service },
 		core.NewPermissions(1, nil),
 	)
 	if err != nil {

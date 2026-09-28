@@ -266,4 +266,3 @@ func TestScopedJobRegistrationCannotCollideAcrossColonBoundary(t *testing.T) {
 		t.Fatalf("unexpected scope owners: left=%q right=%q", leftBackend.registered.ScopeOwner, rightBackend.registered.ScopeOwner)
 	}
 }
-

@@ -734,7 +734,7 @@ Next: **M5 — Narrow Jobs external/store boundaries**. Do not re-merge these re
 
 ### M5 — Narrow Jobs external/store boundaries
 
-Status: **IMPLEMENTED — local package regression execution pending**
+Status: **CLOSED — M5 local acceptance passed; M6 final cleanup remains**
 
 Implementation commits:
 
@@ -776,7 +776,7 @@ Gate status:
 - **PASS by focused source test design:** responsibility tests can provide only the relevant durable store port;
 - **PASS by compatibility audit:** SQLite persistence semantics and method sets are preserved without creating duplicate stores/transactions;
 - **OPEN FOR M6 (not an M5 acceptance proof):** production wiring still obtains `StorePorts` through `StorePortsFromStore(jobStore)`, so aggregate `Store` removal requires a final caller/mocks inventory and direct port construction;
-- **PENDING local execution:** run Jobs/SQLite, plugin, app, and architecture regression suites before final maintainability closure. CI must not be inspected unless explicitly requested.
+- **PASS local execution:** `go test -race ./internal/jobs ./internal/jobs/sqlite ./internal/plugin ./internal/app -count=1 -timeout=180s` and `go test ./internal/architecture -run '^TestM5' -count=1 -timeout=180s` passed on the M5 closure checkout. The Plugin test fixture was updated to the current native `BridgeService` provider type, the App DAG test dropped its stale `callback_store` expectation, and the scoped ownership test was formatted with `gofmt`. The full architecture suite still has failures outside the M5 fences and remains part of broader acceptance. CI was not inspected.
 
 Next: **M6 — Final cleanup and acceptance**. First inventory remaining compatibility `NewManager` callers, direct `StorePortsFromStore` callers (including production wiring), and obsolete giant mocks. Replace production aggregate adaptation with explicit port construction only after confirming the concrete SQLite store supplies every required port; then remove compatibility aggregates/adapters only when their remaining callers reach zero.
 
