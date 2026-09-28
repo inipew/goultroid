@@ -69,43 +69,74 @@ func (i *sendMessageRecordingInvoker) Invoke(_ context.Context, input bin.Encode
 }
 
 func TestSendMessageSinglePhysicalAttemptOnTransportError(t *testing.T) {
-	transportErr := errors.New("transport lost after write")
-	for _, tc := range []struct {
-		name       string
-		withMarkup bool
+	for _, errCase := range []struct {
+		name          string
+		transportErr  error
+		wantClass     RPCErrorClass
+		wantAmbiguous bool
 	}{
-		{name: "plain"},
-		{name: "markup", withMarkup: true},
+		{
+			name:          "transient_ambiguous",
+			transportErr:  errors.New("connection reset after write"),
+			wantClass:     RPCTransient,
+			wantAmbiguous: true,
+		},
+		{
+			name:         "permanent",
+			transportErr: tgerr.New(400, "MESSAGE_TOO_LONG"),
+			wantClass:    RPCInvalidRequest,
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			invoker := &sendMessageRecordingInvoker{err: transportErr}
-			svc := NewServiceWithExecutor(tg.NewClient(invoker), nil)
-			peer := &tg.InputPeerSelf{}
+		t.Run(errCase.name, func(t *testing.T) {
+			if got := ClassifyRPCError(errCase.transportErr); got != errCase.wantClass {
+				t.Fatalf("transport error class=%s, want %s", got, errCase.wantClass)
+			}
+			for _, sendCase := range []struct {
+				name       string
+				withMarkup bool
+			}{
+				{name: "plain"},
+				{name: "markup", withMarkup: true},
+			} {
+				t.Run(sendCase.name, func(t *testing.T) {
+					invoker := &sendMessageRecordingInvoker{err: errCase.transportErr}
+					svc := NewServiceWithExecutor(tg.NewClient(invoker), nil)
+					peer := &tg.InputPeerSelf{}
 
-			var err error
-			if tc.withMarkup {
-				_, err = svc.SendMessageWithMarkup(context.Background(), peer, "<b>hello</b>", &tg.ReplyInlineMarkup{})
-			} else {
-				_, err = svc.SendMessage(context.Background(), peer, "<b>hello</b>")
-			}
-			if err == nil {
-				t.Fatal("expected transport error")
-			}
-			if invoker.calls != 1 {
-				t.Fatalf("expected exactly one physical messages.sendMessage call, got %d", invoker.calls)
-			}
-			if len(invoker.requests) != 1 {
-				t.Fatalf("expected one captured request, got %d", len(invoker.requests))
-			}
-			req := invoker.requests[0]
-			if req.Message != "hello" {
-				t.Fatalf("expected locally parsed message %q, got %q", "hello", req.Message)
-			}
-			if len(req.Entities) == 0 {
-				t.Fatal("expected locally parsed entities")
-			}
-			if tc.withMarkup && req.ReplyMarkup == nil {
-				t.Fatal("expected reply markup to be preserved")
+					var err error
+					if sendCase.withMarkup {
+						_, err = svc.SendMessageWithMarkup(context.Background(), peer, "<b>hello</b>", &tg.ReplyInlineMarkup{})
+					} else {
+						_, err = svc.SendMessage(context.Background(), peer, "<b>hello</b>")
+					}
+					if err == nil {
+						t.Fatal("expected transport error")
+					}
+					if invoker.calls != 1 {
+						t.Fatalf("expected exactly one physical messages.sendMessage call, got %d", invoker.calls)
+					}
+					if len(invoker.requests) != 1 {
+						t.Fatalf("expected one captured request, got %d", len(invoker.requests))
+					}
+					req := invoker.requests[0]
+					if req.Message != "hello" {
+						t.Fatalf("expected locally parsed message %q, got %q", "hello", req.Message)
+					}
+					if len(req.Entities) == 0 {
+						t.Fatal("expected locally parsed entities")
+					}
+					if sendCase.withMarkup && req.ReplyMarkup == nil {
+						t.Fatal("expected reply markup to be preserved")
+					}
+
+					var failure *RPCFailure
+					if !errors.As(err, &failure) {
+						t.Fatalf("expected RPCFailure, got %T: %v", err, err)
+					}
+					if failure.Ambiguous != errCase.wantAmbiguous {
+						t.Fatalf("ambiguous=%v, want %v", failure.Ambiguous, errCase.wantAmbiguous)
+					}
+				})
 			}
 		})
 	}
