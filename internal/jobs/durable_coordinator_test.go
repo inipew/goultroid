@@ -76,7 +76,13 @@ func TestDurableCoordinatorOwnsRecoveryAndOutbox(t *testing.T) {
 	}
 	defer pump.Stop(context.Background())
 
-	m := NewManager(coordinatorTaskClient{}, store, pump)
+	m := NewManagerWithPorts(coordinatorTaskClient{}, StorePorts{
+		Definitions: store,
+		Occurrences: store,
+		Attempts:    store,
+		Recovery:    store,
+		Outbox:      store,
+	}, pump)
 	m.SetOutboxSink(func(context.Context, OutboxEvent) error { return nil })
 	if err := m.Start(context.Background()); err != nil {
 		t.Fatal(err)

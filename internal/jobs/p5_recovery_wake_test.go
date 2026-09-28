@@ -6,7 +6,7 @@ import (
 )
 
 func TestRegisterHandlerWakesRecovery(t *testing.T) {
-	m := NewManager(nil, nil, nil)
+	m := NewManagerWithPorts(nil, StorePorts{}, nil)
 	m.recoveryWake = make(chan struct{}, 1)
 	if err := m.RegisterHandler("late-handler", func(context.Context, JobDefinition) error { return nil }); err != nil {
 		t.Fatal(err)

@@ -9,7 +9,7 @@ import (
 )
 
 func TestTimingOwnedOccurrenceUntrackWakesSchedulerByOccurrenceOrigin(t *testing.T) {
-	m := NewManager(nil, nil, nil)
+	m := NewManagerWithPorts(nil, StorePorts{}, nil)
 	var wakes atomic.Int32
 	m.SetScheduleWake(func() { wakes.Add(1) })
 
@@ -59,7 +59,7 @@ func TestTimingOwnedOccurrenceClassificationUsesOrigin(t *testing.T) {
 }
 
 type timingCommitWakeStore struct {
-	Store
+	AttemptStore
 }
 
 func (*timingCommitWakeStore) CommitAttemptResult(context.Context, string, uint64, AttemptState, []byte, string) error {
@@ -67,7 +67,7 @@ func (*timingCommitWakeStore) CommitAttemptResult(context.Context, string, uint6
 }
 
 func TestTimingOwnedDurableTerminalCommitWakesSchedulerBeforeUntrack(t *testing.T) {
-	m := NewManager(nil, &timingCommitWakeStore{}, nil)
+	m := NewManagerWithPorts(nil, StorePorts{Attempts: &timingCommitWakeStore{}}, nil)
 	var wakes atomic.Int32
 	m.SetScheduleWake(func() { wakes.Add(1) })
 
