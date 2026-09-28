@@ -316,8 +316,16 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 		}
 		client := d.taskClient()
 		if client == nil {
-			d.logger.Warn("decision handler execution unavailable", zap.Error(ErrTasksNotConfigured))
-			return true // fail closed for security/moderation handlers
+			failClosed := registered.failurePolicy == FailurePolicyFailClosed
+			d.logger.Warn("decision handler execution unavailable",
+				zap.Uint64("handler_id", registered.id),
+				zap.Bool("fail_closed", failClosed),
+				zap.Error(ErrTasksNotConfigured),
+			)
+			if failClosed {
+				return true
+			}
+			continue
 		}
 		var handled atomic.Bool
 		d.inFlight.Add(1)
@@ -337,12 +345,28 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 		})
 		if err != nil {
 			d.inFlight.Done()
-			d.logger.Warn("decision handler admission rejected", zap.Uint64("handler_id", registered.id), zap.Error(err))
-			return true
+			failClosed := registered.failurePolicy == FailurePolicyFailClosed
+			d.logger.Warn("decision handler admission rejected",
+				zap.Uint64("handler_id", registered.id),
+				zap.Bool("fail_closed", failClosed),
+				zap.Error(err),
+			)
+			if failClosed {
+				return true
+			}
+			continue
 		}
 		if _, err := ticket.Wait(decisionCtx); err != nil {
-			d.logger.Warn("decision handler deadline exceeded", zap.Uint64("handler_id", registered.id), zap.Error(err))
-			return true
+			failClosed := registered.failurePolicy == FailurePolicyFailClosed
+			d.logger.Warn("decision handler deadline exceeded",
+				zap.Uint64("handler_id", registered.id),
+				zap.Bool("fail_closed", failClosed),
+				zap.Error(err),
+			)
+			if failClosed {
+				return true
+			}
+			continue
 		}
 		if handled.Load() {
 			return true
