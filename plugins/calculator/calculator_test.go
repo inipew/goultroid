@@ -199,7 +199,7 @@ func TestCalculatorCommandFallsBackToNativeWithoutRenderer(t *testing.T) {
 		{
 			name:    "invalid",
 			rawArgs: "1+",
-			want:    []string{"Error:", "Invalid expression:"},
+			want:    []string{"Error:", "Invalid expression"},
 		},
 	}
 
@@ -208,7 +208,12 @@ func TestCalculatorCommandFallsBackToNativeWithoutRenderer(t *testing.T) {
 			p := New()
 			svc := &calculatorCommandService{}
 			ctx := calculatorCommandContext(svc, tc.rawArgs)
-			if err := p.handleCommand(ctx); err != nil {
+			err := p.handleCommand(ctx)
+			if tc.name == "invalid" {
+				if err == nil || !core.UserErrorWasPresented(err) {
+					t.Fatalf("invalid expression error=%v, want presented user-facing error", err)
+				}
+			} else if err != nil {
 				t.Fatalf("handleCommand() error=%v", err)
 			}
 			if svc.sent != "" {

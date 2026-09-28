@@ -125,8 +125,9 @@ func TestCloneFailureBeforePhotoMutationDoesNotDeletePhoto(t *testing.T) {
 		Message: &core.Message{ID: 1, IsOutgoing: true},
 	}
 
-	if err := p.cloneFailure(ctx, snapshot, false, errors.New("target download failed")); err != nil {
-		t.Fatalf("cloneFailure returned error: %v", err)
+	err := p.cloneFailure(ctx, snapshot, false, errors.New("target download failed"))
+	if err == nil || !core.UserErrorWasPresented(err) {
+		t.Fatalf("cloneFailure error=%v, want presented user-facing error", err)
 	}
 	if svc.deleteCalls != 0 {
 		t.Fatalf("rollback deleted %d profile photo(s) before mutation started", svc.deleteCalls)
@@ -162,8 +163,9 @@ func TestCloneFailureAfterPhotoMutationRestoresManagedSnapshot(t *testing.T) {
 		Message: &core.Message{ID: 1, IsOutgoing: true},
 	}
 
-	if err := p.cloneFailure(ctx, snapshot, true, errors.New("upload result uncertain")); err != nil {
-		t.Fatalf("cloneFailure returned error: %v", err)
+	err := p.cloneFailure(ctx, snapshot, true, errors.New("upload result uncertain"))
+	if err == nil || !core.UserErrorWasPresented(err) {
+		t.Fatalf("cloneFailure error=%v, want presented user-facing error", err)
 	}
 	if svc.deleteCalls != 1 {
 		t.Fatalf("photo rollback delete calls=%d, want 1", svc.deleteCalls)

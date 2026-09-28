@@ -332,7 +332,7 @@ func TestDownloaderRepliedURLFallbackOpensInteractiveSurface(t *testing.T) {
 			ID:      55,
 			Message: "Check out this song: https://example.com/audio/song.mp3",
 			Entities: []tg.MessageEntityClass{
-				&tg.MessageEntityURL{Offset: 21, Length: 33},
+				&tg.MessageEntityURL{Offset: 21, Length: 34},
 			},
 		},
 	}

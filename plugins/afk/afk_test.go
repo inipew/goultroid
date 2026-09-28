@@ -369,7 +369,7 @@ func TestAFKPlugin_NewCommands(t *testing.T) {
 	if err := cmd.Handler(&ctxStatus); err != nil {
 		t.Fatalf("status error: %v", err)
 	}
-	if !strings.Contains(svc.sent, "AFK Status: Inactive") {
+	if !strings.Contains(svc.sent, "AFK mode is inactive") {
 		t.Errorf("expected inactive status, got: %s", svc.sent)
 	}
 
