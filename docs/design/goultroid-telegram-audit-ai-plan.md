@@ -16,7 +16,10 @@ Audit baseline:
   - `ec41a80a329e1d5a56a3b8de78632c57a6094ad4` — `test(telegram): define callback observation ownership`
   - `566b124264ef9c760e0c9bd5507778796ed41bfc` — `fix(telegram): bound legacy command identity rollout`
   - `7fb229871c382e5c3abab955b051cafe69a66b48` — `fix(telegram): repair dispatcher formatting transfer`
-- Current source HEAD before this document update: `7fb229871c382e5c3abab955b051cafe69a66b48`.
+- T0 fixture-diagnosis follow-ups:
+  - `3bef413b2dfa0ebdb09526bf8af1a3bec4150874` — `test(telegram): update idempotency lifecycle fixtures`
+  - `b62fe410dbbebaab300138bf24cf9b87d7650af8` — `test(assistant): align shell acceptance fixtures`
+- Current source HEAD before this document update: `b62fe410dbbebaab300138bf24cf9b87d7650af8`.
 - No production trace, CPU/heap profile, fresh benchmark result, full race-suite result, or CI result is claimed by this implementation session.
 
 This document hands the Telegram audit to a later AI session. Its goal is to make callback ownership, command identity, and failure handling reliable while preserving Goultroid's existing runtime boundaries. Findings below distinguish observed behavior from risks that need a reproducer or measurement.
@@ -99,15 +102,22 @@ Do not attribute these failures to a specific implementation change without a re
 
 ### T0 — Freeze baseline and diagnose existing failures
 
-Status: **SOURCE BASELINE REFRESHED — fresh local execution still pending**
+Status: **SOURCE DIAGNOSIS COMPLETE — stale baseline fixtures corrected; fresh local execution still pending**
 
 Implementation-session findings:
 
-- refreshed `test-next` from `64735688...` before T1 and refreshed HEAD again before each later phase;
+- refreshed `test-next` before each implementation/diagnosis phase;
 - source inspection confirmed all four audit findings were still present before their corresponding changes;
 - no unrelated production Telegram redesign had landed between the original audit baseline and T1;
 - the session environment did not provide a runnable repository checkout, and shell network access could not materialize one, so the targeted command from Section 3 was not re-executed here;
-- the historical failures in Section 3 therefore remain baseline evidence, not fresh acceptance evidence.
+- all eight historical failures from Section 3 were traced at source level:
+  - the four `internal/telegram` failures were stale test repositories that only implemented the old `Claim` API. Production command admission had already moved to two-phase `Manager.Begin -> ExecutionClaim.Accept/Release`, so the fixtures returned `ErrClaimLifecycleUnsupported` before command admission. `3bef413b...` updates the fixtures to the current lifecycle without changing behavior expectations;
+  - Settings navigation counted the canonical locale lookup as a per-setting effective-value read. The fixture now excludes only the locale namespace/key from that counter, preserving the zero-value-read assertion for Settings root/category while detail views still must resolve their value;
+  - downloader E2E expected `WorkSpec.Input` as `string`, while the canonical downloader pipeline stores the bounded URL payload as `[]byte`; the assertion now checks the actual canonical type and content;
+  - self-inline Help rendered against one hand-written command provider but revalidated callback state against a separate empty `AssistantClient` router. The E2E now uses one canonical router authority for both render and callback revalidation;
+  - direct Help acceptance expected the old decorative literal `"Command"`; the current detail card is semantically identified by `/help` plus its description, so the regression now checks those stable semantics instead of obsolete presentation wording;
+- these are fixture-contract corrections. No production behavior was changed to mask the historical failures;
+- fresh execution remains required before the baseline is considered green.
 
 - Re-run the exact targeted command in Section 3 and preserve failing test names and output.
 - Trace why the dispatcher behavior matrix stops after decision handlers. Test the decision result, message decision flags, and TaskEngine wait/admission path before proposing a fix. Classify each assistant failure separately.
@@ -213,6 +223,8 @@ No numerical latency improvement is claimed until those benchmarks are run on a 
 - Required fresh local acceptance for this implementation lineage:
   ```text
   gofmt -w internal/telegram/dispatcher.go \
+    internal/telegram/dispatcher_ingress_dedupe_test.go \
+    internal/telegram/dispatcher_behavior_matrix_test.go \
     internal/telegram/dispatcher_dispatch.go \
     internal/telegram/dispatcher_command_claim_test.go \
     internal/telegram/dispatcher_identity_test.go \
@@ -221,6 +233,10 @@ No numerical latency improvement is claimed until those benchmarks are run on a 
     internal/telegram/dispatcher_callback_claim_test.go \
     internal/assistant/client/updates.go \
     internal/assistant/client/updates_callback_order_test.go \
+    internal/assistant/client/interaction_settings_test.go \
+    internal/assistant/client/selfinline_downloader_e2e_test.go \
+    internal/assistant/client/selfinline_help_e2e_test.go \
+    internal/assistant/client/shell_direct_acceptance_test.go \
     internal/telegram/dispatcher_callback_observation_test.go \
     internal/telegram/dispatcher_latency_benchmark_test.go
 
