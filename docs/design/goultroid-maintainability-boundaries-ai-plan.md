@@ -694,14 +694,27 @@ Gate:
 
 ### M4 — Split Jobs Manager by responsibility
 
-Tasks:
+Status: **IMPLEMENTED — local package regression execution pending**
 
-- mechanically move code from `manager.go`;
-- preserve one Manager;
-- preserve retry queue, recovery wake, tracked occurrence map, and persistence semantics;
-- keep lazy worker retirement and zero-idle behavior.
+Implementation commits:
 
-Required regression groups:
+- `fe59f2fbed62cfd492d24eab76745213a8cc9bf0` — `refactor(jobs): split manager responsibilities`
+- `ddaebd335388669c30087310542885c9ed263a81` — `test(maint): fence jobs manager m4 ownership`
+
+Implemented structure:
+
+- `manager.go` remains the sole owner of `Manager`, lifecycle, registration/core occurrence APIs, outbox wiring, retry/recovery channel state, tracked-occurrence state, and diagnostics;
+- `manager_schedule.go` owns durable schedule validation/mutation/due processing and the schedule wake surface;
+- `manager_retry.go` owns lazy retry-worker admission/retirement, bounded retry queue consumption, retry budgets/backoff, and ticket watching;
+- `manager_attempt.go` owns attempt-summary/lease helpers, persisted result semantics, durable attempt commit, attempt driving, and admission-failure persistence;
+- `manager_recovery.go` owns the coalesced recovery wake, the single durable coordinator timing loop, recovery passes, terminal-state classification, and bounded `Recover` scans;
+- `PersistencePump` remains unchanged and no second Manager, queue, retry executor, recovery coordinator, or persistence path was introduced.
+
+Mechanical-equivalence audit against pre-M4 HEAD `eb2652d7ad22492f127dae886c8666eeb6cfae0a` found 85 named `func/type` declarations before and after the split, with no missing, duplicated, extra, or declaration-body change after whitespace normalization. Source-level authority counts also remained unchanged: two Manager-family goroutine launch sites, one retry-queue allocation, two coalescing recovery/outbox wake channels, and two stop/done channel allocations. `manager.go` dropped from 1,719 lines to 775 lines.
+
+The M4 architecture fence requires exactly one `Manager` struct in `manager.go`, pins representative schedule/retry/attempt/recovery methods to their responsibility files, keeps the existing two Manager-family goroutine authorities (`Start -> durableCoordinatorLoop` and `ensureRetryWorkersLocked -> retryLoop`), and prevents principal mutable coordinator fields such as `retryQueue`, `recoveryWake`, `outboxWake`, `tracked`, retry counters, and `workersRemaining` from gaining a second struct owner.
+
+Required regression groups remain the acceptance set:
 
 - manager redesign tests;
 - retry/recovery tests;
@@ -711,10 +724,13 @@ Required regression groups:
 - P5 lifecycle/recovery wake;
 - persistence pump integration.
 
-Gate:
+Gate status:
 
-- `manager.go` no longer contains lifecycle + schedule + retry + attempt + recovery implementation in one file;
-- no new goroutine or queue introduced by the split.
+- **PASS by source/mechanical audit:** `manager.go` no longer owns lifecycle + schedule + retry + attempt + recovery implementation in one file;
+- **PASS by source/mechanical audit:** no new Manager-family goroutine or queue was introduced by the split;
+- **PENDING local execution:** run the regression groups above before treating M4 acceptance as fully closed. CI must not be inspected unless explicitly requested.
+
+Next: **M5 — Narrow Jobs external/store boundaries**. Do not re-merge these responsibility files while migrating callers/store ports.
 
 ### M5 — Narrow Jobs external/store boundaries
 
