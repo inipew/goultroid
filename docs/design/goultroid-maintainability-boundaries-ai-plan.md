@@ -694,7 +694,7 @@ Gate:
 
 ### M4 — Split Jobs Manager by responsibility
 
-Status: **IMPLEMENTED — P1 ownership collision corrected; local package regression execution pending**
+Status: **IMPLEMENTED — Jobs/SQLite regression groups passed during M5 local acceptance; final architecture acceptance remains part of M6**
 
 Implementation commits:
 
@@ -782,26 +782,56 @@ Next: **M6 — Final cleanup and acceptance**. First inventory remaining compati
 
 ### M6 — Final cleanup and acceptance
 
-Tasks:
+Status: **IMPLEMENTATION COMPLETE — final local validation still required before closure**
 
-- remove compatibility aggregates/adapters with zero callers;
-- remove obsolete giant mocks;
-- add architecture fences for the final boundaries;
-- check source layout and package documentation;
-- run local validation requested for the phase.
+Implementation commits:
 
-Suggested local validation, without CI polling:
+- `b20e23d6bd388827026d29cd8f2356fa6138dfba` — `refactor(app): wire concrete jobs store ports`
+- `09b666641409c51db860e1d6bcb2e1b3e853b018` — `test(jobs): migrate fixtures to concrete store ports`
+- `0e7d165ccd177b4b278355cf972d4a52dfce492a` — `test(jobs): narrow internal store fixtures`
+- `822fda71fefbd8ee27ba5986ad9505c8872218f7` — `refactor(jobs): remove aggregate compatibility surface`
+- `f6451efe4fac328152ea4cdafe76366dede30bc5` — `test(jobs): preserve core store port assertions`
+- `bbb7133f54d981fea17f229a2ccee9d312c894f2` — `docs(go): document final jobs plugin boundaries`
+
+Cleanup completed:
+
+- production wiring now builds `StorePorts` from the concrete `*sqlite.ResourceStore` through `jobsqlite.ResourcePorts`, so it no longer depends on the removed aggregate `jobs.Store`;
+- SQLite tests use concrete `Ports`/`ResourcePorts` builders, while package tests use `StorePorts` directly;
+- compatibility `jobs.NewManager(client, Store, pump)`, aggregate `jobs.Store`, and generic `StorePortsFromStore` were removed after all known callers migrated;
+- the timing-wake fixture no longer embeds the old broad Store surface and depends only on `AttemptStore`;
+- the coordinator integration fixture remains intentionally multi-port because `Manager.Start` exercises the full core durable contract plus outbox/recovery coordination; it is not a compatibility mock;
+- compile-time SQLite assertions now fence every core and optional store port independently for both `*sqlite.Store` and `*sqlite.ResourceStore`;
+- `TestM6JobsCompatibilitySurfaceIsGone` rejects reintroduction of the removed constructor/adapter across Jobs, App, Plugin, and production plugins;
+- the M5 architecture fence now requires production wiring through `jobsqlite.ResourcePorts(jobStore)` and rejects aggregate wiring;
+- package-level Go documentation now states the final Jobs/Plugin ownership boundaries.
+
+Source-level acceptance performed on current lineage:
+
+- full `internal/jobs` source scan found zero remaining `NewManager(` compatibility calls, zero `StorePortsFromStore(` calls, and zero `jobs.Store` references;
+- repository search also returned zero callers for `StorePortsFromStore`, `jobs.NewManager(`, and `jobs.Store`;
+- the M6 delta does not add a new persistence implementation, retry engine, Manager, queue, worker pool, or scheduler authority;
+- M4 responsibility files remain intact and the M5 scoped plugin boundary remains unchanged.
+
+Local validation status:
+
+- the immediately preceding M5 closure commit `f0b96c0733e5f1ff460412690fe5743becaf3885` recorded passing `go test -race ./internal/jobs ./internal/jobs/sqlite ./internal/plugin ./internal/app -count=1 -timeout=180s` and `go test ./internal/architecture -run '^TestM5' -count=1 -timeout=180s`;
+- those results predate the M6 compatibility-removal delta and therefore are **not** treated as M6 acceptance;
+- the current AI runtime still has no mounted repository checkout and shell GitHub access fails DNS resolution (`Could not resolve host: github.com`), so the requested M6 `gofmt`/test/vet suite cannot be truthfully executed here;
+- CI was not inspected.
+
+Required final local validation, without CI polling:
 
 ```text
-gofmt -w <all changed Go files>
+gofmt -w <all M6-changed Go files>
 go test ./internal/core ./internal/telegram
 go test ./internal/taskengine
 go test ./internal/jobs ./internal/jobs/sqlite
 go test ./internal/plugin ./internal/app
+go test ./internal/architecture
 go vet ./...
 ```
 
-A final `go test ./...` and selected `-race` runs are appropriate before closure if the user wants full local acceptance.
+For final maintainability closure, also run `go test ./...` and selected `-race` suites if the local checkout is available. M6 must not be changed to `CLOSED` until the post-M6 validation above is green or any failures are audited and explicitly classified.
 
 ## 9. Commit strategy
 
