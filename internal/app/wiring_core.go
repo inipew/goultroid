@@ -101,7 +101,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	// result credits until the pump acknowledges each attempt commit.
 	taskEngine.SetCommitPump(persistencePump)
 	jobStore := jobsqlite.NewResourceStore(db.DB)
-	jobsManager := jobs.NewManagerWithPorts(taskEngine, jobs.StorePortsFromStore(jobStore), persistencePump)
+	jobsManager := jobs.NewManagerWithPorts(taskEngine, jobsqlite.ResourcePorts(jobStore), persistencePump)
 	jobsManager.SetOutboxSink(func(ctx context.Context, event jobs.OutboxEvent) error {
 		return eventBus.PublishDurable(ctx, &core.JobLifecycleEvent{
 			MetaData: core.EventMeta{ID: event.ID}, At: event.CommittedAt,
