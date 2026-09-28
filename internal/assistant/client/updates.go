@@ -892,17 +892,6 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 		if deps.CacheEntities != nil {
 			deps.CacheEntities(e)
 		}
-		var inputPeer tg.InputPeerClass
-		if deps.Resolver != nil {
-			var err error
-			inputPeer, err = deps.Resolver.Resolve(ctx, update.Peer, update.UserID, e)
-			if err != nil {
-				if deps.Interaction != nil {
-					_ = deps.Interaction.Answer(ctx, update.QueryID, "Unable to resolve chat. Please retry.", false)
-				}
-				return nil
-			}
-		}
 		if isInteractionCallback(update.Data) {
 			if deps.CallbackDeduper != nil && !deps.CallbackDeduper.Admit(update.QueryID, time.Now()) {
 				if deps.Interaction != nil {
@@ -915,6 +904,17 @@ func RegisterUpdateHandlers(dispatcher *tg.UpdateDispatcher, deps UpdateHandlerD
 					_ = deps.Interaction.Answer(ctx, update.QueryID, "Interaction service unavailable.", false)
 				}
 				return nil
+			}
+			var inputPeer tg.InputPeerClass
+			if deps.Resolver != nil {
+				var err error
+				inputPeer, err = deps.Resolver.Resolve(ctx, update.Peer, update.UserID, e)
+				if err != nil {
+					if deps.Interaction != nil {
+						_ = deps.Interaction.Answer(ctx, update.QueryID, "Unable to resolve chat. Please retry.", false)
+					}
+					return nil
+				}
 			}
 			_, err := deps.InteractionIngress.tryMessage(ctx, update.Data, update.UserID, update.QueryID, inputPeer, extractChatID(update.Peer), update.MsgID)
 			if err != nil {
