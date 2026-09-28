@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T6-T11 remain pending**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3, T5, and T6 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T7-T11 remain pending**
 
 Audit authority:
 
@@ -390,6 +390,8 @@ Result: native/userbot callback ACKs compete with ordinary message family pressu
 ---
 
 ### P1-E — Assistant upload coverage is outer-operation only, not per physical upload RPC
+
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `4f751ec42499ff46ce207cf481d14aac361592cf`.
 
 Affected source:
 
@@ -1000,30 +1002,27 @@ Fresh focused execution is not claimed from this session: shell network access c
 
 ### T6 — Put every Assistant upload part behind the shared physical RPC executor
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `4f751ec42499ff46ce207cf481d14aac361592cf`.
 
 Scope:
 
 - Assistant media upload;
-- Assistant inline media upload;
-- any other Assistant `uploader.FromPath` path using raw `tg.Client`.
+- Assistant inline/media delivery paths that share `ClientInteraction`;
+- physical `upload.saveFilePart` and `upload.saveBigFilePart` operations emitted by gotd uploader.
 
-Implementation direction:
+Implementation evidence:
 
-- introduce/reuse a consumer-appropriate managed uploader client whose physical methods call the same injected application RPC executor;
-- do not create a second executor;
-- do not wrap an entire multipart transfer as if it were one `upload.saveFilePart`;
-- preserve media timeout and non-idempotent final `messages.sendMedia` semantics.
+- Production Assistant startup now calls `SetManagedMediaSender(..., tdClient.API())` instead of constructing `uploader.NewUploader(tdClient.API())` directly.
+- `managedUploadRPCClient` implements gotd's existing `uploader.Client` and delegates every physical small or big upload part through the already-injected `assistentrpc.Executor`, family `upload`, kind `IdempotentMutation`.
+- The executor is resolved lazily from `ClientInteraction`, so a later `SetRPCExecutor` update is observed rather than capturing a stale compatibility executor.
+- The previous outer `executeValue(... "upload.saveFilePart" ... uploader.FromPath)` wrapper was removed from both `SendMedia` and `SendMediaContext`. The whole transfer retains a 30-minute parent timeout, while the final `messages.sendMedia` remains separately classified as a non-idempotent physical mutation.
+- The physical uploader boundary deliberately hides the executor's final underlying Telegram/network cause from gotd's uploader retry classification, matching the existing userbot media-boundary principle and preventing a second retry authority.
+- Regression coverage in `internal/assistant/interaction/media_rpc_test.go` requires three small + two big physical parts to produce exactly five executor observations with the correct method/family/kind, and verifies an executor rejection cannot be reclassified by gotd through `errors.Is` while remaining recoverable at the Assistant outer boundary.
+- No second RPC executor, retry engine, uploader registry, worker, or timer was introduced.
 
-Tests:
+Fresh focused execution is not claimed in this session because the repository checkout/toolchain remains unavailable locally. The committed GitHub diff was inspected directly; CI was not inspected.
 
-- small file part path;
-- big file part path;
-- multiple parts counted individually;
-- shared executor fake receives each physical operation;
-- final send still has correct idempotency kind.
-
-**Gate:** P1-E closed.
+**Gate status:** P1-E source coverage is corrected and focused regressions are committed; executed focused/race acceptance remains pending in a valid Go 1.27 checkout/toolchain.
 
 ---
 
