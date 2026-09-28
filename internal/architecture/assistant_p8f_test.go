@@ -22,9 +22,9 @@ func TestP8FLocaleUsesCanonicalSettingsAndA2Surface(t *testing.T) {
 			"SetSettingsService",
 		},
 		filepath.Join(root, "internal", "assistant", "shell", "locale.go"): {
-			`LocaleSettingNamespace = "ui"`,
-			`LocaleSettingKey       = "locale"`,
-			"svc.ResolveString(",
+			`LocaleSettingNamespace = localization.LocaleSettingNamespace`,
+			`LocaleSettingKey       = localization.LocaleSettingKey`,
+			"localization.ResolveLocale(",
 			"LanguageView(",
 		},
 		filepath.Join(root, "internal", "assistant", "client", "shell_locale.go"): {
@@ -56,11 +56,11 @@ func TestP8FLocalePresentationCoversAssistantShellAndInline(t *testing.T) {
 		filepath.Join(root, "internal", "assistant", "shell", "shell.go"): {
 			"Locale    string",
 			"assistant.button.language",
-			"assistant.home.header",
-			"assistant.status.header",
+			"assistant.home.greeting",
+			"assistant.status.title",
 		},
 		filepath.Join(root, "internal", "assistant", "shell", "help.go"): {
-			"Locale   string",
+			"Locale     string",
 			"assistant.help.title",
 			"assistant.help.module_header",
 		},
@@ -76,7 +76,7 @@ func TestP8FLocalePresentationCoversAssistantShellAndInline(t *testing.T) {
 			"assistant.inline.feature",
 		},
 		filepath.Join(root, "internal", "assistant", "client", "interaction_help.go"): {
-			"shell.PublicStartView(c.Username(), c.shellLocale(",
+			"Locale:         c.shellLocale(",
 			"Locale: c.shellInteractionLocale(ctx)",
 		},
 	}

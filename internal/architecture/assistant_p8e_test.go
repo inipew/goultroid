@@ -20,7 +20,7 @@ func TestP8EDownloaderUsesA2PreparedActionsAndSharedResources(t *testing.T) {
 			"rootinteraction.ActionAdmission{",
 			"actionVideo720",
 			"actionFormatOpus",
-			"MaxHeight int",
+			`json:"h,omitempty"`,
 			"ctx.Transition(encoded, interactiveTTL, runningView(state))",
 			"p.submitInteractivePipeline(",
 			"ctx.Cancel()",

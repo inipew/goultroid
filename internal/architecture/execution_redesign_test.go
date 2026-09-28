@@ -129,19 +129,25 @@ func TestDelayedTelegramActionsAreRuntimeOwned(t *testing.T) {
 func TestTelegramCallbackAndOriginHardeningGuards(t *testing.T) {
 	root := repositoryRoot(t)
 
-	callbackTypes := filepath.Join(root, "internal", "services", "callback", "types.go")
-	data, err := os.ReadFile(callbackTypes)
+	tokenPath := filepath.Join(root, "internal", "interaction", "token.go")
+	tokenData, err := os.ReadFile(tokenPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"RequiresState bool", "RequiresCallbackState(", "truncateUTF8Bytes("} {
-		if !strings.Contains(string(data), required) {
-			t.Errorf("%s is missing hardening invariant %q", callbackTypes, required)
+	for _, required := range []string{"MaxCallbackDataBytes", "func OwnsCallbackData(", "func ParseCallbackToken("} {
+		if !strings.Contains(string(tokenData), required) {
+			t.Errorf("%s is missing canonical a2 invariant %q", tokenPath, required)
 		}
 	}
-	for _, forbidden := range []string{"text[:200]", "text[:4096]"} {
-		if strings.Contains(string(data), forbidden) {
-			t.Errorf("%s still contains UTF-8-unsafe truncation %q", callbackTypes, forbidden)
+
+	configPath := filepath.Join(root, "internal", "interaction", "config.go")
+	configData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"DefaultMaxSessions", "DefaultMaxStateBytes", "DefaultMaxTotalStateBytes"} {
+		if !strings.Contains(string(configData), required) {
+			t.Errorf("%s is missing bounded interaction invariant %q", configPath, required)
 		}
 	}
 
@@ -167,14 +173,14 @@ func TestTelegramCallbackAndOriginHardeningGuards(t *testing.T) {
 func TestIdleCachesAvoidPeriodicWakeupsAndRemainBounded(t *testing.T) {
 	root := repositoryRoot(t)
 
-	callbackLifecycle := filepath.Join(root, "internal", "services", "callback", "lifecycle.go")
-	lifecycleData, err := os.ReadFile(callbackLifecycle)
+	interactionRuntime := filepath.Join(root, "internal", "interaction", "runtime.go")
+	runtimeData, err := os.ReadFile(interactionRuntime)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, forbidden := range []string{"time.NewTicker(", "go func()"} {
-		if strings.Contains(string(lifecycleData), forbidden) {
-			t.Errorf("%s must remain passive during idle; found %q", callbackLifecycle, forbidden)
+		if strings.Contains(string(runtimeData), forbidden) {
+			t.Errorf("%s must remain passive during idle; found %q", interactionRuntime, forbidden)
 		}
 	}
 

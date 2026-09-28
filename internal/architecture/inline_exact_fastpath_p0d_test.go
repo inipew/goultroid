@@ -37,7 +37,7 @@ func TestP0DInlineRegistryKeepsExactIndexSeparateFromCustomMatchers(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, cardinality := range []string{"1, 16, 64, 256", "exact/%d", "custom/%d"} {
+	for _, cardinality := range []string{"1, 2, 16, 64, 256, 1024, 4096", "exact/%d", "custom/%d"} {
 		if !strings.Contains(string(benchRaw), cardinality) {
 			t.Fatalf("P0-D benchmark matrix missing %q", cardinality)
 		}
