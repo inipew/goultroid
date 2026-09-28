@@ -202,14 +202,22 @@ func (*p8ePort) Edit(context.Context, presentation.Target, presentation.Compiled
 }
 func (*p8ePort) Answer(context.Context, presentation.Answer) error { return nil }
 
-type expiringProbeProvider struct{ cancel context.CancelFunc }
+type expiringProbeProvider struct {
+	cancel  context.CancelFunc
+	onProbe func()
+	timeout time.Duration
+}
 
 func (*expiringProbeProvider) Name() string      { return "extractor" }
 func (*expiringProbeProvider) Match(string) bool { return true }
 func (*expiringProbeProvider) Download(context.Context, string, storage.Storage, download.DownloadOptions) (*storage.Asset, error) {
 	return nil, errors.New("unused")
 }
-func (p *expiringProbeProvider) Probe(context.Context, string, download.ProbeOptions) (download.ProbeResult, error) {
+func (p *expiringProbeProvider) Probe(_ context.Context, _ string, opts download.ProbeOptions) (download.ProbeResult, error) {
+	p.timeout = opts.Timeout
+	if p.onProbe != nil {
+		p.onProbe()
+	}
 	p.cancel()
 	return download.ProbeResult{}, context.DeadlineExceeded
 }
@@ -232,7 +240,8 @@ func TestVideoProbeTimeoutStillShowsFailure(t *testing.T) {
 	probeCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	p := New()
-	p.registry = download.NewRegistry(&expiringProbeProvider{cancel: cancel})
+	provider := &expiringProbeProvider{cancel: cancel}
+	p.registry = download.NewRegistry(provider)
 	catalog := feature.NewRegistry()
 	scope := tasks.ScopeIdentity{Owner: "plugin:downloader", Generation: 1}
 	registration, err := catalog.Register(feature.Owner{ID: p.Name(), Scope: scope}, p.FeatureSpec())
@@ -246,6 +255,8 @@ func TestVideoProbeTimeoutStillShowsFailure(t *testing.T) {
 	}
 	defer sessions.Close()
 	port := &deadlineAwarePort{}
+	var progressText string
+	provider.onProbe = func() { progressText = port.edited.Text }
 	engine, err := orchestration.New(sessions, rootinteraction.NewDispatcher(sessions), port)
 	if err != nil {
 		t.Fatal(err)
@@ -285,6 +296,15 @@ func TestVideoProbeTimeoutStillShowsFailure(t *testing.T) {
 	}
 	if err := prepared.Dispatch(probeCtx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("dispatch error=%v, want deadline exceeded", err)
+	}
+	if provider.timeout < time.Minute {
+		t.Fatalf("probe timeout=%v, want at least one minute for slow YouTube metadata", provider.timeout)
+	}
+	if profileAware.ExecutionProfile().ExecutionTimeout <= provider.timeout {
+		t.Fatalf("callback timeout must exceed probe timeout: %v <= %v", profileAware.ExecutionProfile().ExecutionTimeout, provider.timeout)
+	}
+	if !strings.Contains(progressText, "Inspecting video formats") {
+		t.Fatalf("probe began without a visible progress view: %q", progressText)
 	}
 	if !strings.Contains(port.edited.Text, "Error downloading media") {
 		t.Fatalf("failure view not delivered after probe timeout: %+v", port.edited)

@@ -33,8 +33,8 @@ const (
 	MaxSearchQueryBytes  = 256
 	DefaultSearchTimeout = 15 * time.Second
 	MaxSearchTimeout     = 30 * time.Second
-	DefaultProbeTimeout  = 15 * time.Second
-	MaxProbeTimeout      = 30 * time.Second
+	DefaultProbeTimeout  = 75 * time.Second
+	MaxProbeTimeout      = 90 * time.Second
 )
 
 // MediaMode is a bounded semantic selection understood by extractor-backed

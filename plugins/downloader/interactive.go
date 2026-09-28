@@ -345,6 +345,9 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		if err != nil {
 			return err
 		}
+		if err := ctx.Edit(probingVideoView(state.URL, state.Locale)); err != nil {
+			return err
+		}
 		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{Timeout: download.DefaultProbeTimeout})
 		if err != nil {
 			editCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -744,6 +747,11 @@ func audioFormatView(rawURL string, locales ...string) presentation.View {
 			{{Text: downloaderTR(locale, "ui.back"), ActionID: actionBack}, {Text: downloaderTR(locale, "ui.cancel"), ActionID: actionCancel}},
 		},
 	}
+}
+
+func probingVideoView(rawURL string, locales ...string) presentation.View {
+	locale := optionalDownloaderLocale(locales)
+	return presentation.View{Text: downloaderTR(locale, "downloader.probing_video") + "\n\n<code>" + core.EscapeHTML(rawURL) + "</code>"}
 }
 
 func videoFormatView(rawURL string, probe download.ProbeResult, locales ...string) presentation.View {
