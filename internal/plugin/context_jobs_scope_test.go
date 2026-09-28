@@ -118,7 +118,92 @@ func TestPluginContextJobsAndSchedulesEnforcePluginOwnership(t *testing.T) {
 	if err := scheduleClient.DisableSchedule(context.Background(), "plugin:beta:foreign"); err != nil {
 		t.Fatal(err)
 	}
-	if schedules.disabled != "plugin:alpha:plugin:beta:foreign" {
+	if schedules.disabled != "plugin:alpha:plugin%3Abeta%3Aforeign" {
 		t.Fatalf("foreign schedule id escaped scope: %q", schedules.disabled)
 	}
 }
+
+type captureScopedJobBackend struct {
+	triggered string
+}
+
+func (b *captureScopedJobBackend) RegisterHandler(string, jobs.Handler) error { return nil }
+func (b *captureScopedJobBackend) Register(jobs.JobDefinition) error         { return nil }
+func (b *captureScopedJobBackend) Trigger(_ context.Context, jobID string) error {
+	b.triggered = jobID
+	return nil
+}
+
+type captureScopedScheduleBackend struct {
+	disabled string
+}
+
+func (b *captureScopedScheduleBackend) SaveSchedule(context.Context, jobs.JobSchedule) error {
+	return nil
+}
+
+func (b *captureScopedScheduleBackend) DisableSchedule(_ context.Context, scheduleID string) error {
+	b.disabled = scheduleID
+	return nil
+}
+
+func TestPluginJobNamespaceSeparatesColonBoundaries(t *testing.T) {
+	left := pluginScopedName("a", "b:x")
+	right := pluginScopedName("a:b", "x")
+	if left == right {
+		t.Fatalf("ambiguous plugin job namespace: both encoded as %q", left)
+	}
+	if left != "plugin:a:b%3Ax" {
+		t.Fatalf("owner a / local b:x = %q", left)
+	}
+	if right != "plugin:a%3Ab:x" {
+		t.Fatalf("owner a:b / local x = %q", right)
+	}
+
+	// Percent itself is escaped first, so a literal escape-looking component
+	// cannot collide with the encoding of a colon.
+	if got, want := pluginScopedName("a", "b%3Ax"), "plugin:a:b%253Ax"; got != want {
+		t.Fatalf("literal percent component = %q, want %q", got, want)
+	}
+}
+
+func TestScopedJobTriggerCannotReachColonCollidingOwner(t *testing.T) {
+	leftBackend := &captureScopedJobBackend{}
+	rightBackend := &captureScopedJobBackend{}
+	left := scopedJobClient{manager: leftBackend, owner: "a"}
+	right := scopedJobClient{manager: rightBackend, owner: "a:b"}
+
+	if err := left.Trigger(context.Background(), "b:x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.Trigger(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	if leftBackend.triggered == rightBackend.triggered {
+		t.Fatalf("Trigger collision: both routed to %q", leftBackend.triggered)
+	}
+	if leftBackend.triggered != "plugin:a:b%3Ax" || rightBackend.triggered != "plugin:a%3Ab:x" {
+		t.Fatalf("unexpected trigger routing: left=%q right=%q", leftBackend.triggered, rightBackend.triggered)
+	}
+}
+
+func TestScopedScheduleDisableCannotReachColonCollidingOwner(t *testing.T) {
+	leftBackend := &captureScopedScheduleBackend{}
+	rightBackend := &captureScopedScheduleBackend{}
+	left := scopedScheduleClient{manager: leftBackend, owner: "a"}
+	right := scopedScheduleClient{manager: rightBackend, owner: "a:b"}
+
+	if err := left.DisableSchedule(context.Background(), "b:x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.DisableSchedule(context.Background(), "x"); err != nil {
+		t.Fatal(err)
+	}
+	if leftBackend.disabled == rightBackend.disabled {
+		t.Fatalf("DisableSchedule collision: both routed to %q", leftBackend.disabled)
+	}
+	if leftBackend.disabled != "plugin:a:b%3Ax" || rightBackend.disabled != "plugin:a%3Ab:x" {
+		t.Fatalf("unexpected disable routing: left=%q right=%q", leftBackend.disabled, rightBackend.disabled)
+	}
+}
+

@@ -22,13 +22,24 @@ type ScheduleClient interface {
 	DisableSchedule(context.Context, string) error
 }
 
+type scopedJobBackend interface {
+	RegisterHandler(string, jobs.Handler) error
+	Register(jobs.JobDefinition) error
+	Trigger(context.Context, string) error
+}
+
+type scopedScheduleBackend interface {
+	SaveSchedule(context.Context, jobs.JobSchedule) error
+	DisableSchedule(context.Context, string) error
+}
+
 type scopedJobClient struct {
-	manager *jobs.Manager
+	manager scopedJobBackend
 	owner   string
 }
 
 type scopedScheduleClient struct {
-	manager *jobs.Manager
+	manager scopedScheduleBackend
 	owner   string
 }
 
