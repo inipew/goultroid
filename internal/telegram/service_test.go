@@ -788,6 +788,55 @@ func (l *captureDimensionsLimiter) Reserve(_ time.Time, dimensions []LimitKey, _
 
 func (*captureDimensionsLimiter) Penalize(time.Time, []LimitKey, time.Duration) {}
 
+type callbackAnswerRecordingInvoker struct {
+	calls int
+}
+
+func (i *callbackAnswerRecordingInvoker) Invoke(_ context.Context, input bin.Encoder, _ bin.Decoder) error {
+	if _, ok := input.(*tg.MessagesSetBotCallbackAnswerRequest); !ok {
+		return fmt.Errorf("unexpected RPC %T", input)
+	}
+	i.calls++
+	return tgerr.New(400, "MESSAGE_TOO_LONG")
+}
+
+func TestAnswerCallbackQueryUsesCallbackLimiterFamily(t *testing.T) {
+	limiter := &captureDimensionsLimiter{}
+	exec, err := NewRPCExecutor(RPCExecutorConfig{
+		Limiter:       limiter,
+		DefaultPolicy: RetryPolicy{MaxAttempts: 1, MaxElapsed: time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoker := &callbackAnswerRecordingInvoker{}
+	svc := NewServiceWithExecutor(tg.NewClient(invoker), exec)
+
+	if err := svc.AnswerCallbackQuery(context.Background(), 123, "ack", false); err == nil {
+		t.Fatal("expected injected callback RPC error")
+	}
+	if invoker.calls != 1 {
+		t.Fatalf("callback RPC calls=%d, want 1", invoker.calls)
+	}
+
+	var global, callbackFamily, messagesFamily, method bool
+	for _, dimension := range limiter.dimensions {
+		switch {
+		case dimension.Scope == "global":
+			global = true
+		case dimension.Scope == "family" && dimension.Key == "callback":
+			callbackFamily = true
+		case dimension.Scope == "family" && dimension.Key == "messages":
+			messagesFamily = true
+		case dimension.Scope == "method" && dimension.Key == "messages.setBotCallbackAnswer":
+			method = true
+		}
+	}
+	if !global || !callbackFamily || !method || messagesFamily {
+		t.Fatalf("unexpected callback limiter dimensions: %+v", limiter.dimensions)
+	}
+}
+
 func TestServiceSinglePeerWrapperUsesTypedLimiterIdentity(t *testing.T) {
 	limiter := &captureDimensionsLimiter{}
 	exec, err := NewRPCExecutor(RPCExecutorConfig{

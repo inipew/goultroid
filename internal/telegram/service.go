@@ -803,7 +803,11 @@ func (s *Service) AnswerCallbackQuery(ctx context.Context, queryID int64, text s
 		req.SetFlags()
 	}
 
-	_, err := s.execIdempotentVal(ctx, "messages.setBotCallbackAnswer", func(opCtx context.Context) (bool, error) {
+	_, err := executeServiceRPC(ctx, s, RPCMeta{
+		Method: "messages.setBotCallbackAnswer",
+		Family: "callback",
+		Kind:   RPCIdempotentMutation,
+	}, func(opCtx context.Context) (bool, error) {
 		return s.api.MessagesSetBotCallbackAnswer(opCtx, req)
 	})
 	return err
