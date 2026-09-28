@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Hardening — AI Implementation Plan
 
-Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T7 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T8-T11 remain pending**
+Status: **OPEN — prior-audit overlap reconciled; T1-T3 and T5-T8 source hardening implemented with executed acceptance pending; T4 closed by prior audit; T9-T11 remain pending**
 
 Audit authority:
 
@@ -573,6 +573,8 @@ Whether Telegram/gotd redelivers the same query under each failure mode still ne
 
 ### P2-A — Presentation compiler reads session revision independently for each action button
 
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `67898bd1fadef81c13d2c11e9d4d8bb4ed1d3c87`, compatibility follow-up `628c4368d99f9de35f8124528c840f9d71c3cebf`.
+
 Affected source:
 
 - `internal/presentation/compiler.go`
@@ -1049,29 +1051,21 @@ Fresh focused execution is not claimed in this session because the valid checkou
 
 ### T8 — Make presentation compilation revision-atomic
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `67898bd1fadef81c13d2c11e9d4d8bb4ed1d3c87`, compatibility follow-up `628c4368d99f9de35f8124528c840f9d71c3cebf`.
 
-Scope:
+Implementation evidence:
 
-- `presentation.Compiler`;
-- interaction runtime API only as narrowly required.
+- Interaction runtime now exposes narrow `CallbackDataBatch`, which loads authoritative session metadata once and emits all requested action tokens from the same feature/session/revision snapshot.
+- Existing `CallbackData` delegates to the batch API, so presentation does not gain mutable runtime access.
+- `presentation.Compiler.CompileRows` validates the semantic rows first, gathers action identities, requests one token batch, and then assembles the transport-neutral compiled rows.
+- A concurrent state transition may stale the whole rendered keyboard, preserving existing stale-token semantics, but cannot produce a keyboard containing two revisions of one session.
+- Stateless URL/switch-inline-only row compilation preserves prior behavior: no session lookup is introduced when there are zero action buttons.
+- Deterministic regression `compiler_revision_test.go` advances session state while the first action validation is blocked. Both action tokens must retain the pre-update snapshot revision, while URL and switch-inline metadata remain unchanged.
+- Existing token encoding remains the canonical encoder, so the existing <=64-byte and callback-byte ownership coverage remains applicable rather than duplicating token logic.
 
-Implementation direction:
+Fresh focused execution is not claimed in this session because the valid checkout/Go 1.27 toolchain is unavailable locally. The committed diffs were inspected directly; CI was not inspected.
 
-- obtain one authoritative session metadata snapshot for the compile;
-- encode all action buttons from that same revision;
-- avoid exposing mutable runtime internals;
-- retain action validation and current-scope checks.
-
-Tests:
-
-- multiple action buttons use the same revision;
-- concurrent revision advancement cannot produce a mixed-revision keyboard;
-- URL and switch-inline buttons remain unchanged;
-- callback data remains <=64 bytes;
-- callback byte ownership/copying remains correct.
-
-**Gate:** P2-A closed.
+**Gate status:** P2-A source race and stateless compatibility behavior are addressed; executed focused/race acceptance remains pending.
 
 ---
 
