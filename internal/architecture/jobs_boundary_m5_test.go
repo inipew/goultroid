@@ -172,8 +172,16 @@ func TestM5JobsManagerUsesResponsibilityStorePorts(t *testing.T) {
 	if !strings.Contains(managerSource, "func NewManagerWithPorts(") {
 		t.Fatal("narrow store-port constructor missing")
 	}
-	if !strings.Contains(managerSource, "return NewManagerWithPorts(client, StorePortsFromStore(store), pump)") {
-		t.Fatal("compatibility NewManager no longer delegates through StorePorts")
+	if strings.Contains(managerSource, "func NewManager(") {
+		t.Fatal("jobs compatibility NewManager constructor was reintroduced")
+	}
+	storePortsRaw, err := os.ReadFile(filepath.Join(root, "internal", "jobs", "store_ports.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	storePortsSource := string(storePortsRaw)
+	if strings.Contains(storePortsSource, "type Store interface") || strings.Contains(storePortsSource, "StorePortsFromStore") {
+		t.Fatal("jobs aggregate Store compatibility boundary was reintroduced")
 	}
 }
 
@@ -202,8 +210,11 @@ func TestM5AppWiresJobsThroughStorePorts(t *testing.T) {
 	if !strings.Contains(source, "jobs.NewManagerWithPorts(") {
 		t.Fatal("production app no longer wires jobs through StorePorts")
 	}
-	if strings.Contains(source, "jobs.NewManager(taskEngine") {
-		t.Fatal("production app regressed to compatibility aggregate jobs constructor")
+	if strings.Contains(source, "StorePortsFromStore") || strings.Contains(source, "jobs.NewManager(taskEngine") {
+		t.Fatal("production app regressed to aggregate jobs compatibility wiring")
+	}
+	if !strings.Contains(source, "jobsqlite.ResourcePorts(jobStore)") {
+		t.Fatal("production app does not build ports from the concrete resource store")
 	}
 }
 

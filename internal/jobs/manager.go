@@ -138,10 +138,6 @@ func validateJobResources(resources []tasks.ResourceRequirement) error {
 	return nil
 }
 
-func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
-	return NewManagerWithPorts(client, StorePortsFromStore(store), pump)
-}
-
 // NewManagerWithPorts constructs a Manager from responsibility-specific durable
 // boundaries. Focused tests may provide only the ports they exercise; Start
 // still requires the complete core definition/occurrence/attempt/recovery set.

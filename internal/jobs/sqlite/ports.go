@@ -3,7 +3,7 @@ package sqlite
 import "github.com/inipew/goultroid/internal/jobs"
 
 // Ports exposes the durable capabilities implemented by the base SQLite store
-// without routing through an aggregate jobs.Store compatibility type.
+// without routing through an aggregate compatibility interface.
 func Ports(store *Store) jobs.StorePorts {
 	if store == nil {
 		return jobs.StorePorts{}

@@ -7,7 +7,6 @@ import (
 )
 
 var (
-	_ jobs.Store                   = (*Store)(nil)
 	_ jobs.ScheduleStore           = (*Store)(nil)
 	_ jobs.OutboxStore             = (*Store)(nil)
 	_ jobs.DeferredDeadlineStore   = (*Store)(nil)
@@ -17,7 +16,6 @@ var (
 	_ jobs.RecoveryCandidateStore  = (*Store)(nil)
 	_ jobs.DefinitionLoaderStore   = (*Store)(nil)
 
-	_ jobs.Store                   = (*ResourceStore)(nil)
 	_ jobs.ScheduleStore           = (*ResourceStore)(nil)
 	_ jobs.OutboxStore             = (*ResourceStore)(nil)
 	_ jobs.DeferredDeadlineStore   = (*ResourceStore)(nil)
@@ -28,8 +26,8 @@ var (
 	_ jobs.DefinitionLoaderStore   = (*ResourceStore)(nil)
 )
 
-func TestStorePortsFromSQLiteStorePreservesOptionalCapabilities(t *testing.T) {
-	ports := jobs.StorePortsFromStore(NewStore(nil))
+func TestSQLitePortsPreserveOptionalCapabilities(t *testing.T) {
+	ports := Ports(NewStore(nil))
 	if ports.Definitions == nil || ports.Occurrences == nil || ports.Attempts == nil || ports.Recovery == nil {
 		t.Fatal("core SQLite store ports were not populated")
 	}
@@ -37,5 +35,11 @@ func TestStorePortsFromSQLiteStorePreservesOptionalCapabilities(t *testing.T) {
 		ports.Diagnostics == nil || ports.AttemptSummaries == nil || ports.NextAttemptLeases == nil ||
 		ports.RecoveryCandidates == nil || ports.DefinitionLoader == nil {
 		t.Fatalf("optional SQLite store ports were not preserved: %+v", ports)
+	}
+
+	resourcePorts := ResourcePorts(NewResourceStore(nil))
+	if resourcePorts.Definitions == nil || resourcePorts.DefinitionLoader == nil ||
+		resourcePorts.Schedules == nil || resourcePorts.Outbox == nil {
+		t.Fatalf("resource SQLite ports were not preserved: %+v", resourcePorts)
 	}
 }

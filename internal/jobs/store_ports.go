@@ -85,16 +85,6 @@ type DefinitionLoaderStore interface {
 	ListDefinitions(context.Context) ([]JobDefinition, error)
 }
 
-// Store is the compatibility aggregate accepted by NewManager while callers
-// migrate to NewManagerWithPorts. Optional schedule/outbox/diagnostic fast
-// paths are discovered independently.
-type Store interface {
-	DefinitionStore
-	OccurrenceStore
-	AttemptStore
-	RecoveryStore
-}
-
 // StorePorts are consumer-specific durable boundaries for one Manager. A
 // production SQLite store may implement every field; focused tests can provide
 // only the ports exercised by the responsibility under test.
@@ -115,43 +105,4 @@ type StorePorts struct {
 
 func (p StorePorts) coreReady() bool {
 	return p.Definitions != nil && p.Occurrences != nil && p.Attempts != nil && p.Recovery != nil
-}
-
-// StorePortsFromStore adapts the compatibility aggregate without creating a
-// second persistence implementation.
-func StorePortsFromStore(store Store) StorePorts {
-	if store == nil {
-		return StorePorts{}
-	}
-	ports := StorePorts{
-		Definitions: store,
-		Occurrences: store,
-		Attempts:    store,
-		Recovery:    store,
-	}
-	if capability, ok := any(store).(ScheduleStore); ok {
-		ports.Schedules = capability
-	}
-	if capability, ok := any(store).(OutboxStore); ok {
-		ports.Outbox = capability
-	}
-	if capability, ok := any(store).(DeferredDeadlineStore); ok {
-		ports.DeferredDeadlines = capability
-	}
-	if capability, ok := any(store).(DurableDiagnosticsStore); ok {
-		ports.Diagnostics = capability
-	}
-	if capability, ok := any(store).(AttemptSummaryStore); ok {
-		ports.AttemptSummaries = capability
-	}
-	if capability, ok := any(store).(NextAttemptLeaseStore); ok {
-		ports.NextAttemptLeases = capability
-	}
-	if capability, ok := any(store).(RecoveryCandidateStore); ok {
-		ports.RecoveryCandidates = capability
-	}
-	if capability, ok := any(store).(DefinitionLoaderStore); ok {
-		ports.DefinitionLoader = capability
-	}
-	return ports
 }
