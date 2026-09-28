@@ -220,8 +220,9 @@ func TestConvertRejectsUnsupportedFormatBeforeDownload(t *testing.T) {
 		Svc:     svc,
 	}
 
-	if err := New().handleConvert(ctx); err != nil {
-		t.Fatalf("handleConvert returned error: %v", err)
+	err := New().handleConvert(ctx)
+	if err == nil || !core.UserErrorWasPresented(err) {
+		t.Fatalf("handleConvert error=%v, want presented user-facing error", err)
 	}
 	if svc.downloadCalled {
 		t.Fatal("unsupported format must be rejected before media download")

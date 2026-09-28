@@ -265,8 +265,9 @@ func TestStickerRejectsOversizedImageDimensions(t *testing.T) {
 		},
 		Svc: svc,
 	}
-	if err := New().handleSticker(ctx); err != nil {
-		t.Fatalf("unexpected handler error: %v", err)
+	err := New().handleSticker(ctx)
+	if err == nil || !core.UserErrorWasPresented(err) {
+		t.Fatalf("handler error=%v, want presented user-facing error", err)
 	}
 	if svc.mediaSent {
 		t.Fatal("unsafe image must not be sent as sticker")

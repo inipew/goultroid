@@ -319,8 +319,8 @@ func TestP4RunningDownloaderOffersCancellationAndFailureOffersRetry(t *testing.T
 		URL:      "https://example.com/file.mp4",
 		Provider: "http",
 		Phase:    phaseRunning,
-		Mode:     download.MediaModeVideo,
-		Format:   download.MediaFormatMP4,
+		Mode:     download.MediaModeDefault,
+		Format:   download.MediaFormatDefault,
 		TaskRoot: "downloader:interactive:1",
 	}
 	if !viewHasAction(runningView(state).Rows, actionCancel) {

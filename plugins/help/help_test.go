@@ -145,12 +145,12 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help all: %v", err)
 	}
 
-	if !strings.Contains(svc.edited, "Admin") || !strings.Contains(svc.edited, "Utility") {
-		t.Errorf("expected help output to contain Admin and Utility categories, got: %s", svc.edited)
+	if !strings.Contains(svc.sent, "Admin") || !strings.Contains(svc.sent, "Utility") {
+		t.Errorf("expected help output to contain Admin and Utility categories, got: %s", svc.sent)
 	}
 	// Compact view: command names listed inline, no expandable blockquotes in summary
-	if !strings.Contains(svc.edited, ".ban") || !strings.Contains(svc.edited, ".ping") {
-		t.Errorf("expected help overview to list command names, got: %s", svc.edited)
+	if !strings.Contains(svc.sent, ".ban") || !strings.Contains(svc.sent, ".ping") {
+		t.Errorf("expected help overview to list command names, got: %s", svc.sent)
 	}
 
 	// 2. Help for existing command
@@ -161,8 +161,8 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help ping: %v", err)
 	}
 
-	if !strings.Contains(svc.edited, "Command: .ping") || !strings.Contains(svc.edited, "Check latency") {
-		t.Errorf("expected help target to show ping details, got: %s", svc.edited)
+	if !strings.Contains(svc.sent, "Command: .ping") || !strings.Contains(svc.sent, "Check latency") {
+		t.Errorf("expected help target to show ping details, got: %s", svc.sent)
 	}
 
 	// 3. Help for module/category
@@ -173,8 +173,8 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help admin: %v", err)
 	}
 
-	if !strings.Contains(svc.edited, "Module: Admin") || !strings.Contains(svc.edited, ".ban") {
-		t.Errorf("expected module help to show admin commands, got: %s", svc.edited)
+	if !strings.Contains(svc.sent, "Module: Admin") || !strings.Contains(svc.sent, ".ban") {
+		t.Errorf("expected module help to show admin commands, got: %s", svc.sent)
 	}
 
 	// 4. Help for non-existent command/module
@@ -185,8 +185,8 @@ func TestHelpPlugin(t *testing.T) {
 		t.Fatalf("unexpected error running help nonexistent: %v", err)
 	}
 
-	if !strings.Contains(svc.edited, "not found") {
-		t.Errorf("expected not found message, got: %s", svc.edited)
+	if !strings.Contains(svc.sent, "not found") {
+		t.Errorf("expected not found message, got: %s", svc.sent)
 	}
 }
 
@@ -391,6 +391,7 @@ func userbotHelpContext(svc *mockService, args ...string) *core.Context {
 		Args:    args,
 		Message: &core.Message{ID: 77, IsOutgoing: true},
 		Svc:     svc,
-		PeerID:  &tg.InputPeerChat{ChatID: 123},
+		PeerID:    &tg.InputPeerChat{ChatID: 123},
+		Localizer: localization.New(localization.LocaleEnglish),
 	}
 }
