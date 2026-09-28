@@ -11,7 +11,6 @@ import (
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/updates"
-	"github.com/gotd/td/telegram/uploader"
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
@@ -201,7 +200,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 		groupRules.SetPrivilegedChecker(c.isGlobalPrivileged)
 		groupRules.SetTransport(c.interaction)
 	}
-	c.interaction.SetMediaSender(message.NewSender(tdClient.API()), uploader.NewUploader(tdClient.API()))
+	c.interaction.SetManagedMediaSender(message.NewSender(tdClient.API()), tdClient.API())
 	if c.metrics != nil {
 		c.interaction.SetMetricsCollector(c.metrics)
 	}

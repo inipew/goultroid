@@ -67,8 +67,7 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 		executor: assistentrpc.DirectExecutor{},
 	}
 	if tgClient, ok := api.(*tg.Client); ok {
-		ci.sender = message.NewSender(tgClient)
-		ci.uploader = uploader.NewUploader(tgClient)
+		ci.SetManagedMediaSender(message.NewSender(tgClient), tgClient)
 	}
 	return ci
 }
@@ -77,6 +76,16 @@ func NewClientInteraction(api TelegramAPI, logger *zap.Logger) *ClientInteractio
 func (c *ClientInteraction) SetMediaSender(sender *message.Sender, upl MediaUploader) {
 	c.sender = sender
 	c.uploader = upl
+}
+
+// SetManagedMediaSender configures the production media sender and an uploader
+// whose every physical saveFilePart/saveBigFilePart RPC uses the current shared
+// executor. Tests may still inject a narrow MediaUploader through SetMediaSender.
+func (c *ClientInteraction) SetManagedMediaSender(sender *message.Sender, raw uploader.Client) {
+	c.sender = sender
+	c.uploader = newManagedMediaUploader(raw, func() assistentrpc.Executor {
+		return c.executor
+	})
 }
 
 // SetRPCExecutor configures the shared executor used for multi-request media operations.
@@ -867,10 +876,7 @@ func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClas
 		}
 	}()
 
-	const transferTimeout = 30 * time.Minute
-	inputFile, err := executeValue(ctx, c.executor, "upload.saveFilePart", "upload", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.InputFileClass, error) {
-		return c.uploader.FromPath(opCtx, filePath)
-	})
+	inputFile, err := c.uploadMediaFile(ctx, filePath)
 	if err != nil {
 		retErr = fmt.Errorf("failed to upload file %q: %w", filePath, err)
 		return nil, retErr
@@ -882,7 +888,7 @@ func (c *ClientInteraction) SendMedia(ctx context.Context, peer tg.InputPeerClas
 		styledCaption = append(styledCaption, html.String(nil, caption))
 	}
 
-	updates, err := executeValue(ctx, c.executor, "messages.sendMedia", "messages", assistentrpc.NonIdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.UpdatesClass, error) {
+	updates, err := executeValue(ctx, c.executor, "messages.sendMedia", "messages", assistentrpc.NonIdempotentMutation, mediaTransferTimeout, func(opCtx context.Context) (tg.UpdatesClass, error) {
 		switch mediaType {
 		case "photo":
 			return builder.UploadedPhoto(opCtx, inputFile, styledCaption...)
@@ -939,10 +945,7 @@ func (c *ClientInteraction) SendMediaContext(
 		}
 	}()
 
-	const transferTimeout = 30 * time.Minute
-	inputFile, err := executeValue(ctx, c.executor, "upload.saveFilePart", "upload", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.InputFileClass, error) {
-		return c.uploader.FromPath(opCtx, filePath)
-	})
+	inputFile, err := c.uploadMediaFile(ctx, filePath)
 	if err != nil {
 		retErr = fmt.Errorf("failed to upload file %q: %w", filePath, err)
 		return nil, retErr
@@ -961,7 +964,7 @@ func (c *ClientInteraction) SendMediaContext(
 		styledCaption = append(styledCaption, html.String(nil, caption))
 	}
 
-	updates, err := executeValue(ctx, c.executor, "messages.sendMedia", "messages", assistentrpc.NonIdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.UpdatesClass, error) {
+	updates, err := executeValue(ctx, c.executor, "messages.sendMedia", "messages", assistentrpc.NonIdempotentMutation, mediaTransferTimeout, func(opCtx context.Context) (tg.UpdatesClass, error) {
 		switch mediaType {
 		case "photo":
 			return builder.UploadedPhoto(opCtx, inputFile, styledCaption...)
