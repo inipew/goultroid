@@ -14,7 +14,9 @@ Audit baseline:
   - `7efb886816d050263b4f4f254e2d6dfd6515eddc` — `fix(telegram): make callback claims admission safe`
   - `f7b295bb4366330af0b2d6a692cf58c0edd8f251` — `fix(assistant): classify callbacks before peer resolution`
   - `ec41a80a329e1d5a56a3b8de78632c57a6094ad4` — `test(telegram): define callback observation ownership`
-- Current implementation HEAD before this document update: `ec41a80a329e1d5a56a3b8de78632c57a6094ad4`.
+  - `566b124264ef9c760e0c9bd5507778796ed41bfc` — `fix(telegram): bound legacy command identity rollout`
+  - `7fb229871c382e5c3abab955b051cafe69a66b48` — `fix(telegram): repair dispatcher formatting transfer`
+- Current source HEAD before this document update: `7fb229871c382e5c3abab955b051cafe69a66b48`.
 - No production trace, CPU/heap profile, fresh benchmark result, full race-suite result, or CI result is claimed by this implementation session.
 
 This document hands the Telegram audit to a later AI session. Its goal is to make callback ownership, command identity, and failure handling reliable while preserving Goultroid's existing runtime boundaries. Findings below distinguish observed behavior from risks that need a reproducer or measurement.
@@ -124,7 +126,8 @@ Implemented:
 - TaskEngine command IDs now use `cmd:<typed-identity>`;
 - command correlation/ordering IDs now use the same typed identity;
 - added rollout compatibility: old `msg:<numericChatID>:<messageID>` claims are read as a temporary replay fence but are no longer written;
-- added focused regressions for namespace separation, same-numeric-ID chat/channel admission, and legacy-claim rollout behavior.
+- follow-up `566b124...` bounds that legacy-key lookup to one old claim TTL after Dispatcher construction, avoiding a permanent second idempotency read on every command;
+- added focused regressions for namespace separation, same-numeric-ID chat/channel admission, legacy-claim rollout behavior, and post-rollout typed-only admission.
 
 - Add a regression with two commands whose peer kinds differ but whose numeric peer IDs and message IDs match. Verify both can reach distinct durable claims and task admissions.
 - Use a canonical typed key across durable claim, TaskEngine ID, and correlation. Review any consumers of event metadata or correlation strings before changing their format.
@@ -209,7 +212,8 @@ No numerical latency improvement is claimed until those benchmarks are run on a 
 - Do not mark this handoff closed until targeted behavior and the relevant acceptance gates are demonstrated by fresh test output.
 - Required fresh local acceptance for this implementation lineage:
   ```text
-  gofmt -w internal/telegram/dispatcher_dispatch.go \
+  gofmt -w internal/telegram/dispatcher.go \
+    internal/telegram/dispatcher_dispatch.go \
     internal/telegram/dispatcher_command_claim_test.go \
     internal/telegram/dispatcher_identity_test.go \
     internal/telegram/dispatcher_callback.go \
@@ -227,7 +231,19 @@ No numerical latency improvement is claimed until those benchmarks are run on a 
   go test ./internal/assistant/client -run 'TestAssistant.*Callback.*Resolver' -count=1
 
   go test ./internal/telegram -run '^
+
+  go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1
+  go vet ./...
+  go build ./cmd/goultroid
+  ```
+- Record the benchmark p50/p95/p99 values and classify any failing tests against the Section 3 baseline before changing the top-level status to `CLOSED`.
  -bench 'BenchmarkDispatcher(CallbackIngressObservation|DecisionIngressNoop)
+
+  go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1
+  go vet ./...
+  go build ./cmd/goultroid
+  ```
+- Record the benchmark p50/p95/p99 values and classify any failing tests against the Section 3 baseline before changing the top-level status to `CLOSED`.
  -benchmem -count=3
 
   go test -race ./internal/telegram ./internal/assistant/client ./internal/interaction/native ./internal/presentation/... -count=1
