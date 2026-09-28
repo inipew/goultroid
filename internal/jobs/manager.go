@@ -18,66 +18,6 @@ import (
 // value copy, never a mutable manager record.
 type Handler func(context.Context, JobDefinition) error
 
-// Store is the durable boundary for a job definition and each of its occurrences.
-type Store interface {
-	SaveDefinition(context.Context, *JobDefinition) error
-	UpdateDefinitionCAS(context.Context, *JobDefinition, uint64) error
-	MaterializeOccurrence(context.Context, *JobOccurrence) error
-	PrepareAttemptLease(context.Context, string, string, time.Duration) (*JobAttempt, error)
-	CommitAttemptResult(context.Context, string, uint64, AttemptState, []byte, string) error
-	CommitAttemptDeferred(context.Context, string, uint64, time.Time, string) error
-	FinalizeOccurrence(context.Context, string, OccurrenceState) error
-	CancelOccurrence(context.Context, string, string) error
-	GetOccurrence(context.Context, string) (*JobOccurrence, error)
-	GetOccurrenceByKey(context.Context, string) (*JobOccurrence, error)
-	CountAttempts(context.Context, string) (int, error)
-	CountRetryBudgetUses(context.Context, string) (int, error)
-	CountDeferrals(context.Context, string) (int, error)
-	LatestAttempt(context.Context, string) (*JobAttempt, error)
-	ListUnresolvedOccurrences(context.Context, int) ([]*JobOccurrence, error)
-	DeleteTerminalOccurrences(context.Context, string, time.Time, int) (int64, error)
-	DeferOccurrence(context.Context, string, time.Time) error
-}
-
-type outboxStore interface {
-	ListPendingOutbox(context.Context, int) ([]OutboxEvent, error)
-	MarkOutboxDelivered(context.Context, string) error
-}
-
-type deferredDeadlineStore interface {
-	EarliestDeferredOccurrenceDue(context.Context, time.Time) (time.Time, bool, error)
-}
-
-type durableDiagnosticsStore interface {
-	DurableDiagnostics(context.Context, time.Time) (DurableDiagnostics, error)
-}
-
-type attemptSummaryStore interface {
-	AttemptSummary(context.Context, string) (*AttemptSummary, error)
-}
-
-type nextAttemptLeaseStore interface {
-	PrepareNextAttemptLease(context.Context, string, time.Duration) (*JobAttempt, error)
-}
-
-type recoveryCandidateStore interface {
-	ListRecoveryCandidates(context.Context, int) ([]RecoveryCandidate, error)
-}
-
-type definitionLoader interface {
-	ListDefinitions(context.Context) ([]JobDefinition, error)
-}
-
-type scheduleStore interface {
-	SaveSchedule(context.Context, *JobSchedule) error
-	DisableSchedule(context.Context, string) error
-	ListDueSchedules(context.Context, time.Time, int) ([]JobSchedule, error)
-	EarliestScheduleDue(context.Context) (time.Time, bool, error)
-	MaterializeDueSchedule(context.Context, string, time.Time) (*JobOccurrence, error)
-	SkipDueSchedule(context.Context, string, time.Time) error
-	CutoverActive(context.Context) (bool, error)
-}
-
 // OutboxSink accepts one durable job notification. Returning nil acknowledges
 // it; errors leave the row pending for retry.
 type OutboxSink func(context.Context, OutboxEvent) error
@@ -88,7 +28,7 @@ type Manager struct {
 	mu             sync.RWMutex
 	registrationMu sync.Mutex
 	client         tasks.Client
-	store          Store
+	stores         StorePorts
 	pump           *PersistencePump
 	definitions    map[string]JobDefinition
 	handlers       map[string]Handler
@@ -199,8 +139,15 @@ func validateJobResources(resources []tasks.ResourceRequirement) error {
 }
 
 func NewManager(client tasks.Client, store Store, pump *PersistencePump) *Manager {
+	return NewManagerWithPorts(client, StorePortsFromStore(store), pump)
+}
+
+// NewManagerWithPorts constructs a Manager from responsibility-specific durable
+// boundaries. Focused tests may provide only the ports they exercise; Start
+// still requires the complete core definition/occurrence/attempt/recovery set.
+func NewManagerWithPorts(client tasks.Client, stores StorePorts, pump *PersistencePump) *Manager {
 	return &Manager{
-		client: client, store: store, pump: pump,
+		client: client, stores: stores, pump: pump,
 		definitions: make(map[string]JobDefinition),
 		handlers:    make(map[string]Handler),
 		tracked:     make(map[string]*trackedOccurrence),
@@ -219,10 +166,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.started {
 		return errors.New("jobs manager already started")
 	}
-	if m.client == nil || m.store == nil || m.pump == nil {
+	if m.client == nil || !m.stores.coreReady() || m.pump == nil {
 		return errors.New("jobs requires task client, durable store, and persistence pump")
 	}
-	if loader, ok := m.store.(definitionLoader); ok {
+	if loader := m.stores.DefinitionLoader; loader != nil {
 		loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		definitions, err := loader.ListDefinitions(loadCtx)
 		cancel()
@@ -285,7 +232,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		case m.recoveryWake <- struct{}{}:
 		default:
 		}
-		if _, hasOutbox := m.store.(outboxStore); hasOutbox {
+		if m.stores.Outbox != nil {
 			select {
 			case m.outboxWake <- struct{}{}:
 			default:
@@ -324,8 +271,8 @@ func (m *Manager) workerDone(done chan struct{}) {
 }
 
 func (m *Manager) drainOutbox(base context.Context) {
-	store, ok := m.store.(outboxStore)
-	if !ok {
+	store := m.stores.Outbox
+	if store == nil {
 		return
 	}
 	m.mu.RLock()
@@ -475,7 +422,7 @@ func (m *Manager) Register(def JobDefinition) error {
 		return fmt.Errorf("unknown job handler: %s", def.HandlerType)
 	}
 	regCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	err := m.store.SaveDefinition(regCtx, &def)
+	err := m.stores.Definitions.SaveDefinition(regCtx, &def)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("save job definition: %w", err)
@@ -501,7 +448,7 @@ func (m *Manager) TryTrigger(ctx context.Context, jobID string) error { return m
 func (m *Manager) CancelByOwner(owner string) int {
 	m.mu.RLock()
 	client := m.client
-	store := m.store
+	store := m.stores.Occurrences
 	definitions := make([]JobDefinition, 0, len(m.definitions))
 	for _, definition := range m.definitions {
 		definitions = append(definitions, definition)
@@ -542,7 +489,7 @@ func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason str
 		taskID = tr.taskID
 	}
 	m.mu.RUnlock()
-	if err := m.store.CancelOccurrence(ctx, occurrenceID, reason); err != nil {
+	if err := m.stores.Occurrences.CancelOccurrence(ctx, occurrenceID, reason); err != nil {
 		return err
 	}
 	m.signalOutbox()
@@ -644,7 +591,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 	now := time.Now().UTC()
 	occurrenceID := tasks.OccurrenceID(fmt.Sprintf("occ:%s:%d:%d", jobID, now.UnixNano(), sequence))
 	occurrence := &JobOccurrence{ID: string(occurrenceID), JobID: jobID, OccurrenceKey: occurrenceKey, ScheduledFor: now, ReadyAt: now, State: OccurrenceReady}
-	if err := m.store.MaterializeOccurrence(ctx, occurrence); err != nil {
+	if err := m.stores.Occurrences.MaterializeOccurrence(ctx, occurrence); err != nil {
 		return nil, "", fmt.Errorf("materialize job occurrence: %w", err)
 	}
 	// Materialization is idempotent on occurrence_key and rewrites occurrence.ID
@@ -685,15 +632,15 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 }
 
 func (m *Manager) GetOccurrence(ctx context.Context, occurrenceID string) (*JobOccurrence, error) {
-	return m.store.GetOccurrence(ctx, occurrenceID)
+	return m.stores.Occurrences.GetOccurrence(ctx, occurrenceID)
 }
 
 func (m *Manager) OccurrenceByKey(ctx context.Context, occurrenceKey string) (*JobOccurrence, error) {
-	return m.store.GetOccurrenceByKey(ctx, occurrenceKey)
+	return m.stores.Occurrences.GetOccurrenceByKey(ctx, occurrenceKey)
 }
 
 func (m *Manager) LatestAttempt(ctx context.Context, occurrenceID string) (*JobAttempt, error) {
-	return m.store.LatestAttempt(ctx, occurrenceID)
+	return m.stores.Attempts.LatestAttempt(ctx, occurrenceID)
 }
 
 func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error {
@@ -711,7 +658,7 @@ func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error
 	}
 	def = cloneDefinition(def)
 	def.Revision = current.Revision
-	if err := m.store.UpdateDefinitionCAS(ctx, &def, current.Revision); err != nil {
+	if err := m.stores.Definitions.UpdateDefinitionCAS(ctx, &def, current.Revision); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -721,7 +668,7 @@ func (m *Manager) UpdateDefinition(ctx context.Context, def JobDefinition) error
 }
 
 func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before time.Time, limit int) (int64, error) {
-	return m.store.DeleteTerminalOccurrences(ctx, jobID, before, limit)
+	return m.stores.Occurrences.DeleteTerminalOccurrences(ctx, jobID, before, limit)
 }
 
 func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID, timingOwned bool) {
@@ -757,10 +704,10 @@ func (m *Manager) Diagnostics() Diagnostics {
 		Handlers:           len(m.handlers),
 		Accepting:          m.accepting,
 	}
-	store := m.store
+	store := m.stores.Diagnostics
 	m.mu.RUnlock()
 
-	if durable, ok := store.(durableDiagnosticsStore); ok {
+	if durable := store; durable != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		snapshot, err := durable.DurableDiagnostics(ctx, time.Now().UTC())
 		cancel()

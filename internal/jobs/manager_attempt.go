@@ -12,13 +12,13 @@ import (
 )
 
 func (m *Manager) loadAttemptSummary(ctx context.Context, occurrenceID string) (*AttemptSummary, error) {
-	if store, ok := m.store.(attemptSummaryStore); ok {
+	if store := m.stores.AttemptSummaries; store != nil {
 		return store.AttemptSummary(ctx, occurrenceID)
 	}
 
 	// Compatibility fallback for alternate/test stores. Production SQLite uses
 	// the single-round-trip AttemptSummary fast path above.
-	occ, err := m.store.GetOccurrence(ctx, occurrenceID)
+	occ, err := m.stores.Occurrences.GetOccurrence(ctx, occurrenceID)
 	if err != nil {
 		return nil, err
 	}
@@ -29,36 +29,36 @@ func (m *Manager) loadAttemptSummary(ctx context.Context, occurrenceID string) (
 	if occurrenceTerminal(occ.State) {
 		return summary, nil
 	}
-	latest, err := m.store.LatestAttempt(ctx, occurrenceID)
+	latest, err := m.stores.Attempts.LatestAttempt(ctx, occurrenceID)
 	if err != nil {
 		return nil, err
 	}
 	summary.Latest = *latest
-	if summary.AttemptCount, err = m.store.CountAttempts(ctx, occurrenceID); err != nil {
+	if summary.AttemptCount, err = m.stores.Attempts.CountAttempts(ctx, occurrenceID); err != nil {
 		return nil, err
 	}
-	if summary.RetryBudgetUses, err = m.store.CountRetryBudgetUses(ctx, occurrenceID); err != nil {
+	if summary.RetryBudgetUses, err = m.stores.Attempts.CountRetryBudgetUses(ctx, occurrenceID); err != nil {
 		return nil, err
 	}
-	if summary.Deferrals, err = m.store.CountDeferrals(ctx, occurrenceID); err != nil {
+	if summary.Deferrals, err = m.stores.Attempts.CountDeferrals(ctx, occurrenceID); err != nil {
 		return nil, err
 	}
 	return summary, nil
 }
 
 func (m *Manager) prepareNextAttemptLease(ctx context.Context, occurrenceID string, leaseDuration time.Duration) (*JobAttempt, error) {
-	if store, ok := m.store.(nextAttemptLeaseStore); ok {
+	if store := m.stores.NextAttemptLeases; store != nil {
 		return store.PrepareNextAttemptLease(ctx, occurrenceID, leaseDuration)
 	}
 
 	// Compatibility fallback for alternate/test stores. Production SQLite
 	// computes attempt_no and TaskID inside one fenced transaction.
-	attempts, err := m.store.CountAttempts(ctx, occurrenceID)
+	attempts, err := m.stores.Attempts.CountAttempts(ctx, occurrenceID)
 	if err != nil {
 		return nil, err
 	}
 	taskID := fmt.Sprintf("task:%s:%d", occurrenceID, attempts+1)
-	return m.store.PrepareAttemptLease(ctx, occurrenceID, taskID, leaseDuration)
+	return m.stores.Attempts.PrepareAttemptLease(ctx, occurrenceID, taskID, leaseDuration)
 }
 
 type attemptResultMetadata struct {
@@ -125,7 +125,7 @@ func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, 
 		if wait < 0 {
 			wait = 0
 		}
-		return m.store.CommitAttemptDeferred(
+		return m.stores.Attempts.CommitAttemptDeferred(
 			ctx,
 			attempt.ID,
 			attempt.LeaseEpoch,
@@ -134,7 +134,7 @@ func (m *Manager) commitAttemptResult(ctx context.Context, attempt *JobAttempt, 
 		)
 	}
 
-	if err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), encodeAttemptResultMetadata(res), res.Failure.Message); err != nil {
+	if err := m.stores.Attempts.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(res.Outcome), encodeAttemptResultMetadata(res), res.Failure.Message); err != nil {
 		return err
 	}
 
@@ -195,7 +195,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 		m.untrack(occurrenceID)
 		abortResult := abortedTaskResult(nextTaskID, err)
 		abortCtx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-		commitErr := m.store.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, encodeAttemptResultMetadata(abortResult), err.Error())
+		commitErr := m.stores.Attempts.CommitAttemptResult(abortCtx, attempt.ID, attempt.LeaseEpoch, AttemptAbortedBeforeStart, encodeAttemptResultMetadata(abortResult), err.Error())
 		cancel()
 		m.signalRecovery()
 		if commitErr != nil {
@@ -216,11 +216,11 @@ func definitionResources(def JobDefinition) []tasks.ResourceRequirement {
 // already an error path, and bounded caller backpressure is preferable to an
 // unbounded rescue goroutine or an occurrence left permanently dispatched.
 func (m *Manager) persistAttemptResult(attempt *JobAttempt, result tasks.TaskResult) {
-	if attempt == nil || m.store == nil {
+	if attempt == nil || m.stores.Attempts == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-	err := m.store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), encodeAttemptResultMetadata(result), result.Failure.Message)
+	err := m.stores.Attempts.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, attemptState(result.Outcome), encodeAttemptResultMetadata(result), result.Failure.Message)
 	cancel()
 	// Whether commit succeeded or became uncertain, wake durable recovery. A
 	// successful abort is immediately retryable; an uncertain one is revisited

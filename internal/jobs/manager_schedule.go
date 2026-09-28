@@ -30,8 +30,8 @@ func (m *Manager) SaveSchedule(ctx context.Context, schedule JobSchedule) error 
 	if err := validateSchedulePolicy(schedule); err != nil {
 		return err
 	}
-	store, ok := m.store.(scheduleStore)
-	if !ok {
+	store := m.stores.Schedules
+	if store == nil {
 		return errors.New("job schedule store is not configured")
 	}
 	if err := store.SaveSchedule(ctx, &schedule); err != nil {
@@ -89,8 +89,8 @@ func validateSchedulePolicy(schedule JobSchedule) error {
 // DisableSchedule atomically removes a schedule from timing ownership while
 // retaining its durable definition and occurrence history for diagnostics.
 func (m *Manager) DisableSchedule(ctx context.Context, scheduleID string) error {
-	store, ok := m.store.(scheduleStore)
-	if !ok {
+	store := m.stores.Schedules
+	if store == nil {
 		return errors.New("job schedule store is not configured")
 	}
 	if err := store.DisableSchedule(ctx, scheduleID); err != nil {
@@ -101,16 +101,16 @@ func (m *Manager) DisableSchedule(ctx context.Context, scheduleID string) error 
 }
 
 func (m *Manager) ScheduleCutoverActive(ctx context.Context) (bool, error) {
-	store, ok := m.store.(scheduleStore)
-	if !ok {
+	store := m.stores.Schedules
+	if store == nil {
 		return false, nil
 	}
 	return store.CutoverActive(ctx)
 }
 
 func (m *Manager) EarliestScheduleDue(ctx context.Context) (time.Time, bool, error) {
-	store, ok := m.store.(scheduleStore)
-	if !ok {
+	store := m.stores.Schedules
+	if store == nil {
 		return time.Time{}, false, nil
 	}
 	return store.EarliestScheduleDue(ctx)
@@ -119,8 +119,8 @@ func (m *Manager) EarliestScheduleDue(ctx context.Context) (time.Time, bool, err
 // ProcessDueSchedules materializes a bounded batch and delegates every
 // physical attempt to TaskEngine. Scheduler calls this timing-only API.
 func (m *Manager) ProcessDueSchedules(ctx context.Context, now time.Time, limit int) (int, error) {
-	store, ok := m.store.(scheduleStore)
-	if !ok {
+	store := m.stores.Schedules
+	if store == nil {
 		return 0, errors.New("job schedule store is not configured")
 	}
 	schedules, err := store.ListDueSchedules(ctx, now, limit)

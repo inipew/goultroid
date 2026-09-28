@@ -44,7 +44,7 @@ func (m *Manager) durableCoordinatorLoop(done chan struct{}) {
 		baseCtx := m.baseCtx
 		recoveryWake := m.recoveryWake
 		outboxWake := m.outboxWake
-		_, hasOutbox := m.store.(outboxStore)
+		hasOutbox := m.stores.Outbox != nil
 		m.mu.RUnlock()
 		if stopCh == nil || baseCtx == nil || recoveryWake == nil || outboxWake == nil {
 			return
@@ -58,7 +58,7 @@ func (m *Manager) durableCoordinatorLoop(done chan struct{}) {
 		// Deferred retry timing is durable state and may be earlier than either
 		// safety scan. A read failure does not create a tight loop; recovery safety
 		// remains the fallback authority.
-		if store, ok := m.store.(deferredDeadlineStore); ok {
+		if store := m.stores.DeferredDeadlines; store != nil {
 			queryCtx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
 			due, found, err := store.EarliestDeferredOccurrenceDue(queryCtx, time.Now().UTC())
 			cancel()
@@ -138,14 +138,14 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 	var report RecoverReport
 
 	var candidates []RecoveryCandidate
-	if store, ok := m.store.(recoveryCandidateStore); ok {
+	if store := m.stores.RecoveryCandidates; store != nil {
 		var err error
 		candidates, err = store.ListRecoveryCandidates(ctx, limit)
 		if err != nil {
 			return report, err
 		}
 	} else {
-		unresolved, err := m.store.ListUnresolvedOccurrences(ctx, limit)
+		unresolved, err := m.stores.Recovery.ListUnresolvedOccurrences(ctx, limit)
 		if err != nil {
 			return report, err
 		}
@@ -206,7 +206,7 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		}
 		if latest.State != AttemptDeferred {
 			if semantics, typed := persistedAttemptSemantics(*latest); typed && !semantics.ShouldRetry() && !semantics.IsSuccess() {
-				if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, occurrenceStateForSemantics(semantics)); ferr != nil {
+				if ferr := m.stores.Occurrences.FinalizeOccurrence(ctx, occ.ID, occurrenceStateForSemantics(semantics)); ferr != nil {
 					report.Stale++
 					continue
 				}
@@ -216,7 +216,7 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 			}
 		}
 		if latest.State == AttemptDeferred && summary.Deferrals >= maxDeferrals(def.RetryPolicy) {
-			if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
+			if ferr := m.stores.Occurrences.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
 				report.Stale++
 				continue
 			}
@@ -226,7 +226,7 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		}
 		retryUses := summary.RetryBudgetUses
 		if retryUses >= maxAttempts(def.RetryPolicy) {
-			if ferr := m.store.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
+			if ferr := m.stores.Occurrences.FinalizeOccurrence(ctx, occ.ID, OccurrenceFailed); ferr != nil {
 				report.Stale++
 				continue
 			}

@@ -221,7 +221,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	semantics := res.Semantics()
 	if !semantics.ShouldRetry() && !semantics.IsSuccess() {
 		finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-		err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, occurrenceStateForSemantics(semantics))
+		err := m.stores.Occurrences.FinalizeOccurrence(finalizeCtx, item.occurrenceID, occurrenceStateForSemantics(semantics))
 		finalizeCancel()
 		if err != nil {
 			m.signalRecovery()
@@ -243,7 +243,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	if res.Cause == tasks.CauseRateLimited {
 		if summary.Deferrals >= maxDeferrals(tr.def.RetryPolicy) {
 			finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-			err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
+			err := m.stores.Occurrences.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
 			finalizeCancel()
 			if err != nil {
 				m.signalRecovery()
@@ -260,7 +260,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	retryUses := summary.RetryBudgetUses
 	if retryUses >= maxAttempts(tr.def.RetryPolicy) {
 		finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-		err := m.store.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
+		err := m.stores.Occurrences.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
 		finalizeCancel()
 		if err != nil {
 			m.signalRecovery()
@@ -274,7 +274,7 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	if delay > 0 {
 		deferUntil := time.Now().UTC().Add(delay)
 		deferCtx, deferCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
-		err := m.store.DeferOccurrence(deferCtx, item.occurrenceID, deferUntil)
+		err := m.stores.Occurrences.DeferOccurrence(deferCtx, item.occurrenceID, deferUntil)
 		deferCancel()
 		if err != nil {
 			m.signalRecovery()
