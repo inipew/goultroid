@@ -124,11 +124,20 @@ func TestPluginContextJobsAndSchedulesEnforcePluginOwnership(t *testing.T) {
 }
 
 type captureScopedJobBackend struct {
-	triggered string
+	triggered  string
+	handler    string
+	registered jobs.JobDefinition
 }
 
-func (b *captureScopedJobBackend) RegisterHandler(string, jobs.Handler) error { return nil }
-func (b *captureScopedJobBackend) Register(jobs.JobDefinition) error         { return nil }
+func (b *captureScopedJobBackend) RegisterHandler(handlerType string, _ jobs.Handler) error {
+	b.handler = handlerType
+	return nil
+}
+
+func (b *captureScopedJobBackend) Register(def jobs.JobDefinition) error {
+	b.registered = def
+	return nil
+}
 func (b *captureScopedJobBackend) Trigger(_ context.Context, jobID string) error {
 	b.triggered = jobID
 	return nil
@@ -222,6 +231,39 @@ func TestPluginJobOwnerCleanupAliasesPreserveLegacyAndEncoded(t *testing.T) {
 	simple := pluginJobOwnerCleanupAliases("alpha")
 	if len(simple) != 2 || simple[0] != "alpha" || simple[1] != "plugin:alpha" {
 		t.Fatalf("simple cleanup aliases = %v", simple)
+	}
+}
+
+func TestScopedJobRegistrationCannotCollideAcrossColonBoundary(t *testing.T) {
+	leftBackend := &captureScopedJobBackend{}
+	rightBackend := &captureScopedJobBackend{}
+	left := scopedJobClient{manager: leftBackend, owner: "a"}
+	right := scopedJobClient{manager: rightBackend, owner: "a:b"}
+
+	if err := left.RegisterHandler("worker:x", func(context.Context, jobs.JobDefinition) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.RegisterHandler("x", func(context.Context, jobs.JobDefinition) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if leftBackend.handler == rightBackend.handler {
+		t.Fatalf("RegisterHandler collision: both routed to %q", leftBackend.handler)
+	}
+
+	if err := left.Register(jobs.JobDefinition{ID: "b:x", HandlerType: "worker:x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := right.Register(jobs.JobDefinition{ID: "x", HandlerType: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if leftBackend.registered.ID == rightBackend.registered.ID {
+		t.Fatalf("Register collision: both routed to %q", leftBackend.registered.ID)
+	}
+	if leftBackend.registered.ID != "plugin:a:b%3Ax" || rightBackend.registered.ID != "plugin:a%3Ab:x" {
+		t.Fatalf("unexpected registered ids: left=%q right=%q", leftBackend.registered.ID, rightBackend.registered.ID)
+	}
+	if leftBackend.registered.ScopeOwner != "plugin:a" || rightBackend.registered.ScopeOwner != "plugin:a%3Ab" {
+		t.Fatalf("unexpected scope owners: left=%q right=%q", leftBackend.registered.ScopeOwner, rightBackend.registered.ScopeOwner)
 	}
 }
 
