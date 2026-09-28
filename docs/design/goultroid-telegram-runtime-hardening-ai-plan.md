@@ -291,6 +291,8 @@ The newer contextual send path already uses the safer model: parse/prepare local
 
 ### P1-B — Bot-origin tracking map is not hard bounded and becomes O(N) per insert after the threshold
 
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — `77f1c5078ea95810567b71625c79e661aeba118f`.
+
 Affected source:
 
 - `internal/telegram/service.go`
@@ -324,6 +326,8 @@ The production peer-aware lookup itself is O(1); the retained-state maintenance 
 ---
 
 ### P1-C — Resolver PeerCache eviction order is not generation-aware
+
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING** — production fix `016f8912658cfed101d325b194ca423cf281d2d5`; reinsertion edge coverage `d844d67dc9d0c048a76d8b81b783aee12d9450f0`.
 
 Affected source:
 
@@ -835,7 +839,7 @@ Tests:
 
 ### T2 — Hard-bound bot-origin and resolver cache metadata
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTED ACCEPTANCE PENDING**
 
 #### T2-A — bot-origin tracking
 
@@ -862,7 +866,15 @@ Tests:
 - newer generation survives stale metadata;
 - ordering metadata remains O(MaxEntries).
 
-**Gate:** P1-B and P1-C closed with explicit hard-bound assertions.
+**Implementation evidence:**
+
+- **T2-A / P1-B:** `77f1c5078ea95810567b71625c79e661aeba118f` replaces timestamp-only bot-origin cleanup with a map plus ordered list. Retention is hard-capped at 200 entries, TTL remains five minutes, same-key refresh reuses one node, and expiry/capacity pruning removes only from the ordered head. No cleanup goroutine or ticker was introduced. Regressions cover >10x fresh-cardinality burst, exact peer behavior, Saved Messages behavior, same-key churn, TTL expiry, and cap/order cardinality.
+- **T2-B / P1-C:** `016f8912658cfed101d325b194ca423cf281d2d5` replaces duplicate-prone ordering tombstones with exactly one live `container/list` node and index entry per cached peer. Expiry, `Invalidate`, and `InvalidateID` remove the matching ordering node synchronously; capacity eviction removes the actual oldest live entry.
+- `d844d67dc9d0c048a76d8b81b783aee12d9450f0` adds explicit `InvalidateID -> reinsert` and negative-cache expire/reinsert coverage. The broader T2-B regression set also covers ordinary expiry/reinsert, direct invalidate/reinsert, capacity eviction, churn, and zero ordering metadata when no entries remain.
+- Changed Go blocks were passed through `gofmt` before their commits and the committed diffs were inspected. No second cache framework, worker, timer, or cleanup goroutine was introduced.
+- Fresh focused execution remains unclaimed for the same session-environment reason recorded under T1: repository checkout is unavailable and the shell toolchain is Go 1.23.2 while `go.mod` requires Go 1.27.0. CI was not inspected.
+
+**Gate status:** source defects are patched and hard-bound/generation regressions are committed; P1-B/P1-C await executed focused acceptance in a valid checkout/toolchain.
 
 ---
 
