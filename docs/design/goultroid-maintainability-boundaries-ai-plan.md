@@ -782,7 +782,7 @@ Next: **M6 — Final cleanup and acceptance**. First inventory remaining compati
 
 ### M6 — Final cleanup and acceptance
 
-Status: **IMPLEMENTATION COMPLETE — final local validation still required before closure**
+Status: **IMPLEMENTATION COMPLETE — post-cleanup blockers corrected; final local validation still required before closure**
 
 Implementation commits:
 
@@ -792,6 +792,9 @@ Implementation commits:
 - `822fda71fefbd8ee27ba5986ad9505c8872218f7` — `refactor(jobs): remove aggregate compatibility surface`
 - `f6451efe4fac328152ea4cdafe76366dede30bc5` — `test(jobs): preserve core store port assertions`
 - `bbb7133f54d981fea17f229a2ccee9d312c894f2` — `docs(go): document final jobs plugin boundaries`
+- `644a680a11f598e02e611b021be2b1950d5b73ed` — `fix(maint): close scheduler jobs compatibility gap`
+- `8f6fef81716cc4e52036f1525ad59d3a250a473a` — `style(architecture): finish jobs boundary gofmt`
+- `034e502bd8c8882c451820beff916c5bf2a952b0` — `test(architecture): harden m6 caller fence`
 
 Cleanup completed:
 
@@ -801,14 +804,17 @@ Cleanup completed:
 - the timing-wake fixture no longer embeds the old broad Store surface and depends only on `AttemptStore`;
 - the coordinator integration fixture remains intentionally multi-port because `Manager.Start` exercises the full core durable contract plus outbox/recovery coordination; it is not a compatibility mock;
 - compile-time SQLite assertions now fence every core and optional store port independently for both `*sqlite.Store` and `*sqlite.ResourceStore`;
-- `TestM6JobsCompatibilitySurfaceIsGone` rejects reintroduction of the removed constructor/adapter across Jobs, App, Plugin, and production plugins;
+- `TestM6JobsCompatibilitySurfaceIsGone` now parses every Go file under the entire `internal/` tree plus production `plugins/`, rejects `jobs.NewManager`, `jobs.StorePortsFromStore`, and `jobs.Store` selectors through any normal import alias, and rejects dot-imports of `internal/jobs`; this closes the Scheduler blind spot present at HEAD `3d3fcdb2...`;
 - the M5 architecture fence now requires production wiring through `jobsqlite.ResourcePorts(jobStore)` and rejects aggregate wiring;
 - package-level Go documentation now states the final Jobs/Plugin ownership boundaries.
 
 Source-level acceptance performed on current lineage:
 
-- full `internal/jobs` source scan found zero remaining `NewManager(` compatibility calls, zero `StorePortsFromStore(` calls, and zero `jobs.Store` references;
-- repository search also returned zero callers for `StorePortsFromStore`, `jobs.NewManager(`, and `jobs.Store`;
+- the earlier claim that repository search had proven zero compatibility callers was **incorrect**: a later audit found `internal/scheduler/engine_timing_test.go` still calling the removed `jobs.NewManager`; GitHub code-search had returned an incomplete false zero and must not be used as the authoritative M6 caller proof;
+- that Scheduler timing harness now constructs the Manager with `jobs.NewManagerWithPorts(engine, jobsqlite.Ports(store), pump)`; an explicit scan of the Scheduler package after the fix found no remaining `jobs.NewManager`, `StorePortsFromStore`, or `jobs.Store` reference;
+- the full `internal/jobs` source scan remains zero for the removed compatibility surfaces, but repository-wide zero-caller acceptance is now delegated to the AST architecture fence across all `internal/` and `plugins/` and must be confirmed by local test execution;
+- `internal/architecture/jobs_boundary_m5_test.go` had one extra trailing blank line. The corrected GitHub blob SHA `588c589d919c5e0dc083002c59f920d0b404b83a` now matches byte-for-byte the locally formatted file produced by `gofmt`;
+- the strengthened M6 fence was also checked with local `gofmt -d`; its GitHub blob matches the formatted SHA `c381db35fc6a08f64f463199591cd6ec92f4b378`;
 - the M6 delta does not add a new persistence implementation, retry engine, Manager, queue, worker pool, or scheduler authority;
 - M4 responsibility files remain intact and the M5 scoped plugin boundary remains unchanged.
 
@@ -816,16 +822,19 @@ Local validation status:
 
 - the immediately preceding M5 closure commit `f0b96c0733e5f1ff460412690fe5743becaf3885` recorded passing `go test -race ./internal/jobs ./internal/jobs/sqlite ./internal/plugin ./internal/app -count=1 -timeout=180s` and `go test ./internal/architecture -run '^TestM5' -count=1 -timeout=180s`;
 - those results predate the M6 compatibility-removal delta and therefore are **not** treated as M6 acceptance;
-- the current AI runtime still has no mounted repository checkout and shell GitHub access fails DNS resolution (`Could not resolve host: github.com`), so the requested M6 `gofmt`/test/vet suite cannot be truthfully executed here;
+- a post-M6 audit at HEAD `3d3fcdb2...` found two concrete acceptance failures: Scheduler no longer compiled because `engine_timing_test.go` still referenced `jobs.NewManager`, and `gofmt -l` reported `internal/architecture/jobs_boundary_m5_test.go`; both source defects are corrected in `644a680a...` and `8f6fef81...`, with the caller fence strengthened in `034e502b...`;
+- the current AI runtime still has no mounted repository checkout and shell GitHub access fails DNS resolution (`Could not resolve host: github.com`), so the complete post-fix M6 test/vet suite cannot be truthfully rerun here;
 - CI was not inspected.
 
 Required final local validation, without CI polling:
 
 ```text
 gofmt -w <all M6-changed Go files>
+gofmt -l <all M6-changed Go files>   # must print nothing
 go test ./internal/core ./internal/telegram
 go test ./internal/taskengine
 go test ./internal/jobs ./internal/jobs/sqlite
+go test ./internal/scheduler
 go test ./internal/plugin ./internal/app
 go test ./internal/architecture
 go vet ./...
