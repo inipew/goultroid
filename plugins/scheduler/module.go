@@ -16,7 +16,7 @@ func (ModuleType) Manifest() module.Manifest {
 		ID:           "scheduler",
 		Version:      "1.0.0",
 		Description:  "Message, reminder, and recurring command scheduler",
-		Capabilities: []string{plugin.CapScheduler, plugin.CapJobs, plugin.CapTelegramSendMessage},
+		Capabilities: []string{plugin.CapScheduler, plugin.CapTelegramSendMessage},
 	}
 }
 
