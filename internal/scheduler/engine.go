@@ -427,13 +427,18 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 	if err != nil {
 		return nil, err
 	}
-	if err := e.registerScheduledDefinition(ctx, res); err != nil {
-		_ = e.db.DeleteScheduledJob(ctx, res.ID)
+	registration, err := e.prepareScheduledDefinition(ctx, res)
+	if err != nil {
+		if cleanupErr := e.db.DeleteScheduledJob(ctx, res.ID); cleanupErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("delete initializing scheduled row: %w", cleanupErr))
+		}
 		return nil, err
 	}
 	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
-		_ = e.db.DeleteScheduledJob(ctx, res.ID)
-		return nil, err
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
+	}
+	if err := e.saveRedesignedSchedule(ctx, res, registration.definitionID, true); err != nil {
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
 	}
 	res.Status = JobStatusPending
 	e.notifyWake()
@@ -446,6 +451,9 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 	}
 	if interval < time.Second {
 		return nil, fmt.Errorf("recurring interval must be at least 1 second (got %v)", interval)
+	}
+	if interval%time.Second != 0 {
+		return nil, fmt.Errorf("recurring interval must use whole-second precision (got %v)", interval)
 	}
 	if peerType == "" {
 		peerType = "chat"
@@ -465,13 +473,18 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 	if err != nil {
 		return nil, err
 	}
-	if err := e.registerScheduledDefinition(ctx, res); err != nil {
-		_ = e.db.DeleteScheduledJob(ctx, res.ID)
+	registration, err := e.prepareScheduledDefinition(ctx, res)
+	if err != nil {
+		if cleanupErr := e.db.DeleteScheduledJob(ctx, res.ID); cleanupErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("delete initializing scheduled row: %w", cleanupErr))
+		}
 		return nil, err
 	}
 	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
-		_ = e.db.DeleteScheduledJob(ctx, res.ID)
-		return nil, err
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
+	}
+	if err := e.saveRedesignedSchedule(ctx, res, registration.definitionID, true); err != nil {
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, err)
 	}
 	res.Status = JobStatusPending
 	e.notifyWake()
@@ -481,25 +494,34 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 func scheduledDefinitionID(jobID int64) string { return fmt.Sprintf("scheduler:job:%d", jobID) }
 func redesignedScheduleID(jobID int64) string  { return fmt.Sprintf("sched:scheduled:%d", jobID) }
 
-func (e *Engine) registerScheduledDefinition(ctx context.Context, job *ScheduledJob) error {
+type scheduledRegistration struct {
+	definitionID string
+	ownsDefinition bool
+}
+
+func (e *Engine) prepareScheduledDefinition(ctx context.Context, job *ScheduledJob) (scheduledRegistration, error) {
 	if job == nil || e.jobsMgr == nil {
-		return errors.New("scheduler jobs manager is not configured")
+		return scheduledRegistration{}, errors.New("scheduler jobs manager is not configured")
 	}
 	if job.ActionType == ActionJob {
 		targetID := strings.TrimSpace(job.Payload)
 		if targetID == "" {
-			return errors.New("empty job id in scheduled managed job payload")
+			return scheduledRegistration{}, errors.New("empty job id in scheduled managed job payload")
 		}
 		if _, ok := e.jobsMgr.Definition(targetID); !ok {
-			return fmt.Errorf("managed job definition not found: %s", targetID)
+			return scheduledRegistration{}, fmt.Errorf("managed job definition not found: %s", targetID)
 		}
 		// No scheduler.action wrapper definition: the timing row will submit a
-		// target occurrence directly when its due slot is claimed.
-		return e.saveRedesignedSchedule(ctx, job, targetID)
+		// target occurrence directly when its due slot is claimed. Prepare it
+		// disabled so timing ownership cannot race compatibility-row activation.
+		if err := e.saveRedesignedSchedule(ctx, job, targetID, false); err != nil {
+			return scheduledRegistration{}, err
+		}
+		return scheduledRegistration{definitionID: targetID}, nil
 	}
 	payload, err := json.Marshal(job)
 	if err != nil {
-		return fmt.Errorf("encode scheduled action: %w", err)
+		return scheduledRegistration{}, fmt.Errorf("encode scheduled action: %w", err)
 	}
 	definitionID := scheduledDefinitionID(job.ID)
 	if err := e.jobsMgr.Register(jobs.JobDefinition{
@@ -514,12 +536,39 @@ func (e *Engine) registerScheduledDefinition(ctx context.Context, job *Scheduled
 		RetryPolicy: jobs.JobRetryPolicy{MaxAttempts: 1},
 		Enabled:     true,
 	}); err != nil {
-		return err
+		return scheduledRegistration{}, err
 	}
-	return e.saveRedesignedSchedule(ctx, job, definitionID)
+	registration := scheduledRegistration{definitionID: definitionID, ownsDefinition: true}
+	if err := e.saveRedesignedSchedule(ctx, job, definitionID, false); err != nil {
+		if cleanupErr := e.jobsMgr.DeleteDefinition(ctx, definitionID); cleanupErr != nil {
+			return scheduledRegistration{}, errors.Join(err, fmt.Errorf("delete scheduler wrapper definition: %w", cleanupErr))
+		}
+		return scheduledRegistration{}, err
+	}
+	return registration, nil
 }
 
-func (e *Engine) saveRedesignedSchedule(ctx context.Context, job *ScheduledJob, definitionID string) error {
+func (e *Engine) compensateScheduledRegistration(ctx context.Context, job *ScheduledJob, registration scheduledRegistration, primary error) error {
+	errs := []error{primary}
+	if e.jobsMgr != nil && job != nil {
+		if err := e.jobsMgr.DisableSchedule(ctx, redesignedScheduleID(job.ID)); err != nil {
+			errs = append(errs, fmt.Errorf("disable redesigned schedule: %w", err))
+		}
+		if registration.ownsDefinition && registration.definitionID != "" {
+			if err := e.jobsMgr.DeleteDefinition(ctx, registration.definitionID); err != nil {
+				errs = append(errs, fmt.Errorf("delete scheduler wrapper definition: %w", err))
+			}
+		}
+	}
+	if job != nil {
+		if err := e.db.DeleteScheduledJob(ctx, job.ID); err != nil {
+			errs = append(errs, fmt.Errorf("delete scheduled row: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (e *Engine) saveRedesignedSchedule(ctx context.Context, job *ScheduledJob, definitionID string, enabled bool) error {
 	recurrence := "once"
 	interval := time.Duration(0)
 	if job.IntervalSeconds > 0 {
@@ -530,7 +579,7 @@ func (e *Engine) saveRedesignedSchedule(ctx context.Context, job *ScheduledJob, 
 		ID: redesignedScheduleID(job.ID), JobID: definitionID,
 		Recurrence: recurrence, Interval: interval, Timezone: "UTC", NextDueAt: job.NextRunAt,
 		MisfirePolicy: jobs.MisfireRunOnce, OverlapPolicy: jobs.OverlapForbid,
-		Enabled: true, Revision: 1,
+		Enabled: enabled, Revision: 1,
 	})
 }
 
@@ -851,7 +900,11 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 	stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	row, err := e.db.GetScheduledJob(stateCtx, c.jobID)
-	if err != nil || row == nil {
+	if err != nil {
+		e.logger.Warn("failed to read scheduled job during claim reconciliation", zap.Int64("job_id", c.jobID), zap.Error(err))
+		return
+	}
+	if row == nil {
 		e.untrackClaim(c.jobID)
 		return
 	}

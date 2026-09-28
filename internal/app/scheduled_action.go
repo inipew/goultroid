@@ -91,12 +91,10 @@ func (h scheduledActionHandler) execute(ctx context.Context, job scheduler.Sched
 		if job.IntervalSeconds <= 0 {
 			_ = h.repo.DeleteScheduledJob(ctx, job.ID)
 		} else {
-			next := job.NextRunAt
 			step := time.Duration(job.IntervalSeconds) * time.Second
-			for !next.After(time.Now().UTC()) {
-				next = next.Add(step)
+			if next, advanceErr := jobs.NextIntervalDueAfter(job.NextRunAt, time.Now().UTC(), step); advanceErr == nil {
+				_ = h.repo.UpdateScheduledJobNextRun(ctx, job.ID, next)
 			}
-			_ = h.repo.UpdateScheduledJobNextRun(ctx, job.ID, next)
 		}
 	}
 	return nil

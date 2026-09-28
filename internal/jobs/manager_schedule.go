@@ -116,6 +116,33 @@ func (m *Manager) EarliestScheduleDue(ctx context.Context) (time.Time, bool, err
 	return store.EarliestScheduleDue(ctx)
 }
 
+// NextIntervalDueAfter advances one interval schedule in constant time while
+// preserving its phase. The returned time is always strictly after now. Very
+// large spans that saturate time.Duration are rejected instead of falling back
+// to a work-proportional catch-up loop.
+func NextIntervalDueAfter(nextDue, now time.Time, interval time.Duration) (time.Time, error) {
+	if interval <= 0 {
+		return time.Time{}, errors.New("schedule interval must be positive")
+	}
+	if nextDue.After(now) {
+		return nextDue, nil
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	delta := now.Sub(nextDue)
+	if now.After(nextDue) && delta == maxDuration {
+		return time.Time{}, errors.New("schedule catch-up span exceeds time.Duration range")
+	}
+	steps := int64(delta/interval) + 1
+	if steps <= 0 || steps > int64(maxDuration)/int64(interval) {
+		return time.Time{}, errors.New("schedule catch-up arithmetic overflow")
+	}
+	candidate := nextDue.Add(time.Duration(steps * int64(interval)))
+	if !candidate.After(now) {
+		return time.Time{}, errors.New("schedule catch-up did not advance strictly after now")
+	}
+	return candidate, nil
+}
+
 // ProcessDueSchedules materializes a bounded batch and delegates every
 // physical attempt to TaskEngine. Scheduler calls this timing-only API.
 func (m *Manager) ProcessDueSchedules(ctx context.Context, now time.Time, limit int) (int, error) {
@@ -143,9 +170,12 @@ func (m *Manager) ProcessDueSchedules(ctx context.Context, now time.Time, limit 
 			if interval <= 0 {
 				interval = time.Minute
 			}
-			nextDue = schedule.NextDueAt.Add(interval)
-			for !nextDue.After(now) {
-				nextDue = nextDue.Add(interval)
+			nextDue, err = NextIntervalDueAfter(schedule.NextDueAt, now, interval)
+			if err != nil {
+				if disableErr := store.DisableSchedule(ctx, schedule.ID); disableErr != nil {
+					return processed, fmt.Errorf("schedule %s catch-up invalid (%v), disable: %w", schedule.ID, err, disableErr)
+				}
+				return processed, fmt.Errorf("schedule %s catch-up: %w", schedule.ID, err)
 			}
 			// A recurring slot is a misfire only after at least one complete
 			// interval has elapsed. Skip advances timing ownership atomically

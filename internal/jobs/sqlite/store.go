@@ -109,6 +109,19 @@ func (s *Store) SaveDefinition(ctx context.Context, def *jobs.JobDefinition) err
 	return nil
 }
 
+// DeleteDefinition removes a scheduler-owned transient definition. Foreign-key
+// cascades remove any schedule/occurrence rows owned exclusively by that
+// definition; shared definitions must not use this operation.
+func (s *Store) DeleteDefinition(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("job definition id is required")
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM job_definitions WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete job definition %s: %w", id, err)
+	}
+	return nil
+}
+
 // UpdateDefinitionCAS updates a JobDefinition only if its revision still
 // matches expectedRevision (compare-and-swap). Concurrent writers lose with
 // ErrRevisionConflict instead of silently overwriting each other; the winner's

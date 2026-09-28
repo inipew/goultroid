@@ -430,6 +430,51 @@ func (m *Manager) Register(def JobDefinition) error {
 	return nil
 }
 
+// DeleteDefinition removes a definition that has not admitted any occurrence.
+// It is used by schedule-registration compensation so a failed scheduling API
+// does not leave a durable scheduler-owned wrapper behind. Callers must never
+// use it for shared target definitions.
+func (m *Manager) DeleteDefinition(ctx context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("job definition id is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	m.registrationMu.Lock()
+	defer m.registrationMu.Unlock()
+
+	m.mu.RLock()
+	_, exists := m.definitions[id]
+	for _, tracked := range m.tracked {
+		if tracked != nil && tracked.def.ID == id {
+			m.mu.RUnlock()
+			return fmt.Errorf("job definition %s has an active occurrence", id)
+		}
+	}
+	m.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+
+	store, ok := m.stores.Definitions.(interface {
+		DeleteDefinition(context.Context, string) error
+	})
+	if !ok {
+		return errors.New("job definition store does not support deletion")
+	}
+	if err := store.DeleteDefinition(ctx, id); err != nil {
+		return fmt.Errorf("delete job definition %s: %w", id, err)
+	}
+	m.mu.Lock()
+	delete(m.definitions, id)
+	m.mu.Unlock()
+	m.signalRecovery()
+	return nil
+}
+
 // Trigger returns after admission. Completion belongs to the occurrence ticket.
 func (m *Manager) Trigger(ctx context.Context, jobID string) error {
 	_, _, err := m.SubmitOccurrence(ctx, jobID, "")
