@@ -69,13 +69,17 @@ func (e *Engine) recoverPreparedScheduleRegistrations(ctx context.Context) error
 
 		// Scheduler-owned wrapper definitions are transient registration state.
 		// ActionJob points at a caller-owned target definition and must never
-		// delete it. DeletePreparedSchedule is still called afterwards so cleanup
-		// does not rely on SQLite FK cascades being the only removal mechanism.
+		// delete it. If wrapper cleanup fails, retain the revision-1 prepared
+		// schedule as the durable retry marker for the next restart.
 		if schedule.JobID == scheduledDefinitionID(jobID) {
 			if deleteErr := e.jobsMgr.DeleteDefinition(recoveryCtx, schedule.JobID); deleteErr != nil {
 				recoveryErrs = append(recoveryErrs, fmt.Errorf("delete prepared wrapper %s: %w", schedule.JobID, deleteErr))
+				continue
 			}
 		}
+		// DeletePreparedSchedule is called explicitly even though deleting an
+		// owned SQLite wrapper normally cascades the schedule. This keeps the
+		// recovery contract correct for non-SQLite stores and ActionJob targets.
 		if deleteErr := e.jobsMgr.DeletePreparedSchedule(recoveryCtx, schedule.ID); deleteErr != nil {
 			recoveryErrs = append(recoveryErrs, fmt.Errorf("delete prepared schedule %s: %w", schedule.ID, deleteErr))
 		}
