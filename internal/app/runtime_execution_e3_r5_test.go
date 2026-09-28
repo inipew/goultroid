@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -60,6 +59,71 @@ type runtimeExecutionR5Metrics struct {
 	childWaiting     int
 	queueDelays      []time.Duration
 	attemptLatencies []time.Duration
+}
+
+type runtimeExecutionR5MeasuringClient struct {
+	inner tasks.Client
+
+	mu          sync.Mutex
+	queueDelays []time.Duration
+}
+
+func (c *runtimeExecutionR5MeasuringClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
+	submittedAt := time.Now()
+	ticket, err := c.inner.Submit(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	return &runtimeExecutionR5MeasuringTicket{
+		Ticket:      ticket,
+		submittedAt: submittedAt,
+		record:      c.recordQueueDelay,
+	}, nil
+}
+
+func (c *runtimeExecutionR5MeasuringClient) Cancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelReceipt, error) {
+	return c.inner.Cancel(id, reason)
+}
+
+func (c *runtimeExecutionR5MeasuringClient) CancelScope(scope tasks.ScopeIdentity, reason tasks.Cause) int {
+	return c.inner.CancelScope(scope, reason)
+}
+
+func (c *runtimeExecutionR5MeasuringClient) Snapshot(id tasks.TaskID) (tasks.TaskSnapshot, bool) {
+	return c.inner.Snapshot(id)
+}
+
+func (c *runtimeExecutionR5MeasuringClient) recordQueueDelay(delay time.Duration) {
+	if delay < 0 {
+		return
+	}
+	c.mu.Lock()
+	c.queueDelays = append(c.queueDelays, delay)
+	c.mu.Unlock()
+}
+
+func (c *runtimeExecutionR5MeasuringClient) queueDelaySnapshot() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]time.Duration(nil), c.queueDelays...)
+}
+
+type runtimeExecutionR5MeasuringTicket struct {
+	tasks.Ticket
+
+	submittedAt time.Time
+	record      func(time.Duration)
+	once        sync.Once
+}
+
+func (t *runtimeExecutionR5MeasuringTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
+	result, err := t.Ticket.Wait(ctx)
+	if !result.StartedAt.IsZero() {
+		t.once.Do(func() {
+			t.record(result.StartedAt.Sub(t.submittedAt))
+		})
+	}
+	return result, err
 }
 
 func runtimeExecutionR5Percentile(samples []time.Duration, percentile float64) time.Duration {
@@ -132,44 +196,27 @@ func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCou
 	}
 
 	router := core.NewRouter(".")
-	childStarts := make(chan struct {
-		index int
-		at    time.Time
-	}, wrapperCount)
 	command := core.Command{
 		Name: "r5",
 		Resources: []tasks.ResourceRequirement{
 			{Name: "download", Amount: 1},
 		},
-		Handler: func(commandCtx *core.Context) error {
-			if len(commandCtx.Args) != 1 {
-				return fmt.Errorf("missing R5 observation index")
-			}
-			index, err := strconv.Atoi(commandCtx.Args[0])
-			if err != nil {
-				return err
-			}
-			childStarts <- struct {
-				index int
-				at    time.Time
-			}{index: index, at: time.Now()}
-			return nil
-		},
+		Handler: func(*core.Context) error { return nil },
 	}
 	if err := router.Register(command); err != nil {
 		return runtimeExecutionR5Metrics{}, fmt.Errorf("register R5 command: %w", err)
 	}
 	messageService := &runtimeExecutionR5MessageService{}
+	measuringClient := &runtimeExecutionR5MeasuringClient{inner: engine}
 	handler := scheduledActionHandler{
 		service: func() core.TelegramCapabilities {
 			return core.TelegramCapabilities{Messages: messageService}
 		},
 		router:   router,
 		executor: core.NewCommandExecutor(nil, nil, 5*time.Second),
-		tasks:    engine,
+		tasks:    measuringClient,
 	}
 
-	wrapperStarted := make([]time.Time, wrapperCount)
 	wrapperSubmitted := make([]time.Time, wrapperCount)
 	wrapperTickets := make([]tasks.Ticket, 0, wrapperCount)
 	for i := 0; i < wrapperCount; i++ {
@@ -181,13 +228,12 @@ func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCou
 			Pool:       "scheduler",
 			Class:      tasks.PriorityMaintenance,
 			Handler: func(runCtx context.Context) error {
-				wrapperStarted[index] = time.Now()
 				return handler.executeCommand(runCtx, scheduler.ScheduledJob{
 					ID:         int64(index + 1),
 					ChatID:     1,
 					PeerType:   "chat",
 					ActionType: scheduler.ActionCommand,
-					Payload:    fmt.Sprintf(".r5 %d", index),
+					Payload:    ".r5",
 				})
 			},
 		})
@@ -229,22 +275,19 @@ func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCou
 		return runtimeExecutionR5Metrics{}, fmt.Errorf("wait blocker: %w", err)
 	}
 
-	childStartByIndex := make([]time.Time, wrapperCount)
-	for i := 0; i < wrapperCount; i++ {
-		select {
-		case observation := <-childStarts:
-			childStartByIndex[observation.index] = observation.at
-		case <-ctx.Done():
-			return runtimeExecutionR5Metrics{}, ctx.Err()
-		}
-	}
 	for i, ticket := range wrapperTickets {
-		if _, err := ticket.Wait(ctx); err != nil {
-			return runtimeExecutionR5Metrics{}, fmt.Errorf("wait wrapper %d: %w", i, err)
+		result, waitErr := ticket.Wait(ctx)
+		if waitErr != nil {
+			return runtimeExecutionR5Metrics{}, fmt.Errorf("wait wrapper %d: %w", i, waitErr)
 		}
-		finishedAt := time.Now()
-		metrics.queueDelays = append(metrics.queueDelays, childStartByIndex[i].Sub(wrapperStarted[i]))
-		metrics.attemptLatencies = append(metrics.attemptLatencies, finishedAt.Sub(wrapperSubmitted[i]))
+		if result.FinishedAt.IsZero() {
+			return runtimeExecutionR5Metrics{}, fmt.Errorf("wrapper %d finished without terminal timestamp", i)
+		}
+		metrics.attemptLatencies = append(metrics.attemptLatencies, result.FinishedAt.Sub(wrapperSubmitted[i]))
+	}
+	metrics.queueDelays = measuringClient.queueDelaySnapshot()
+	if len(metrics.queueDelays) != wrapperCount {
+		return runtimeExecutionR5Metrics{}, fmt.Errorf("recorded child queue delays = %d, want %d", len(metrics.queueDelays), wrapperCount)
 	}
 	return metrics, nil
 }
