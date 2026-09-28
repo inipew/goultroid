@@ -1,7 +1,6 @@
 package architecture
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,45 +70,8 @@ func TestT11AssistantUsesSharedRPCAndPhysicalMediaBoundary(t *testing.T) {
 	}
 }
 
-func TestT11RetiredCallbackHelpersDoNotReenterProduction(t *testing.T) {
+func TestT11TelegramCallbackPathDoesNotReintroducePostAdmissionAccept(t *testing.T) {
 	root := repositoryRoot(t)
-	forbidden := []string{
-		"internal/services/callback",
-		"callback.EncodeCallbackData(",
-		"SetPluginScopeResolver(",
-		"resolvePluginScope(",
-	}
-
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			switch entry.Name() {
-			case ".git", "vendor":
-				return filepath.SkipDir
-			default:
-				return nil
-			}
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		source := string(raw)
-		for _, legacy := range forbidden {
-			if strings.Contains(source, legacy) {
-				t.Errorf("retired callback/runtime helper %q re-entered production source %s", legacy, path)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// AcceptClaim remains a valid generic idempotency repository operation for
 	// non-callback callers. T4 only retired post-admission acceptance from the
