@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Execution Audit — AI Session Plan
 
-Status: **OPEN — R1–R4 remain in source; R5 needs measurement; R6 needs transient-read fault injection before performance work; implementation and acceptance pending**
+Status: **OPEN — E0 reproducer landed; E1 source fixes and E2 best-effort contract are implemented; R6 correctness fix + measurement harness landed; executable focused/acceptance runs and R5/R6 measurements remain pending**
 
 Audit baseline:
 
@@ -89,3 +89,99 @@ Commands: `go test ./internal/telegram -run '^$' -bench 'BenchmarkIngressMessage
 - Run focused tests for each change, then `go test -race ./... -count=1 -timeout=180s`, `go vet ./...`, and `go build ./cmd/goultroid` before closure. Report exact new failures separately. The prior green suite does not substitute for a post-change run.
 - Report before/after latency, throughput, allocations, and database queries for performance changes with workload and hardware stated. Do not use the microbenchmarks above as system-level performance claims.
 - Record persistence compatibility, retry behavior, and any configuration or migration effect. Keep this plan open until its acceptance checks have fresh evidence.
+
+
+## 6. Implementation session update — 28 September 2026
+
+### Refreshed baseline and post-handoff drift
+
+The implementation session refreshed `test-next` before editing. The exact starting HEAD was:
+
+- `deaac6ec66fe1dfe7b7291031b8a32a545b8add9` — `test(scheduler): reproduce runtime execution faults`
+- parent: `072663386cc41606bf2a73f921698658fc6e9fd0` — the prior execution-audit handoff baseline
+
+The only post-handoff change was `internal/scheduler/runtime_execution_e0_test.go`. Source reconciliation confirmed that R1-R4 still existed, R5 remained measurement-only, and R6 still untracked a claim on a transient `GetScheduledJob` error. The earlier Telegram command-identity, callback-claim/ACK, dispatcher, and RPC hardening work was not reopened.
+
+### E0 — reproducer/fault-injection contract
+
+`deaac6ec66fe1dfe7b7291031b8a32a545b8add9` provides fault-injection coverage for:
+
+- definition-registration failure and initializing-row cleanup;
+- redesigned schedule persistence failure;
+- a due redesigned schedule being visible before compatibility-row activation;
+- activation failure and compensation;
+- ActionJob ownership: compensation must not delete a caller-owned target definition;
+- compensation failure preserving the primary error;
+- transient `GetScheduledJob` failure retaining the tracked claim for later settlement.
+
+These are regression contracts, not evidence that the production implementation already passed them at that commit.
+
+### E1 — R1/R2/R3 correctness implementation
+
+Implementation commit:
+
+- `5b7c2a5857f05c3f18231e0eb248f093df8b2c6a` — `fix(scheduler): harden schedule execution lifecycle`
+
+Follow-up recovery hardening:
+
+- `aa910c50d14b59075039446f097c6c4fbbf1d68f` — `fix(scheduler): preserve ambiguous schedule recovery`
+
+Implemented source behavior:
+
+- **R1:** Jobs interval advancement now uses `jobs.NextIntervalDueAfter`, a constant-time, phase-preserving calculation whose result is strictly after `now`. The compatibility projection uses the same helper. Arithmetic spans that saturate `time.Duration` fail closed rather than re-entering a work-proportional loop; the durable Jobs schedule is disabled on that invalid catch-up path.
+- **R2:** redesigned schedules are prepared disabled, the compatibility row is activated, and only then is the redesigned schedule published enabled. This is a staged cross-store protocol, **not an atomic transaction**. Pre-publish failures compensate with bounded detached cleanup. Scheduler-owned wrapper definitions may be removed while the schedule is known non-executable; ActionJob target definitions are never deleted. If the final enable write returns an ambiguous error, compensation disables the schedule but retains the wrapper definition so a possibly materialized occurrence remains recoverable and its durable history is not deleted by definition FK cascade.
+- **R3:** new recurring scheduler API calls now reject non-whole-second intervals. This matches the existing persistence contract (`scheduled_jobs.interval_seconds` and redesigned `job_schedules.interval_seconds`) instead of silently truncating later recurrences. Existing persisted integer-second schedules require no representation migration.
+- **R6 correctness edge:** a transient `GetScheduledJob` error no longer untracks the in-memory legacy claim. A confirmed missing row or claim-token change can still release tracking.
+
+New boundary tests cover exact interval slots, between-slot advancement, 30-day downtime, saturated time arithmetic, fractional recurring interval rejection, and ambiguous publish compensation retaining the wrapper.
+
+### E2 — R4 delayed-action contract
+
+Contract commit:
+
+- `85aaf6c898ffe5b9940f7658bfa81ced6a772787` — `test(app): define delayed action best-effort failure`
+
+The actual production callers are response auto-delete and delayed reply deletion. The chosen contract remains **best effort and non-durable**:
+
+- `Schedule` confirms admission to the bounded timer heap, not eventual TaskEngine admission or Telegram deletion;
+- once due, TaskEngine remains the only physical execution authority;
+- a TaskEngine submission failure consumes that delayed item rather than creating a second retry engine;
+- `submitFailures` and degraded component health are the terminal observability path;
+- shutdown may drop pending timer-heap actions; no restart durability is claimed.
+
+The E2 regression asserts timer admission can succeed while the due TaskEngine admission later fails, the deletion action does not run, retained pending accounting is released, and health reports the submission failure.
+
+### E3 — R6 measurement harness and R5 hold
+
+Measurement-harness commit:
+
+- `b37907faa9a84d712dc38b2e74c838c505765395` — `test(scheduler): add claim reconciliation benchmark`
+
+`BenchmarkRuntimeExecutionE3_ReconcileSettledClaims` runs representative 1/100/1000 active-claim batches and reports both `scheduled_reads/op` and `occurrence_reads/op`. No R6 performance optimization has been made from the source-level complexity estimate alone.
+
+R5 is intentionally unchanged. The source still shows resource-bearing scheduled commands occupying the scheduler wrapper while waiting for the child TaskEngine ticket; resource-free commands run directly and ActionJob routes to the target Jobs definition. A representative executable measurement of scheduler-pool occupancy, child queue delay, and end-to-end attempt latency is still required before changing that orchestration.
+
+### Verification status and environment limit
+
+The source/diff was re-inspected after each pushed change and the newly added E2/E3 Go test files were passed through local `gofmt` before their commits. The first E1 production commit was pushed before a runnable repository checkout was available in this execution environment; therefore this document does **not** claim a successful post-change `gofmt -l`, focused `go test`, `git diff --check`, benchmark execution, race suite, vet, or build for the E1 lineage. The later formatting follow-up aligns the touched registration struct, but fresh executable verification remains mandatory.
+
+Do not close this plan until a real checkout runs, at minimum:
+
+```text
+gofmt -w <all Go files changed by E0-E3>
+gofmt -l <all Go files changed by E0-E3>   # must print nothing
+git diff --check
+
+go test ./internal/taskengine ./internal/jobs ./internal/scheduler ./internal/app ./internal/telegram -count=1 -timeout=120s
+go test ./internal/scheduler -run 'TestRuntimeExecutionE0|TestRuntimeExecutionE1' -count=1
+go test ./internal/app -run 'TestRuntimeExecutionE2' -count=1
+
+go test ./internal/scheduler -run '^$' -bench '^BenchmarkRuntimeExecutionE3_ReconcileSettledClaims$' -benchtime=500ms -count=3
+# Add/run an R5 representative contention measurement before any R5 orchestration change.
+
+go test -race ./... -count=1 -timeout=180s
+go vet ./...
+go build ./cmd/goultroid
+```
+
+Any R5/R6 optimization remains gated on those fresh measurements. The historical ingress/TaskEngine microbenchmarks and the historical race pass remain background evidence only; they are not acceptance for this execution-plan lineage.
