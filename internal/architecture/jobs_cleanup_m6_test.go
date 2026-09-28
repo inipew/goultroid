@@ -1,39 +1,71 @@
 package architecture
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 func TestM6JobsCompatibilitySurfaceIsGone(t *testing.T) {
 	root := repositoryRoot(t)
-	for _, path := range []string{
-		filepath.Join(root, "internal", "jobs"),
-		filepath.Join(root, "internal", "app"),
-		filepath.Join(root, "internal", "plugin"),
+	fset := token.NewFileSet()
+
+	for _, scanRoot := range []string{
+		filepath.Join(root, "internal"),
 		filepath.Join(root, "plugins"),
 	} {
-		err := filepath.WalkDir(path, func(filePath string, entry fs.DirEntry, walkErr error) error {
+		err := filepath.WalkDir(scanRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
-			if entry.IsDir() || !strings.HasSuffix(filePath, ".go") {
+			if entry.IsDir() || !strings.HasSuffix(path, ".go") {
 				return nil
 			}
-			raw, err := os.ReadFile(filePath)
+			file, err := parser.ParseFile(fset, path, nil, 0)
 			if err != nil {
 				return err
 			}
-			source := string(raw)
-			if strings.Contains(source, "StorePortsFromStore(") {
-				t.Errorf("obsolete StorePortsFromStore caller remains in %s", filepath.ToSlash(filePath))
+
+			jobsAliases := map[string]struct{}{}
+			for _, spec := range file.Imports {
+				importPath, err := strconv.Unquote(spec.Path.Value)
+				if err != nil || importPath != "github.com/inipew/goultroid/internal/jobs" {
+					continue
+				}
+				alias := "jobs"
+				if spec.Name != nil {
+					alias = spec.Name.Name
+				}
+				if alias != "." && alias != "_" {
+					jobsAliases[alias] = struct{}{}
+				}
 			}
-			if strings.Contains(source, "jobs.NewManager(") {
-				t.Errorf("obsolete jobs.NewManager caller remains in %s", filepath.ToSlash(filePath))
-			}
+
+			ast.Inspect(file, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok || selector.Sel == nil {
+					return true
+				}
+				ident, ok := selector.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if _, jobsImport := jobsAliases[ident.Name]; !jobsImport {
+					return true
+				}
+				switch selector.Sel.Name {
+				case "NewManager", "StorePortsFromStore", "Store":
+					t.Errorf("obsolete jobs compatibility selector %s.%s remains in %s",
+						ident.Name, selector.Sel.Name, filepath.ToSlash(path))
+				}
+				return true
+			})
 			return nil
 		})
 		if err != nil {

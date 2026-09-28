@@ -95,7 +95,7 @@ func newTimingHarness(t *testing.T) *timingHarness {
 	}
 	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
 	store := jobsqlite.NewStore(jobDB.DB)
-	jobsMgr := jobs.NewManager(engine, store, pump)
+	jobsMgr := jobs.NewManagerWithPorts(engine, jobsqlite.Ports(store), pump)
 	if err := jobsMgr.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
