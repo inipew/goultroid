@@ -1,6 +1,6 @@
 # Goultroid Telegram Runtime Execution Audit — AI Session Plan
 
-Status: **OPEN — E0-E2 correctness work and R2 follow-up fixes landed; focused, race, vet, build, and local R5/R6 harness runs passed; representative production-like R5/R6 evidence and optimization decisions remain pending**
+Status: **OPEN — correctness and executable acceptance passed locally; R5 sustained-contention and R6 wake-frequency evidence are still needed before the performance decision and plan closure**
 
 Audit baseline:
 
@@ -253,3 +253,31 @@ On `test-next` HEAD `7cf219a55d2eed5e78286f0883f27cef9bc8f69c`, a real checkout 
 Local verification of these working-tree fixes passed: focused six-package tests (`taskengine`, `jobs`, `jobs/sqlite`, `scheduler`, `app`, `telegram`), targeted scheduler regressions repeated 20 times, package race tests, full `go test -race ./... -count=1 -timeout=180s`, `go vet ./...`, `go build ./cmd/goultroid`, `gofmt`, and `git diff --check`. CI was not inspected. These results supersede the checkout limitation recorded above for this local lineage; that earlier paragraph describes the 28 September session.
 
 The R5 contention harness and R6 reconciliation harness also ran locally before these fixes. They measure synthetic in-memory workloads, not production end-to-end latency or database load. No production performance change is justified from them alone. The shared-SQLite registration is atomic only when the resource store and scheduler compatibility store share its transaction; the alternate-store path remains a staged protocol with compensation.
+
+### R5/R6 measurement and acceptance — 29 September 2026
+
+Measurement baseline: `test-next` HEAD `706b1a0b3a48c645a232d1a1531d9c1f5c5fe96b`, Linux amd64, AMD Ryzen 7 5700U, Go `go1.27.1-X:nodwarf5`, default `GOCACHE=/home/dhimas/.cache/go-build`. The added SQLite R6 benchmark is a local working-tree change at this baseline. All ranges below are the three runs requested, not production service-level latencies.
+
+| Workload | ns/op | Other measurements |
+| --- | ---: | --- |
+| R5: four resource-bearing scheduled wrappers with one download blocker | 1,321,793–1,471,272 | `scheduler_running/op=4`, `child_waiting/op=4`, child queue p50 1,026,087–1,217,317 ns, child queue p95 1,039,154–1,224,472 ns, attempt p95 1,125,986–1,309,347 ns |
+| R6 in-memory: 1 claim | 719–743 | 1 scheduled read and 1 occurrence read per pass |
+| R6 in-memory: 100 claims | 68,923–69,932 | 100 + 100 reads per pass |
+| R6 in-memory: 1,000 claims | 734,888–808,219 | 1,000 + 1,000 reads per pass |
+| R6 SQLite: 1 claim | 69,570–72,901 | 1 + 1 reads per pass |
+| R6 SQLite: 100 claims | 7,191,332–7,747,449 | 100 + 100 reads per pass |
+| R6 SQLite: 1,000 claims | 75,601,301–79,539,660 | 1,000 + 1,000 reads per pass |
+
+R5 reproduces full scheduler-pool occupancy while resource-bearing child tasks wait. The benchmark releases the blocker immediately after detecting that state, so its roughly 1 ms queue and attempt latencies **do not measure sustained resource contention**. R6 confirms linear query count, and the SQLite fixture shows the cost of real repository reads. Its 1,000-claim case is a stress case, not evidence of a typical live claim count; the run loop has a 30-second safety wake while claims exist, but schedule and completion notifications can wake it sooner. Neither the distribution of live claims nor wake frequency under representative operation has been measured. Accordingly, these runs do not justify a production refactor or a general “measured acceptable” conclusion. The R5/R6 performance decision remains OPEN.
+
+Local executable acceptance on this working tree:
+
+| Check | Result |
+| --- | --- |
+| `go test ./internal/app ./internal/scheduler ./internal/jobs ./internal/jobs/sqlite ./internal/taskengine -count=1 -timeout=120s` | PASS |
+| `go test -race ./... -count=1 -timeout=180s` | PASS, all packages |
+| `go vet ./...` | PASS |
+| `go build ./cmd/goultroid` | PASS |
+| `gofmt` and `git diff --check` | PASS |
+
+No production code or persistence schema changed in this measurement follow-up. The prior whole-second recurrence contract, best-effort delayed deletion, and shared-SQLite versus alternate-store registration semantics remain as documented above. CI was not inspected. Closure still requires a sustained R5 contention workload and representative R6 claim-count/wake-frequency evidence, followed by a decision under the criteria in Section 5. If either cost is material, retain this benchmark baseline and add a regression for the chosen minimal change before implementing it.
