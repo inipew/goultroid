@@ -1,6 +1,6 @@
 # Goultroid Maintainability Boundary Refactor — AI Session Plan
 
-Status: **IN PROGRESS — M1–M3 and M5 CLOSED; N1/N2 audit complete; M4/M6 final acceptance pending**
+Status: **IN PROGRESS — M1–M3 and M5 CLOSED; N1–N3 evidence recorded; N4 closure review pending**
 
 Audit baseline:
 
@@ -823,7 +823,7 @@ Local validation status:
 - the immediately preceding M5 closure commit `f0b96c0733e5f1ff460412690fe5743becaf3885` recorded passing `go test -race ./internal/jobs ./internal/jobs/sqlite ./internal/plugin ./internal/app -count=1 -timeout=180s` and `go test ./internal/architecture -run '^TestM5' -count=1 -timeout=180s`;
 - those results predate the M6 compatibility-removal delta and therefore are **not** treated as M6 acceptance;
 - a post-M6 audit at HEAD `3d3fcdb2...` found two concrete acceptance failures: Scheduler no longer compiled because `engine_timing_test.go` still referenced `jobs.NewManager`, and `gofmt -l` reported `internal/architecture/jobs_boundary_m5_test.go`; both source defects are corrected in `644a680a...` and `8f6fef81...`, with the caller fence strengthened in `034e502b...`;
-- the current AI runtime still has no mounted repository checkout and shell GitHub access fails DNS resolution (`Could not resolve host: github.com`), so the complete post-fix M6 test/vet suite cannot be truthfully rerun here;
+- a local checkout became available for the N3 run at `cf20910da4670c2a6ee4f7075dba9b4b360544f6`; the results and remaining failures are recorded under N3 below;
 - CI was not inspected.
 
 Required final local validation, without CI polling:
@@ -875,13 +875,24 @@ The original definition-of-done condition is therefore met at the audited HEAD: 
 
 #### N3 — Finish M4/M6 local acceptance
 
-Status: **PENDING LOCAL EXECUTION**
+Status: **COMPLETE WITH BASELINE-CLASSIFIED FAILURES — scoped M4/M6 gate passed on `cf20910da4670c2a6ee4f7075dba9b4b360544f6`; full repository suite remains non-green**
 
 The post-M6 source corrections for the Scheduler caller, M5 fence formatting, and expanded M6 caller fence are present in `644a680a...`, `8f6fef81...`, and `034e502b...`; they still need current-HEAD local execution. Run the M6 gate listed above, then `go test ./...` and selected race suites. Record each failure with package, test, whether it predates the maintenance delta, and whether it affects a definition-of-done condition. A full-suite failure must not be silently described as green; an unrelated failure may be tracked separately only after its impact is explicitly assessed. Do not inspect CI unless the user requests it.
 
+N3 local execution and classification at the recorded HEAD, with the focused fixture/fence corrections still uncommitted:
+
+- **PASS:** `gofmt -l` across all Go files changed since M5 closure and the N3 changes printed nothing; `git diff --check` passed; `go vet ./...` passed; `go test ./... -run '^$' -count=1 -timeout=180s` compiled every package.
+- **PASS:** full package tests for `internal/taskengine`, `internal/jobs`, `internal/jobs/sqlite`, `internal/scheduler`, `internal/plugin`, and `internal/app`; selected `-race` runs for those same six packages; focused M1–M6 architecture fences and the corrected retry/default-config ownership fences.
+- **Corrected stale test contracts:** native interaction fixture providers in `internal/interaction/native`, `plugins/settings`, and `plugins/myxl` now use `presentation/telegram.BridgeService`; `internal/assistant/testing` passes `TelegramCapabilities` to the command executor. Three `internal/architecture/execution_redesign_test.go` fences now read the M3/M4 responsibility files and the current `StorePorts` call. Each correction was formatted and its focused compile/test rerun passed.
+- **FAIL:** `go test ./... -count=1 -timeout=180s` remains non-green. Current HEAD has 47 failing top-level test names. The same full-suite command on the documented pre-M1 baseline `1f0077a8f90b7062c6c624daf415769dbf7b6942`, extracted to `/tmp` and run with a separate writable `GOCACHE`, has 49 failing top-level test names; **all 47 current failing names also fail at that baseline**. Baseline-only failures were `TestExternalRuntimeDetectsUnexpectedProcessExit` and `TestApp_UnifiedDAGComponents`. This establishes that no new failing top-level test name appeared in this comparison, without proving that every shared failure has identical root cause.
+- **Confirmed pre-M1 failure details:** the Core tests already referenced the absent callback package; the Telegram Dispatcher behavior matrix and durable-claim test failed with the same observed counters/empty sequence; representative Architecture callback/help fences failed with the same missing-file/invariant symptoms. Other shared failures remain classified as baseline-present by test name, with root-cause parity unproven.
+- **Sandbox distinction:** `internal/platform/network` initially failed because its HTTP test server could not open a local port in the sandbox; an approved rerun outside the sandbox passed. MyXL's outside-sandbox rerun still failed `TestMenuManager_PendingQRISScreen` and `TestMyXLQuotaSnapshotPreservesPartialSuccess`; both produced the same failures on the pre-M1 baseline outside the sandbox.
+
+The scoped ownership and Jobs acceptance evidence supports the original maintainability boundaries, and the full-suite comparison places every current failing test name at the pre-M1 baseline. N3 therefore provides a documented scoped acceptance and baseline comparison, **not** a green full-suite claim or proof of identical causes for every failure. N4 must decide whether this evidence satisfies the original definition of done, reconcile M4/M6 status, and keep the baseline failures visible as separate repository debt. No CI was inspected.
+
 #### N4 — Close the maintenance item with evidence
 
-Status: **BLOCKED ON N1–N3 EVIDENCE**
+Status: **READY FOR CLOSURE REVIEW — N1–N3 evidence recorded**
 
 After N1–N3, reconcile the M4 and M6 status lines, the top-level status, and the definition of done in Section 12. Mark the maintenance item `CLOSED` only when the required boundary and single-authority invariants hold and the relevant local regressions pass. Record the exact HEAD, commands, outcomes, and any separately tracked unrelated failures. If an original requirement remains unmet, state it explicitly and keep the item open. No new milestone follows automatically from closing N4.
 
@@ -967,4 +978,4 @@ This maintenance item is closed only when all of the following are true:
 
 ## 13. Recommended next action
 
-N1 and N2 source/caller audits are recorded above at `d017f7bf...`. Next run **N3 — M4/M6 local acceptance** on a refreshed HEAD, classify any failures, then use N4 to reconcile milestone and top-level status from actual evidence. Recheck the N1/N2 inventory if production callers change before closure.
+N1 and N2 source/caller audits are recorded above at `d017f7bf...`; N3 scoped acceptance and pre-M1 baseline comparison are recorded at `cf20910d...` with focused fixture/fence corrections in the worktree. Next perform **N4 — closure review** on a refreshed HEAD, rerun the affected checks after any commit, and reconcile milestone and top-level status from actual evidence. Keep the non-green full-suite baseline explicit.

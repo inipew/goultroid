@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/feature"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	settingssvc "github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -72,7 +73,7 @@ func bindNativeSettings(t *testing.T, p *Plugin, svc core.TelegramServicer, owne
 		sessions,
 		rootinteraction.NewDispatcher(sessions),
 		taskClient,
-		func() core.TelegramServicer { return svc },
+		func() presentationtelegram.BridgeService { return svc },
 		core.NewPermissions(ownerID, nil),
 	)
 	if err != nil {

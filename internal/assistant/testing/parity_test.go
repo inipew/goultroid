@@ -68,7 +68,7 @@ func TestParity_SingleCommandMultipleSurfaces(t *testing.T) {
 		PeerID:  &tg.InputPeerSelf{},
 	}
 
-	err = executor.ExecuteExecution(userbotExec, userbotCmd, mockServicer)
+	err = executor.ExecuteExecution(userbotExec, userbotCmd, core.TelegramCapabilitiesFrom(mockServicer))
 	if err != nil {
 		t.Fatalf("userbot execution failed: %v", err)
 	}

@@ -18,6 +18,7 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
 	"github.com/inipew/goultroid/internal/platform/network"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -127,7 +128,7 @@ func TestP1E1NativeQuotaRefreshA2Lifecycle(t *testing.T) {
 		sessions,
 		actions,
 		taskClient,
-		func() core.TelegramServicer { return tgSvc },
+		func() presentationtelegram.BridgeService { return tgSvc },
 		core.NewPermissions(ownerID, nil),
 	)
 	if err != nil {
@@ -347,7 +348,7 @@ func TestP1E3NativePurchaseConfirmCancelUseA2(t *testing.T) {
 		sessions,
 		rootinteraction.NewDispatcher(sessions),
 		taskClient,
-		func() core.TelegramServicer { return tgSvc },
+		func() presentationtelegram.BridgeService { return tgSvc },
 		core.NewPermissions(ownerID, nil),
 	)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	"github.com/inipew/goultroid/internal/presentation"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -106,7 +107,7 @@ func TestNativeAdapterUsesSharedA2RuntimeWithoutAssistant(t *testing.T) {
 	actions := rootinteraction.NewDispatcher(sessions)
 	taskClient := &immediateTasks{}
 	service := &testTelegramService{}
-	adapter, err := New(registry, sessions, actions, taskClient, func() core.TelegramServicer { return service }, core.NewPermissions(1, nil))
+	adapter, err := New(registry, sessions, actions, taskClient, func() presentationtelegram.BridgeService { return service }, core.NewPermissions(1, nil))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

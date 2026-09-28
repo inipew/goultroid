@@ -257,7 +257,7 @@ func TestPerformanceResilienceHotPathsStayBounded(t *testing.T) {
 		}
 	}
 
-	jobsPath := filepath.Join(root, "internal", "jobs", "manager.go")
+	jobsPath := filepath.Join(root, "internal", "jobs", "manager_recovery.go")
 	jobsData, err := os.ReadFile(jobsPath)
 	if err != nil {
 		t.Fatal(err)
@@ -356,7 +356,7 @@ func TestIdleAndResourceRegressionGuards(t *testing.T) {
 
 func TestTaskEngineRuntimeDefaultsAreMutationIsolated(t *testing.T) {
 	root := repositoryRoot(t)
-	enginePath := filepath.Join(root, "internal", "taskengine", "engine.go")
+	enginePath := filepath.Join(root, "internal", "taskengine", "engine_config.go")
 	engineData, err := os.ReadFile(enginePath)
 	if err != nil {
 		t.Fatal(err)
@@ -403,7 +403,7 @@ func TestPluginScopeDrainDoesNotSpawnWaiterGoroutine(t *testing.T) {
 
 func TestJobsRetryDelaysRemainCoordinatorOwned(t *testing.T) {
 	root := repositoryRoot(t)
-	managerPath := filepath.Join(root, "internal", "jobs", "manager.go")
+	managerPath := filepath.Join(root, "internal", "jobs", "manager_retry.go")
 	data, err := os.ReadFile(managerPath)
 	if err != nil {
 		t.Fatal(err)
@@ -411,7 +411,7 @@ func TestJobsRetryDelaysRemainCoordinatorOwned(t *testing.T) {
 	text := string(data)
 	for _, required := range []string{
 		"if delay > 0 {",
-		"m.store.DeferOccurrence(",
+		"m.stores.Occurrences.DeferOccurrence(",
 		"m.signalRecovery()",
 		"Every positive backoff is durable timing state",
 	} {
