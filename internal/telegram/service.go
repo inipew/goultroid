@@ -657,7 +657,7 @@ func (s *Service) sendTextMessage(ctx context.Context, peer tg.InputPeerClass, t
 
 // SendMessage sends a text message to the specified peer and returns the created tg.Message if available.
 // HTML is parsed locally and malformed formatting falls back to plain text before transport.
-// If a short FloodWait is encountered (<= 5s), the shared RPC executor applies its bounded policy.
+// The non-idempotent transport send is single-attempt; the shared executor may gate the attempt but never replays it after a transport/RPC failure.
 // P1-09: Centralize access-hash preparation before every send.
 func (s *Service) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	return s.sendTextMessage(ctx, peer, text, nil)

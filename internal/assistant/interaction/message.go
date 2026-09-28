@@ -1009,10 +1009,7 @@ func (c *ClientInteraction) UploadInlineMedia(
 		return nil, fmt.Errorf("%w: file size (%d bytes) exceeds maximum upload limit (500MB)", core.ErrMediaTooLarge, stat.Size())
 	}
 
-	const transferTimeout = 30 * time.Minute
-	inputFile, err := executeValue(ctx, c.executor, "upload.saveFilePart", "upload", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.InputFileClass, error) {
-		return c.uploader.FromPath(opCtx, filePath)
-	})
+	inputFile, err := c.uploadMediaFile(ctx, filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upload inline media %q: %w", filePath, err)
 	}
@@ -1065,7 +1062,7 @@ func (c *ClientInteraction) UploadInlineMedia(
 		}
 	}
 
-	return executeValue(ctx, c.executor, "messages.uploadMedia", "messages", assistentrpc.IdempotentMutation, transferTimeout, func(opCtx context.Context) (tg.MessageMediaClass, error) {
+	return executeValue(ctx, c.executor, "messages.uploadMedia", "messages", assistentrpc.IdempotentMutation, mediaTransferTimeout, func(opCtx context.Context) (tg.MessageMediaClass, error) {
 		return c.sender.Self().UploadMedia(opCtx, mediaOption)
 	})
 }
