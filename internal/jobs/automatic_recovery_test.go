@@ -46,7 +46,7 @@ func TestManagerStartAutomaticallyRecoversCrashGap(t *testing.T) {
 	defer engine.Stop(context.Background())
 
 	store := jobsqlite.NewStore(db.DB)
-	manager := jobs.NewManager(engine, store, pump)
+	manager := jobs.NewManagerWithPorts(engine, jobsqlite.Ports(store), pump)
 	if err := manager.RegisterHandler("auto", func(context.Context, jobs.JobDefinition) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestManagerRestartWaitsForPersistedDeferredDeadline(t *testing.T) {
 	defer engine.Stop(context.Background())
 
 	store := jobsqlite.NewStore(after.DB)
-	manager := jobs.NewManager(engine, store, pump)
+	manager := jobs.NewManagerWithPorts(engine, jobsqlite.Ports(store), pump)
 	var calls atomic.Int32
 	if err := manager.RegisterHandler("restart", func(context.Context, jobs.JobDefinition) error {
 		calls.Add(1)

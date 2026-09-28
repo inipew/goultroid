@@ -26,7 +26,7 @@ func TestManagerUsesExplicitJobResourcesNotPoolInference(t *testing.T) {
 	}
 	defer pump.Stop(context.Background())
 	client := &capturedClient{}
-	manager := jobs.NewManager(client, jobsqlite.NewResourceStore(db.DB), pump)
+	manager := jobs.NewManagerWithPorts(client, jobsqlite.ResourcePorts(jobsqlite.NewResourceStore(db.DB)), pump)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

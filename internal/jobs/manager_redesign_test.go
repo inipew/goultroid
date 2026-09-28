@@ -59,7 +59,7 @@ func TestManagerPersistsOccurrenceAttemptAndCompletion(t *testing.T) {
 	}
 	defer pump.Stop(context.Background())
 	client := &capturedClient{}
-	manager := jobs.NewManager(client, jobsqlite.NewStore(db.DB), pump)
+	manager := jobs.NewManagerWithPorts(client, jobsqlite.Ports(jobsqlite.NewStore(db.DB)), pump)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestManagerPersistsOccurrenceAttempt_PumpFallback(t *testing.T) {
 	_ = pump.Stop(context.Background())
 
 	client := &capturedClient{}
-	manager := jobs.NewManager(client, jobsqlite.NewStore(db.DB), pump)
+	manager := jobs.NewManagerWithPorts(client, jobsqlite.Ports(jobsqlite.NewStore(db.DB)), pump)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestEngineBackedOccurrenceCommitsBeforeTicketResolves(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Stop(context.Background())
-	manager := jobs.NewManager(engine, jobsqlite.NewStore(db.DB), pump)
+	manager := jobs.NewManagerWithPorts(engine, jobsqlite.Ports(jobsqlite.NewStore(db.DB)), pump)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestManagerOutboxWakeDrainsBeyondSingleBatch(t *testing.T) {
 	}
 	defer pump.Stop(context.Background())
 
-	manager := jobs.NewManager(&capturedClient{}, jobsqlite.NewStore(db.DB), pump)
+	manager := jobs.NewManagerWithPorts(&capturedClient{}, jobsqlite.Ports(jobsqlite.NewStore(db.DB)), pump)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

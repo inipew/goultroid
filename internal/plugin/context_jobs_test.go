@@ -9,7 +9,7 @@ import (
 )
 
 func TestPluginContextJobsAndSchedulesAreCapabilitySeparated(t *testing.T) {
-	manager := jobs.NewManager(nil, nil, nil)
+	manager := jobs.NewManagerWithPorts(nil, jobs.StorePorts{}, nil)
 	gate := NewCapabilityGate()
 
 	if err := gate.RegisterManifest(Manifest{

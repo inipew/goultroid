@@ -52,7 +52,7 @@ func engineBackedManager(t *testing.T, handler jobs.Handler, policy jobs.JobRetr
 	}
 	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
 	store := jobsqlite.NewStore(db.DB)
-	manager := jobs.NewManager(engine, store, pump)
+	manager := jobs.NewManagerWithPorts(engine, jobsqlite.Ports(store), pump)
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -587,7 +587,7 @@ func TestConcurrentRecoveryPassesCreateOneDeferredRedrive(t *testing.T) {
 	defer engine.Stop(context.Background())
 
 	store := jobsqlite.NewStore(db.DB)
-	manager := jobs.NewManager(engine, store, pump)
+	manager := jobs.NewManagerWithPorts(engine, jobsqlite.Ports(store), pump)
 	var calls atomic.Int32
 	if err := manager.RegisterHandler("race", func(context.Context, jobs.JobDefinition) error {
 		calls.Add(1)

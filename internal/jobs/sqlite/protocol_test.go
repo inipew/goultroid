@@ -298,7 +298,7 @@ func TestDurableDiagnosticsReportsDeferredState(t *testing.T) {
 		t.Fatalf("earliest deferred=%v, want %v", snapshot.EarliestDeferredAt, firstReady)
 	}
 
-	manager := jobs.NewManager(nil, s, nil)
+	manager := jobs.NewManagerWithPorts(nil, Ports(s), nil)
 	diagnostics := manager.Diagnostics()
 	if !diagnostics.DurableSnapshotOK ||
 		diagnostics.DeferredOccurrences != 2 ||
