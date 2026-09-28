@@ -25,7 +25,8 @@ type PluginContext interface {
 	Process() (*process.Executor, error)
 	Files() (*filesystem.Scope, error)
 	Secrets() (*secret.Manager, error)
-	Jobs() (*jobs.Manager, error)
+	Jobs() (JobClient, error)
+	Schedules() (ScheduleClient, error)
 	TaskClient() (tasks.Client, error)
 	Storage() (storage.KVStore, error)
 }
@@ -135,16 +136,24 @@ func (c *pluginContext) Secrets() (*secret.Manager, error) {
 	return c.secrets, nil
 }
 
-func (c *pluginContext) Jobs() (*jobs.Manager, error) {
+func (c *pluginContext) Jobs() (JobClient, error) {
 	if err := c.gate.Check(c.owner, CapJobs); err != nil {
-		if errSched := c.gate.Check(c.owner, CapScheduler); errSched != nil {
-			return nil, fmt.Errorf("jobs access denied: requires %s or %s: %w", CapJobs, CapScheduler, err)
-		}
+		return nil, fmt.Errorf("jobs access denied: requires %s: %w", CapJobs, err)
 	}
 	if c.jobs == nil {
 		return nil, errors.New("jobs manager not configured")
 	}
-	return c.jobs, nil
+	return scopedJobClient{manager: c.jobs, owner: c.owner}, nil
+}
+
+func (c *pluginContext) Schedules() (ScheduleClient, error) {
+	if err := c.gate.Check(c.owner, CapScheduler); err != nil {
+		return nil, fmt.Errorf("scheduler access denied: requires %s: %w", CapScheduler, err)
+	}
+	if c.jobs == nil {
+		return nil, errors.New("jobs manager not configured")
+	}
+	return scopedScheduleClient{manager: c.jobs, owner: c.owner}, nil
 }
 
 func (c *pluginContext) TaskClient() (tasks.Client, error) {

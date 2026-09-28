@@ -1,0 +1,75 @@
+package plugin
+
+import (
+	"context"
+	"strings"
+
+	"github.com/inipew/goultroid/internal/jobs"
+)
+
+// JobClient is the plugin-owned jobs capability. It deliberately omits
+// lifecycle, recovery, diagnostics, raw occurrence mutation, and scheduling.
+type JobClient interface {
+	RegisterHandler(handlerType string, handler jobs.Handler) error
+	Register(def jobs.JobDefinition) error
+	Trigger(context.Context, string) error
+}
+
+// ScheduleClient is the plugin-owned scheduling capability. It cannot invoke
+// job recovery, lifecycle, retry, diagnostics, or due-processing operations.
+type ScheduleClient interface {
+	SaveSchedule(context.Context, jobs.JobSchedule) error
+	DisableSchedule(context.Context, string) error
+}
+
+type scopedJobClient struct {
+	manager *jobs.Manager
+	owner   string
+}
+
+type scopedScheduleClient struct {
+	manager *jobs.Manager
+	owner   string
+}
+
+func pluginJobOwner(owner string) string {
+	return "plugin:" + strings.TrimSpace(owner)
+}
+
+func pluginScopedName(owner, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	prefix := pluginJobOwner(owner) + ":"
+	if strings.HasPrefix(name, prefix) {
+		return name
+	}
+	return prefix + name
+}
+
+func (c scopedJobClient) RegisterHandler(handlerType string, handler jobs.Handler) error {
+	return c.manager.RegisterHandler(pluginScopedName(c.owner, handlerType), handler)
+}
+
+func (c scopedJobClient) Register(def jobs.JobDefinition) error {
+	def.ID = pluginScopedName(c.owner, def.ID)
+	def.ScopeOwner = pluginJobOwner(c.owner)
+	def.QuotaOwner = pluginJobOwner(c.owner)
+	def.HandlerType = pluginScopedName(c.owner, def.HandlerType)
+	return c.manager.Register(def)
+}
+
+func (c scopedJobClient) Trigger(ctx context.Context, jobID string) error {
+	return c.manager.Trigger(ctx, pluginScopedName(c.owner, jobID))
+}
+
+func (c scopedScheduleClient) SaveSchedule(ctx context.Context, schedule jobs.JobSchedule) error {
+	schedule.ID = pluginScopedName(c.owner, schedule.ID)
+	schedule.JobID = pluginScopedName(c.owner, schedule.JobID)
+	return c.manager.SaveSchedule(ctx, schedule)
+}
+
+func (c scopedScheduleClient) DisableSchedule(ctx context.Context, scheduleID string) error {
+	return c.manager.DisableSchedule(ctx, pluginScopedName(c.owner, scheduleID))
+}
