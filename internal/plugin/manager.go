@@ -893,8 +893,9 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	m.mu.RUnlock()
 
 	if jbsMgr != nil {
-		jbsMgr.CancelByOwner(key)
-		jbsMgr.CancelByOwner("plugin:" + key)
+		for _, owner := range pluginJobOwnerCleanupAliases(key) {
+			jbsMgr.CancelByOwner(owner)
+		}
 	}
 	if schedCl != nil {
 		schedCl.UnregisterPeriodicTasksByOwner(key)

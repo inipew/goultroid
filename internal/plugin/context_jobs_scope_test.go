@@ -207,3 +207,21 @@ func TestScopedScheduleDisableCannotReachColonCollidingOwner(t *testing.T) {
 	}
 }
 
+func TestPluginJobOwnerCleanupAliasesPreserveLegacyAndEncoded(t *testing.T) {
+	got := pluginJobOwnerCleanupAliases("a:b")
+	want := []string{"a:b", "plugin:a:b", "plugin:a%3Ab"}
+	if len(got) != len(want) {
+		t.Fatalf("cleanup aliases = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("cleanup aliases = %v, want %v", got, want)
+		}
+	}
+
+	simple := pluginJobOwnerCleanupAliases("alpha")
+	if len(simple) != 2 || simple[0] != "alpha" || simple[1] != "plugin:alpha" {
+		t.Fatalf("simple cleanup aliases = %v", simple)
+	}
+}
+

@@ -53,6 +53,18 @@ func pluginJobOwner(owner string) string {
 	return "plugin:" + encodePluginJobComponent(owner)
 }
 
+func pluginJobOwnerCleanupAliases(owner string) []string {
+	owner = strings.TrimSpace(owner)
+	aliases := []string{owner}
+	legacy := "plugin:" + owner
+	aliases = append(aliases, legacy)
+	encoded := pluginJobOwner(owner)
+	if encoded != legacy {
+		aliases = append(aliases, encoded)
+	}
+	return aliases
+}
+
 func pluginScopedName(owner, name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
