@@ -78,7 +78,6 @@ func TestT11RetiredCallbackHelpersDoNotReenterProduction(t *testing.T) {
 		"callback.EncodeCallbackData(",
 		"SetPluginScopeResolver(",
 		"resolvePluginScope(",
-		"AcceptClaim(",
 	}
 
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -110,5 +109,25 @@ func TestT11RetiredCallbackHelpersDoNotReenterProduction(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// AcceptClaim remains a valid generic idempotency repository operation for
+	// non-callback callers. T4 only retired post-admission acceptance from the
+	// Telegram callback path, where reservation must happen before task admission.
+	for _, rel := range []string{
+		filepath.Join("internal", "telegram", "dispatcher_callback.go"),
+		filepath.Join("internal", "telegram", "dispatcher_callback_claim.go"),
+	} {
+		path := filepath.Join(root, rel)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(raw)
+		for _, forbiddenAccept := range []string{".Accept(", "AcceptClaim("} {
+			if strings.Contains(source, forbiddenAccept) {
+				t.Errorf("Telegram callback path reintroduced post-admission acceptance %q in %s", forbiddenAccept, path)
+			}
+		}
 	}
 }
