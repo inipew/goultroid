@@ -436,11 +436,9 @@ func (e *Engine) ScheduleOnce(ctx context.Context, chatID int64, peerType string
 		}
 		return nil, err
 	}
-	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, true, err)
-	}
-	if err := e.saveRedesignedSchedule(ctx, res, registration.definitionID, true); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, false, err)
+	removeOwnedDefinition, err := e.publishScheduledRegistration(ctx, res, registration)
+	if err != nil {
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, removeOwnedDefinition, err)
 	}
 	res.Status = JobStatusPending
 	e.notifyWake()
@@ -484,11 +482,9 @@ func (e *Engine) ScheduleRecurring(ctx context.Context, chatID int64, peerType s
 		}
 		return nil, err
 	}
-	if err := e.db.ActivateScheduledJob(ctx, res.ID); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, true, err)
-	}
-	if err := e.saveRedesignedSchedule(ctx, res, registration.definitionID, true); err != nil {
-		return nil, e.compensateScheduledRegistration(ctx, res, registration, false, err)
+	removeOwnedDefinition, err := e.publishScheduledRegistration(ctx, res, registration)
+	if err != nil {
+		return nil, e.compensateScheduledRegistration(ctx, res, registration, removeOwnedDefinition, err)
 	}
 	res.Status = JobStatusPending
 	e.notifyWake()
