@@ -505,6 +505,16 @@ func (r *orderedIdempotencyRepository) Claim(context.Context, string, time.Time,
 	r.record("durable-claim")
 	return true, nil
 }
+func (r *orderedIdempotencyRepository) BeginClaim(context.Context, string, string, time.Time, time.Time) (bool, error) {
+	r.record("durable-claim")
+	return true, nil
+}
+func (*orderedIdempotencyRepository) AcceptClaim(context.Context, string, string, time.Time) (bool, error) {
+	return true, nil
+}
+func (*orderedIdempotencyRepository) ReleaseClaim(context.Context, string, string) (bool, error) {
+	return true, nil
+}
 func (*orderedIdempotencyRepository) IsProcessed(context.Context, string, time.Time) (bool, error) {
 	return false, nil
 }

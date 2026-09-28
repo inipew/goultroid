@@ -21,6 +21,16 @@ func (r *countingIdempotencyRepository) Claim(context.Context, string, time.Time
 	r.claims.Add(1)
 	return true, nil
 }
+func (r *countingIdempotencyRepository) BeginClaim(context.Context, string, string, time.Time, time.Time) (bool, error) {
+	r.claims.Add(1)
+	return true, nil
+}
+func (*countingIdempotencyRepository) AcceptClaim(context.Context, string, string, time.Time) (bool, error) {
+	return true, nil
+}
+func (*countingIdempotencyRepository) ReleaseClaim(context.Context, string, string) (bool, error) {
+	return true, nil
+}
 func (r *countingIdempotencyRepository) IsProcessed(context.Context, string, time.Time) (bool, error) {
 	return false, nil
 }
