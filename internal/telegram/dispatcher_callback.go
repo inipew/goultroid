@@ -158,28 +158,28 @@ func (d *Dispatcher) callbackInputPeer(ctx context.Context, peer tg.PeerClass, e
 	}
 }
 
-func (d *Dispatcher) dispatchNativeInteraction(ctx context.Context, event *core.CallbackQueryEvent) bool {
+func (d *Dispatcher) dispatchNativeInteraction(ctx context.Context, event *core.CallbackQueryEvent) (bool, error) {
 	if event == nil {
-		return false
+		return false, nil
 	}
 	native := d.getNativeInteractions()
 	if native == nil {
 		if !rootinteraction.OwnsCallbackData(event.Data) {
-			return false
+			return false, nil
 		}
 		if svc := d.getCallbackAnswerer(); svc != nil {
 			_ = svc.AnswerCallbackQuery(ctx, event.QueryID, "Interaction service unavailable.", false)
 		}
-		return true
+		return true, core.ErrUnavailable
 	}
 	handled, err := native.HandleCallback(ctx, event)
 	if !handled {
-		return false
+		return false, nil
 	}
 	if err != nil {
 		d.logger.Debug("native interaction callback rejected", zap.Int64("query_id", event.QueryID), zap.Error(err))
 	}
-	return true
+	return true, err
 }
 
 const unknownCallbackExpiredText = "⌛ Interaction expired. Please reopen it."
@@ -197,6 +197,15 @@ func (d *Dispatcher) answerUnknownCallback(ctx context.Context, event *core.Call
 	}
 }
 
+func (d *Dispatcher) answerDuplicateCallback(ctx context.Context, queryID int64) {
+	if queryID == 0 {
+		return
+	}
+	if svc := d.getCallbackAnswerer(); svc != nil {
+		_ = svc.AnswerCallbackQuery(ctx, queryID, "", false)
+	}
+}
+
 // OnBotCallbackQuery handles inline keyboard button callback queries.
 func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, update *tg.UpdateBotCallbackQuery) error {
 	release, accepted := d.admitIngress()
@@ -205,9 +214,12 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 	}
 	defer release()
 
+	var callbackClaim dispatcherCallbackClaim
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("cb:%d", update.QueryID)
-		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		var isNew bool
+		var claimErr error
+		callbackClaim, isNew, claimErr = d.beginCallbackClaim(ctx, key)
 		if claimErr != nil {
 			d.logger.Error("callback idempotency claim failed",
 				zap.String("key", key),
@@ -220,6 +232,7 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 			return nil
 		}
 		if !isNew {
+			d.answerDuplicateCallback(ctx, update.QueryID)
 			return nil
 		}
 	}
@@ -231,10 +244,29 @@ func (d *Dispatcher) OnBotCallbackQuery(ctx context.Context, e tg.Entities, upda
 		bus.Publish(evt)
 	}
 
-	if d.dispatchNativeInteraction(ctx, evt) {
+	handled, dispatchErr := d.dispatchNativeInteraction(ctx, evt)
+	if handled {
+		if dispatchErr != nil {
+			d.releaseCallbackClaim(ctx, callbackClaim)
+			return nil
+		}
+		if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
+			d.logger.Error("callback idempotency accept failed after task admission",
+				zap.String("key", callbackClaim.key),
+				zap.Int64("query_id", update.QueryID),
+				zap.Error(err),
+			)
+		}
 		return nil
 	}
 
+	if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
+		d.logger.Error("callback idempotency accept failed for unknown callback",
+			zap.String("key", callbackClaim.key),
+			zap.Int64("query_id", update.QueryID),
+			zap.Error(err),
+		)
+	}
 	d.answerUnknownCallback(ctx, evt)
 	return nil
 }
@@ -247,9 +279,12 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 	}
 	defer release()
 
+	var callbackClaim dispatcherCallbackClaim
 	if d.idempotencyMgr != nil {
 		key := fmt.Sprintf("inline_cb:%d", update.QueryID)
-		isNew, claimErr := d.idempotencyMgr.CheckAndSet(ctx, key, 5*time.Minute)
+		var isNew bool
+		var claimErr error
+		callbackClaim, isNew, claimErr = d.beginCallbackClaim(ctx, key)
 		if claimErr != nil {
 			d.logger.Error("inline callback idempotency claim failed",
 				zap.String("key", key),
@@ -262,6 +297,7 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 			return nil
 		}
 		if !isNew {
+			d.answerDuplicateCallback(ctx, update.QueryID)
 			return nil
 		}
 	}
@@ -272,10 +308,29 @@ func (d *Dispatcher) OnInlineBotCallbackQuery(ctx context.Context, e tg.Entities
 		bus.Publish(evt)
 	}
 
-	if d.dispatchNativeInteraction(ctx, evt) {
+	handled, dispatchErr := d.dispatchNativeInteraction(ctx, evt)
+	if handled {
+		if dispatchErr != nil {
+			d.releaseCallbackClaim(ctx, callbackClaim)
+			return nil
+		}
+		if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
+			d.logger.Error("inline callback idempotency accept failed after task admission",
+				zap.String("key", callbackClaim.key),
+				zap.Int64("query_id", update.QueryID),
+				zap.Error(err),
+			)
+		}
 		return nil
 	}
 
+	if err := d.acceptCallbackClaim(ctx, callbackClaim); err != nil {
+		d.logger.Error("inline callback idempotency accept failed for unknown callback",
+			zap.String("key", callbackClaim.key),
+			zap.Int64("query_id", update.QueryID),
+			zap.Error(err),
+		)
+	}
 	d.answerUnknownCallback(ctx, evt)
 	return nil
 }
