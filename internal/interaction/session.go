@@ -2,6 +2,7 @@ package interaction
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/inipew/goultroid/internal/tasks"
@@ -207,27 +208,45 @@ func (r *Runtime) Cancel(id string) bool {
 	return r.removeLocked(id, ErrCanceled)
 }
 
-// CancelScope removes all sessions owned by one plugin generation.
-func (r *Runtime) CancelScope(scope tasks.ScopeIdentity) int {
+// CancelScopeContext removes all sessions owned by one plugin generation and
+// returns any durable deletion failures to the lifecycle caller.
+func (r *Runtime) CancelScopeContext(ctx context.Context, scope tasks.ScopeIdentity) (int, error) {
 	if r == nil || scope.IsZero() {
-		return 0
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ids := r.byScope[scope]
 	if len(ids) == 0 {
-		return 0
+		return 0, nil
 	}
 	list := make([]string, 0, len(ids))
 	for id := range ids {
 		list = append(list, id)
 	}
 	removed := 0
+	var errs []error
 	for _, id := range list {
-		if r.removeLocked(id, ErrScopeStale) {
+		ok, err := r.removeLockedContext(ctx, id, ErrScopeStale)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if ok {
 			removed++
 		}
 	}
+	return removed, errors.Join(errs...)
+}
+
+// CancelScope removes all sessions owned by one plugin generation.
+// Lifecycle code that must observe durable deletion failures should use
+// CancelScopeContext.
+func (r *Runtime) CancelScope(scope tasks.ScopeIdentity) int {
+	removed, _ := r.CancelScopeContext(context.Background(), scope)
 	return removed
 }
 
