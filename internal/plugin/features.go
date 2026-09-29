@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -187,7 +188,10 @@ func (m *Manager) NewInteractionEngine(port presentation.Port) (*interactionorch
 	return interactionorchestration.New(registry.interactions, registry.actions, port)
 }
 
-func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.ScopeIdentity, commands []core.Command) (func(), error) {
+func (m *Manager) registerFeatureContract(ctx context.Context, name string, p Plugin, scope tasks.ScopeIdentity, commands []core.Command) (func(context.Context) error, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.RLock()
 	registry := m.featureRegistry
 	m.mu.RUnlock()
@@ -285,7 +289,14 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 		}
 	}
 
-	rollbackFeature := func() {
+	var nativeCleanup func()
+	cleanupFeature := func(cleanupCtx context.Context) error {
+		if cleanupCtx == nil {
+			cleanupCtx = context.Background()
+		}
+		if nativeCleanup != nil {
+			nativeCleanup()
+		}
 		if savedResponseRegistration != nil {
 			savedResponseRegistration.Close()
 		}
@@ -297,11 +308,15 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 			registry.actions.UnregisterScope(scope)
 		}
 		if registry.interactions != nil {
-			registry.interactions.CancelScope(scope)
+			_, err := registry.interactions.CancelScopeContext(cleanupCtx, scope)
+			return err
 		}
+		return nil
+	}
+	rollbackFeature := func() {
+		_ = cleanupFeature(ctx)
 	}
 
-	var nativeCleanup func()
 	if driver, ok := p.(nativeinteraction.FeatureDriver); ok {
 		m.mu.RLock()
 		nativeRuntime := m.nativeInteractions
@@ -325,24 +340,7 @@ func (m *Manager) registerFeatureContract(name string, p Plugin, scope tasks.Sco
 		}
 	}
 
-	return func() {
-		if nativeCleanup != nil {
-			nativeCleanup()
-		}
-		if savedResponseRegistration != nil {
-			savedResponseRegistration.Close()
-		}
-		for _, inlineRegistration := range inlineRegistrations {
-			inlineRegistration.Close()
-		}
-		registration.Close()
-		if registry.actions != nil {
-			registry.actions.UnregisterScope(scope)
-		}
-		if registry.interactions != nil {
-			registry.interactions.CancelScope(scope)
-		}
-	}, nil
+	return cleanupFeature, nil
 }
 
 func buildFeatureSpec(name string, p Plugin, commands []core.Command) (feature.Spec, error) {
