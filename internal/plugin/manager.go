@@ -118,6 +118,8 @@ type SchedulerTaskCleaner interface {
 // back atomically.
 type RegistrationValidator func(context.Context) error
 
+type featureCleanupFunc func(context.Context) error
+
 type Manager struct {
 	router                *core.Router
 	hookRegistrar         HookRegistrar
@@ -146,7 +148,7 @@ type Manager struct {
 	registering           map[string]bool
 	list                  []Plugin
 	hookCleanups          map[string]func()
-	featureCleanups       map[string]func()
+	featureCleanups       map[string]featureCleanupFunc
 	auditor               audit.Auditor
 	panicReporter         core.PanicReporter
 	cleanupExecutor       *runtime.CallbackExecutor
@@ -168,7 +170,7 @@ func NewManager(router *core.Router) *Manager {
 		teardownErrors:  make(map[string]error),
 		registering:     make(map[string]bool),
 		hookCleanups:    make(map[string]func()),
-		featureCleanups: make(map[string]func()),
+		featureCleanups: make(map[string]featureCleanupFunc),
 		featureRegistry: newFeatureRegistry(),
 		savedResponses:  savedresponse.NewRegistry(),
 		list:            make([]Plugin, 0),
@@ -570,7 +572,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 			return fmt.Errorf("plugin %s message hook registration failed: %w", name, hookErr)
 		}
 	}
-	featureCleanup, err := m.registerFeatureContract(name, p, commandScope, cmds)
+	featureCleanup, err := m.registerFeatureContract(ctx, name, p, commandScope, cmds)
 	if err != nil {
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook feature rollback", func() error { hookCleanup(); return nil })
@@ -581,7 +583,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	}
 	if err := m.validateStagedRegistration(ctx); err != nil {
 		if featureCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature validation rollback", func() error { featureCleanup(); return nil })
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature validation rollback", func() error { return featureCleanup(ctx) })
 		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook validation rollback", func() error { hookCleanup(); return nil })
@@ -608,7 +610,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	if m.shutdown {
 		m.mu.Unlock()
 		if featureCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature shutdown rollback", func() error { featureCleanup(); return nil })
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature shutdown rollback", func() error { return featureCleanup(ctx) })
 		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook shutdown rollback", func() error { hookCleanup(); return nil })
@@ -620,7 +622,7 @@ func (m *Manager) registerWithContext(ctx context.Context, p Plugin, suppliedMan
 	if _, exists := m.plugins[name]; exists {
 		m.mu.Unlock()
 		if featureCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature duplicate rollback", func() error { featureCleanup(); return nil })
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature duplicate rollback", func() error { return featureCleanup(ctx) })
 		}
 		if hookCleanup != nil {
 			_ = m.runLifecycleCallback(ctx, "plugin "+name+" hook duplicate rollback", func() error { hookCleanup(); return nil })
@@ -734,13 +736,18 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		return nil
 	}
 	m.shutdown = true
-	cleanups := make([]func(), 0, len(m.featureCleanups)+len(m.hookCleanups))
+	cleanups := make([]func() error, 0, len(m.featureCleanups)+len(m.hookCleanups))
 	for _, cleanup := range m.featureCleanups {
-		cleanups = append(cleanups, cleanup)
+		featureCleanup := cleanup
+		cleanups = append(cleanups, func() error { return featureCleanup(ctx) })
 	}
-	m.featureCleanups = make(map[string]func())
+	m.featureCleanups = make(map[string]featureCleanupFunc)
 	for _, cleanup := range m.hookCleanups {
-		cleanups = append(cleanups, cleanup)
+		hookCleanup := cleanup
+		cleanups = append(cleanups, func() error {
+			hookCleanup()
+			return nil
+		})
 	}
 	m.hookCleanups = make(map[string]func())
 	plugins := make([]Plugin, len(m.list))
@@ -781,10 +788,7 @@ func (m *Manager) ShutdownWithContext(ctx context.Context) error {
 		if cleanup == nil {
 			continue
 		}
-		if err := m.runLifecycleCallback(ctx, fmt.Sprintf("plugin registration cleanup %d", i), func() error {
-			cleanup()
-			return nil
-		}); err != nil {
+		if err := m.runLifecycleCallback(ctx, fmt.Sprintf("plugin registration cleanup %d", i), cleanup); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -868,8 +872,7 @@ func (m *Manager) Disable(ctx context.Context, name string) error {
 	var errs []error
 	if featureCleanup != nil {
 		if err := m.runLifecycleCallback(ctx, "plugin "+name+" feature cleanup", func() error {
-			featureCleanup()
-			return nil
+			return featureCleanup(ctx)
 		}); err != nil {
 			errs = append(errs, err)
 		}
@@ -1075,7 +1078,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 		}
 	}
 
-	featureCleanup, err := m.registerFeatureContract(key, p, commandScope, cmds)
+	featureCleanup, err := m.registerFeatureContract(ctx, key, p, commandScope, cmds)
 	if err != nil {
 		if router != nil && len(cmds) > 0 {
 			router.UnregisterBatch(cmds)
@@ -1091,7 +1094,7 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	}
 	if err := m.validateStagedRegistration(ctx); err != nil {
 		if featureCleanup != nil {
-			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature validation rollback", func() error { featureCleanup(); return nil })
+			_ = m.runLifecycleCallback(ctx, "plugin "+name+" feature validation rollback", func() error { return featureCleanup(ctx) })
 		}
 		if router != nil && len(cmds) > 0 {
 			router.UnregisterBatch(cmds)
