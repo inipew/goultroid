@@ -242,7 +242,6 @@ func TestDurableSessionCancelAfterFeatureUnregisterRemovesStoredRow(t *testing.T
 	}
 }
 
-
 func TestDurableCancelScopeDeleteFailureIsObservable(t *testing.T) {
 	store := &memoryDurableStore{}
 	r, _ := NewRuntime(durableCatalog{version: "1"}, Config{})
@@ -268,8 +267,6 @@ func TestDurableCancelScopeDeleteFailureIsObservable(t *testing.T) {
 		t.Fatalf("durable rows after failed delete = %d, want 1", len(store.rows))
 	}
 }
-
-
 
 func TestDurableScopeDeleteHonorsContextCancellation(t *testing.T) {
 	store := &cancelAwareDurableStore{memoryDurableStore: &memoryDurableStore{}, started: make(chan struct{})}

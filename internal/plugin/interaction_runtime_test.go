@@ -176,7 +176,6 @@ func TestManagerInteractionRuntimeFollowsPluginLifecycle(t *testing.T) {
 	}
 }
 
-
 func TestManagerDisableFailsWhenDurableCleanupFails(t *testing.T) {
 	type contextKey struct{}
 	manager := NewManager(core.NewRouter("."))
@@ -221,7 +220,6 @@ func TestManagerDisableFailsWhenDurableCleanupFails(t *testing.T) {
 		t.Fatalf("Enable() after incomplete teardown error = %v, want %v", err, deleteErr)
 	}
 }
-
 
 func TestManagerShutdownPreservesDurableSessions(t *testing.T) {
 	manager := NewManager(core.NewRouter("."))
