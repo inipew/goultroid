@@ -1641,7 +1641,9 @@ Do not weaken this gate to source inspection because the current workstream has 
 
 ### D5 — Fence durability declarations and compatibility changes
 
-Status: **OPEN**
+Status: **CLOSED** — `949916d9` (`test(architecture): fence durable feature versions`).
+
+`internal/architecture/durable_feature_inventory_test.go` inventories every nonempty production `DurabilityVersion` declaration under `internal/` and `plugins/`, pins its source path and version, and records the owning restart acceptance file. When adding a durable feature or changing a version, add or update semantic restart coverage in that feature's `durable_restart_test.go` (Assistant Shell / Help uses `internal/assistant/client/durable_restart_test.go`), then update this inventory deliberately. The generic `internal/interaction/durable_test.go` test `TestDurableSessionRejectsChangedVersion` proves old rows are rejected and removed after a version bump. Validation: `gofmt -w internal/architecture/durable_feature_inventory_test.go`; `gofmt -l internal/architecture/durable_feature_inventory_test.go` (empty); `go test ./internal/architecture ./internal/interaction` (passed); `go test -race ./...` (passed); `go vet ./...` (passed); `git diff --cached --check` (passed). CI was not inspected.
 
 Goal:
 
@@ -2042,18 +2044,9 @@ This hardening item is closed only when all of the following are true:
 
 ## 15. Recommended next action
 
-Continue **D4 validation and stabilization**. Do **not** restart from D0 and do **not** begin D5 yet.
+Continue with **D6 latency and lock contention measurement**. D4 and D5 are closed; do not restart from D0.
 
-The next implementation session should:
-
-1. refresh `test-next` HEAD and record exact SHA/message;
-2. read the **Fast-start context** below plus D4 only;
-3. inspect only commits that advanced beyond the snapshot and the directly affected D4 test/source files;
-4. on a real local checkout, run `gofmt`/focused D4 tests first;
-5. fix every compile, stale expectation, fixture/mock, race, or vet failure attributable to D4 in the same phase;
-6. run the complete D4 gate, including `go test -race ./...`, `go vet ./...`, and `git diff --check`;
-7. only after the gate is green, update D4 to `CLOSED`, record commands/results/exact HEAD, commit the documentation, and push;
-8. then refresh HEAD again before starting D5.
+The next implementation session should refresh `test-next` HEAD, read the Fast-start context and D6, and measure representative durable mutations before proposing any lock or persistence redesign. Keep the existing single A2 runtime and synchronous persistence contract.
 
 Do not inspect CI unless the user explicitly asks.
 
@@ -2090,7 +2083,8 @@ Do not redo these phases from scratch:
 - **D1**: durable deletion was made error-bearing/lifecycle-aware.
 - **D2**: expiry/remove retry invariants were hardened under persistence failure.
 - **D3**: interaction schema ownership was moved to namespaced migrations; application startup no longer relies on ad-hoc interaction schema bootstrap.
-- **D4**: feature-level restart tests have been implemented, but acceptance is **not yet closed** because local validation has not been proven green.
+- **D4**: feature-level restart acceptance passed the complete local gate and is closed.
+- **D5**: the architecture inventory fences durable feature declarations and versions; generic restore coverage rejects old rows after a version bump.
 
 Relevant recent commits before this documentation update include:
 
