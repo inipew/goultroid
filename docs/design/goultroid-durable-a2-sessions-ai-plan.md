@@ -613,38 +613,225 @@ After migration closure:
 
 ### D0 — Refresh, reproduce, and freeze the current contract
 
-Status: **OPEN**
+Status: **CLOSED — source/caller audit frozen at `caf676269119b7ca50641816c84c53605238856b`; no production code changed**
 
-Before changing code:
+D0 refresh:
 
-1. refresh `test-next` HEAD;
-2. record exact SHA/message in this document;
-3. inspect:
-   - `internal/interaction/durable.go`;
-   - `internal/interaction/runtime_internal.go`;
-   - `internal/interaction/session.go`;
-   - `internal/interaction/input.go`;
-   - `internal/interaction/sqlite/store.go`;
-   - `internal/plugin/features.go`;
-   - `internal/plugin/manager.go`;
-   - `internal/app/app.go`;
-   - `internal/app/modules.go`;
-   - current interaction/runtime/plugin tests.
+- Branch: `test-next`
+- Audited HEAD: `caf676269119b7ca50641816c84c53605238856b`
+- Commit: `docs(design): plan durable A2 session hardening`
+- Audit date: 29 September 2026
+- CI: **not inspected**
+- Local checkout/test execution: **unavailable in the current AI environment because GitHub hostname resolution is unavailable**. D0 therefore records source-level reproductions and existing test coverage only; it does not claim a local `go test` result.
 
-Add or confirm focused failing tests for the concrete findings **before** broad refactoring where practical.
+No Go production behavior was changed in D0. A red regression-test commit was intentionally not published without a local execution path. D1/D2 must add the named regression tests together with the fixes, so `test-next` is not knowingly left with an unverified permanently-red test commit.
 
-Required reproductions:
+#### D0.1 — Authoritative removal caller inventory
 
-- durable delete failure during scope cleanup is not propagated;
-- failed expiry durable delete leaves cleanup state inconsistent;
-- lifecycle cancellation cannot reach durable Delete;
-- schema is not represented in feature migration history.
+The current interaction runtime has one internal removal primitive:
 
-Gate:
+```go
+func (r *Runtime) removeLocked(id string, cause error) bool
+```
 
-- no behavior-changing fix yet unless required to write a minimal test seam;
-- current failure modes are explicit and reproducible;
-- test names and expected invariants are recorded.
+Current direct callers found by source audit:
+
+- `internal/interaction/runtime_internal.go`
+  - `loadCurrentSession`: removes an expired session encountered by resolve/load;
+  - `cancelIfScope`: removes a stale-generation session;
+  - `pruneExpiredLocked`: removes heap-expired sessions.
+- `internal/interaction/session.go`
+  - `UpdateState`: expired-session check;
+  - `BindTarget`: expired-session check;
+  - `Touch`: expired-session check;
+  - `Cancel`: explicit single-session cancellation;
+  - `CancelScope`: feature-generation teardown.
+- `internal/interaction/input.go`
+  - `ArmInput`: expired-session check;
+  - `TakeInput`: expired-session check.
+
+This inventory is important for D1: changing `removeLocked` to carry context/error semantics cannot be done only at `CancelScope`. Every caller above must be classified so tests and signatures do not drift.
+
+#### D0.2 — Feature lifecycle caller inventory
+
+`internal/plugin/features.go` has two interaction scope-cleanup sites:
+
+1. registration rollback;
+2. normal returned feature cleanup.
+
+Both currently call:
+
+```go
+registry.interactions.CancelScope(scope)
+```
+
+and both discard all durable-delete detail because `CancelScope` returns only a count.
+
+Normal `Manager.Disable` runs feature cleanup through the existing lifecycle callback executor and already has an `errs` / `teardownErrors` path. D1 should reuse that lifecycle failure model rather than creating another teardown-error registry.
+
+Full manager shutdown is intentionally different:
+
+- `Manager.ShutdownWithContext` first calls `PreserveDurableOnShutdown`;
+- feature cleanup then cancels in-memory interaction scopes;
+- durable rows are intentionally retained for restart.
+
+D1 must preserve that distinction.
+
+#### D0.3 — Durable delete failure reproduction from current source
+
+The current removal path is:
+
+```text
+removeLocked
+→ durable.Delete(context.Background(), id)
+→ on error increment PersistenceErrors
+→ return false
+```
+
+The returned `false` is consumed by `CancelScope` only as a removal count decision. No error reaches `featureCleanup`, `Manager.Disable`, or `teardownErrors`.
+
+Therefore the following failure is reproducible directly from the current control flow:
+
+```text
+durable row exists
+→ normal feature Disable
+→ registration cleanup closes feature catalog entry
+→ CancelScope attempts durable Delete
+→ Delete fails
+→ session remains in runtime / durable row remains in DB
+→ cleanup callback itself returns nil
+→ Manager.Disable has no durable-cleanup error to record
+```
+
+This is the concrete D1 target.
+
+Regression tests to add with D1:
+
+- `TestDurableCancelScopeDeleteFailureIsObservable`;
+- `TestManagerDisableFailsWhenDurableCleanupFails`;
+- `TestManagerDisableDurableFailureBlocksReenableAsIncompleteTeardown`;
+- `TestDurableScopeDeleteUsesLifecycleContext`.
+
+Exact names may be adjusted to repository style, but all four semantics must be covered.
+
+#### D0.4 — Lifecycle context loss is confirmed
+
+The durable delete call is hard-coded to:
+
+```go
+context.Background()
+```
+
+inside `removeLocked`.
+
+No caller context can currently reach the store deletion operation. This is true even when `Manager.Disable(ctx, ...)` is using a deadline/canceled lifecycle context.
+
+D1 must make correctness-sensitive scope cleanup context-aware. Do not add a deletion worker or detached goroutine.
+
+#### D0.5 — Expiry bookkeeping failure is confirmed
+
+`pruneExpiredLocked` currently performs the critical sequence:
+
+```text
+heap.Pop(expiry item)
+→ entry.expiry = nil
+→ removeLocked(id, ErrExpired)
+```
+
+If `removeLocked` cannot delete the durable row:
+
+- it returns `false`;
+- the session remains in `r.sessions`;
+- normal accounting remains retained;
+- the expiry item is already gone;
+- `entry.expiry` is nil.
+
+The session is therefore expired but no longer represented in the expiry heap for later lazy retry.
+
+D2 regression tests must include:
+
+- `TestDurableExpiryDeleteFailureRemainsTracked`;
+- `TestDurableExpiryDeleteRetryRemovesExactlyOnce`;
+- `TestDurableExpiryDeleteFailurePreservesCapacityAccounting`;
+- an input-claim variant if the implementation can retain an input claim at expiry.
+
+The test should explicitly inspect heap/session/accounting invariants from the `interaction` package rather than testing only the public error result.
+
+#### D0.6 — Schema ownership gap is confirmed
+
+Current application startup in `internal/app/app.go` performs:
+
+```go
+interactionStore := interactionsqlite.NewStore(coreDeps.db.DB)
+interactionStore.InitSchema(context.Background())
+```
+
+before the later built-in feature migration call.
+
+`internal/app/modules.go:migrateBuiltinFeatures` currently aggregates migration providers for existing built-in services/modules but does **not** include an interaction-session migration provider.
+
+Therefore `interaction_sessions` is outside the namespaced migration/checksum/adoption history required by ADR 0005.
+
+D3 must cover both database populations:
+
+- databases created before durable sessions existed;
+- databases already touched by `d0b6659e...`, where `interaction_sessions` exists but there is no interaction feature-migration record.
+
+No destructive recreate/drop is acceptable merely to acquire migration ownership.
+
+#### D0.7 — Existing tests that already protect correct durability semantics
+
+The current suite already contains useful success/fail-closed coverage, including:
+
+- `TestDurableWriteFailureDoesNotAdvanceState`;
+- `TestDurableInputWriteFailureDoesNotReserveClaim`;
+- `TestDurableSessionSurvivesRuntimeRestart`;
+- `TestDurableSessionRejectsChangedVersion`;
+- `TestDurableSessionUpdateSurvivesRestart`;
+- `TestDurableSessionCancelRemovesStoredRow`;
+- `TestDurableSessionCancelAfterFeatureUnregisterRemovesStoredRow`;
+- `TestDurableShutdownPreservesStoredRow`;
+- `TestDurableInputClaimSurvivesRestart`;
+- `TestDurableRestoreRejectsExcessSessions`;
+- `TestManagerInteractionRuntimeFollowsPluginLifecycle`.
+
+The missing coverage is specifically the **delete-failure lifecycle path**, **context propagation**, and **failed expiry cleanup bookkeeping**. D1/D2 should extend the existing test doubles instead of introducing an unrelated testing framework.
+
+#### D0.8 — Test/API drift checklist frozen for D1/D2
+
+If D1 changes any of:
+
+- `removeLocked`;
+- `Cancel`;
+- `CancelScope`;
+- feature cleanup callback shape;
+- durable store cleanup helpers;
+
+the same phase must search and update:
+
+- `internal/interaction/*_test.go`;
+- `internal/plugin/*_test.go`;
+- architecture tests referencing those APIs;
+- mocks/fakes implementing the affected interface;
+- benchmarks, if any reference the old signature.
+
+Run `gofmt` on every changed Go/test file before commit.
+
+#### D0 gate
+
+D0 is closed because:
+
+- exact HEAD was refreshed and recorded;
+- no production behavior changed;
+- the durable-delete error-loss path is identified end-to-end;
+- the context-loss path is identified;
+- the expiry orphaning sequence is identified;
+- schema bootstrap outside feature migrations is identified;
+- direct removal and lifecycle callers are inventoried;
+- existing and missing test coverage are explicitly separated;
+- exact D1/D2 regression targets are recorded.
+
+Execution caveat: this D0 closure is based on current-source audit, not a claimed local test run. The next phase must refresh HEAD again before coding.
 
 ### D1 — Make durable deletion error-bearing and lifecycle-aware
 
