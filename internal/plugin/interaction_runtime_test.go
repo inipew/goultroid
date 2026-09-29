@@ -18,8 +18,9 @@ func (interactionRuntimeTestPlugin) Init() error              { return nil }
 func (interactionRuntimeTestPlugin) Commands() []core.Command { return nil }
 func (interactionRuntimeTestPlugin) FeatureSpec() feature.Spec {
 	return feature.Spec{
-		ID:   "interaction-runtime-test",
-		Name: "Interaction Runtime Test",
+		ID:                "interaction-runtime-test",
+		Name:              "Interaction Runtime Test",
+		DurabilityVersion: "1",
 		Interactions: []feature.Interaction{
 			{
 				ID:       "next",
@@ -29,6 +30,33 @@ func (interactionRuntimeTestPlugin) FeatureSpec() feature.Spec {
 			},
 		},
 	}
+}
+
+type interactionRuntimeDurableStore struct {
+	rows      map[string]interaction.DurableSession
+	deleteErr error
+	deleteCtx context.Context
+}
+
+func (s *interactionRuntimeDurableStore) Save(_ context.Context, row interaction.DurableSession) error {
+	if s.rows == nil {
+		s.rows = make(map[string]interaction.DurableSession)
+	}
+	s.rows[row.Session.ID] = row
+	return nil
+}
+
+func (s *interactionRuntimeDurableStore) Delete(ctx context.Context, id string) error {
+	s.deleteCtx = ctx
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	delete(s.rows, id)
+	return nil
+}
+
+func (s *interactionRuntimeDurableStore) Load(context.Context) ([]interaction.DurableSession, error) {
+	return nil, nil
 }
 
 func TestManagerInteractionRuntimeFollowsPluginLifecycle(t *testing.T) {
@@ -143,5 +171,51 @@ func TestManagerInteractionRuntimeFollowsPluginLifecycle(t *testing.T) {
 		Binding:   interaction.Binding{ActorID: 9},
 	}); !errors.Is(err, interaction.ErrClosed) {
 		t.Fatalf("Create() after manager shutdown error = %v, want %v", err, interaction.ErrClosed)
+	}
+}
+
+
+func TestManagerDisableFailsWhenDurableCleanupFails(t *testing.T) {
+	type contextKey struct{}
+	manager := NewManager(core.NewRouter("."))
+	deleteErr := errors.New("delete unavailable")
+	store := &interactionRuntimeDurableStore{deleteErr: deleteErr}
+	if err := manager.InteractionRuntime().SetDurableStore(store); err != nil {
+		t.Fatal(err)
+	}
+	plugin := interactionRuntimeTestPlugin{}
+	if err := manager.RegisterWithContext(context.Background(), plugin); err != nil {
+		t.Fatal(err)
+	}
+	runtime := manager.InteractionRuntime()
+	created, err := runtime.Create(context.Background(), interaction.CreateRequest{
+		FeatureID: plugin.Name(),
+		Binding:   interaction.Binding{ActorID: 7},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), contextKey{}, "d1")
+	err = manager.Disable(ctx, plugin.Name())
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("Disable() error = %v, want durable delete error %v", err, deleteErr)
+	}
+	if store.deleteCtx == nil || store.deleteCtx.Value(contextKey{}) != "d1" {
+		t.Fatalf("durable delete context = %v, want lifecycle value", store.deleteCtx)
+	}
+	if manager.IsEnabled(plugin.Name()) {
+		t.Fatal("plugin remained enabled after failed durable teardown")
+	}
+	if len(store.rows) != 1 {
+		t.Fatalf("durable rows after failed disable = %d, want 1", len(store.rows))
+	}
+	if stats := runtime.SnapshotStats(); stats.Sessions != 1 || stats.PersistenceErrors != 1 {
+		t.Fatalf("runtime stats after failed disable = %+v", stats)
+	}
+	if _, err := runtime.Resolve(context.Background(), created.Session.ID, interaction.Binding{ActorID: 7}); !errors.Is(err, interaction.ErrScopeStale) {
+		t.Fatalf("Resolve() after failed disable = %v, want %v", err, interaction.ErrScopeStale)
+	}
+	if err := manager.Enable(context.Background(), plugin.Name()); !errors.Is(err, deleteErr) {
+		t.Fatalf("Enable() after incomplete teardown error = %v, want %v", err, deleteErr)
 	}
 }
