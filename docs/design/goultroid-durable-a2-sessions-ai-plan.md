@@ -1216,36 +1216,268 @@ D2 remains **IMPLEMENTED** rather than **CLOSED** until the focused local execut
 
 ### D3 — Move interaction schema into namespaced migrations
 
-Status: **OPEN**
+Status: **IMPLEMENTED — namespaced migration ownership landed at `cd167d64a28dd6c9e76feb1bb909c00d97f98a54`; focused local package execution is still pending because the current AI environment cannot clone the repository**
 
-Goal:
+D3 refresh:
 
-> durable A2 persistence participates in the same migration contract as other feature-owned schema.
+- Phase start HEAD: `c6e7c6a97b26b740f4824eef44b33568a69ddd1d`
+- Phase start commit: `test(architecture): update context-aware feature cleanup invariants`
+- Implementation commit: `cd167d64a28dd6c9e76feb1bb909c00d97f98a54`
+- Commit message: `refactor(interaction): migrate durable session schema ownership`
+- CI: **not inspected**
 
-Tasks:
+D3 was committed atomically from the refreshed phase-start HEAD. Production schema ownership, application wiring, store tests, migration tests, and the app-level migration regression were included in the same Go-changing commit so the branch was not intentionally left in an intermediate state with stale callers.
 
-- add interaction SQLite migration provider;
-- register it in `migrateBuiltinFeatures`;
-- remove direct startup schema creation after migration compatibility is proven;
-- add adoption logic for databases where `interaction_sessions` already exists from `d0b6659e...`;
-- preserve all existing data;
-- verify the physical schema before recording adoption;
-- keep migration ownership in the interaction persistence package.
+#### D3.1 — Interaction-owned namespaced migration
 
-Tests:
+`internal/interaction/sqlite` now owns:
 
-- fresh DB gets the table via feature migration;
-- existing pre-durable DB upgrades successfully;
-- baseline durable DB with table but no namespaced migration record is adopted safely;
-- malformed/incompatible preexisting schema fails clearly rather than being silently accepted;
-- repeated startup does not rerun destructive SQL;
-- current Store round-trip tests still pass.
+```go
+type MigrationProvider struct{}
+```
 
-Gate:
+with migration:
 
-- no `CREATE TABLE IF NOT EXISTS interaction_sessions` remains in ordinary application bootstrap;
-- migration history records the schema owner/version;
-- fresh and upgraded DBs converge.
+```text
+interaction.001
+```
+
+The migration owns the canonical `interaction_sessions` schema and declares no legacy integer migration because durable A2 sessions were originally introduced through direct runtime schema initialization rather than through historical `schema_migrations`.
+
+Its checksum is fixed and namespaced migration metadata is recorded through the existing `database.RunFeatureMigrations` contract.
+
+#### D3.2 — Physical schema verification
+
+`migration001` implements:
+
+```go
+database.SchemaInvariantMigration
+```
+
+and validates the physical SQLite table through:
+
+```sql
+PRAGMA table_info('interaction_sessions')
+```
+
+The verifier checks the current baseline contract for all 12 columns:
+
+- `id`;
+- `feature_id`;
+- `version`;
+- `actor_id`;
+- `chat_id`;
+- `message_id`;
+- `inline_message_id`;
+- `state`;
+- `revision`;
+- `created_at`;
+- `expires_at`;
+- `input_expires_at`.
+
+It also checks the expected SQLite type/nullability/primary-key/default characteristics.
+
+The baseline SQLite shape was validated directly before publication, including the SQLite-specific facts that:
+
+- `id TEXT PRIMARY KEY` is reported by `PRAGMA table_info` with `notnull=0` and `pk=1`;
+- `input_expires_at` reports default `0`.
+
+#### D3.3 — Baseline direct-created databases are adopted without destructive recreation
+
+Databases already touched by the original durable-session implementation may contain:
+
+```text
+interaction_sessions
+```
+
+but no:
+
+```text
+feature_schema_migrations.id = interaction.001
+```
+
+D3 handles that population through the normal namespaced migration transaction:
+
+```text
+RunFeatureMigrations
+→ interaction.001 Up
+→ CREATE TABLE IF NOT EXISTS interaction_sessions
+→ physical schema verification
+→ record interaction.001
+```
+
+Because table creation is idempotent, a compatible baseline table is not dropped or recreated.
+
+The migration explicitly verifies the table **before** returning from `Up`; therefore a malformed preexisting table cannot be silently recorded as migrated merely because `CREATE TABLE IF NOT EXISTS` was a no-op.
+
+This is intentionally different from legacy-integer adoption: there is no historical integer migration to claim.
+
+#### D3.4 — Store is no longer a schema bootstrapper
+
+`internal/interaction/sqlite/store.go` no longer exposes:
+
+```go
+Store.InitSchema
+```
+
+and no longer contains the interaction-session `CREATE TABLE` statement.
+
+The store is again only the durable-session persistence adapter:
+
+- `Save`;
+- `Delete`;
+- `Load`.
+
+Schema declaration and migration policy now live in the migration provider owned by the same package.
+
+#### D3.5 — Application startup uses the canonical migration runner
+
+`internal/app/modules.go:migrateBuiltinFeatures` now includes:
+
+```go
+interactionsqlite.MigrationProvider{}
+```
+
+in the built-in provider list.
+
+The provider capacity was updated accordingly.
+
+`internal/app/app.go` no longer performs the old interaction-specific:
+
+```text
+interactionStore.InitSchema(...)
+```
+
+bootstrap.
+
+The interaction store can still be attached to the runtime before built-in migrations execute because no durable load occurs at that point. `RestoreDurable` remains later in startup, after `migrateBuiltinFeatures` has completed.
+
+#### D3.6 — Tests were migrated with the production API
+
+The old store tests that called `InitSchema` were updated in the same D3 commit.
+
+`internal/interaction/sqlite/store_test.go` now uses:
+
+```go
+database.RunFeatureMigrations(ctx, db, MigrationProvider{})
+```
+
+before exercising the store.
+
+This applies to:
+
+- runtime restart callback persistence;
+- store round-trip;
+- empty-state persistence.
+
+No current interaction SQLite test is intentionally left on the removed schema-bootstrap API.
+
+#### D3.7 — Migration regression matrix
+
+`internal/interaction/sqlite/migration_test.go` adds explicit coverage for:
+
+- fresh database creation through `interaction.001`;
+- idempotent repeated `RunFeatureMigrations`;
+- compatible baseline table with no migration record;
+- preservation of an existing durable session row during baseline adoption;
+- malformed preexisting table rejection;
+- ensuring malformed schema is **not** recorded as successfully migrated.
+
+An additional app-level test:
+
+```text
+TestBuiltinFeatureMigrationsIncludeInteractionSessions
+```
+
+proves the application migration aggregation creates both:
+
+- the `interaction_sessions` table;
+- the `interaction.001` migration record.
+
+#### D3.8 — Stale-caller audit
+
+Before implementation, the current `test-next` branch was audited for interaction `InitSchema` callers.
+
+The interaction-specific occurrences were limited to:
+
+- `internal/app/app.go`;
+- `internal/interaction/sqlite/store.go`;
+- `internal/interaction/sqlite/store_test.go`.
+
+All of those interaction-specific uses were removed or migrated in D3.
+
+Other unrelated `InitSchema` APIs in other subsystems, such as jobs/idempotency/storage, are outside D3 and were not changed.
+
+#### D3.9 — Formatting and validation discipline
+
+Before the D3 Go commit, the newly created/replaced D3 Go files were run through `gofmt` and the local formatting gate produced no output from `gofmt -l`.
+
+The final D3 changed-file set is:
+
+```text
+internal/app/app.go
+internal/app/interaction_migration_test.go
+internal/app/modules.go
+internal/interaction/sqlite/migration.go
+internal/interaction/sqlite/migration_test.go
+internal/interaction/sqlite/store.go
+internal/interaction/sqlite/store_test.go
+```
+
+`app.go` changed only by removing the already formatted three-line `InitSchema` error block; no replacement syntax was introduced there.
+
+The source branch was re-read after the atomic commit to verify:
+
+- no interaction `InitSchema` remains in `app.go`;
+- `store.go` contains no schema bootstrapper;
+- `store_test.go` uses the migration runner;
+- `modules.go` includes the interaction provider;
+- migration and app regression tests reference `interaction.001`.
+
+The current AI environment still cannot clone `github.com/inipew/goultroid` because DNS resolution for `github.com` fails. Therefore D3 does **not** claim successful execution of `go test`, `go test -race`, or `go vet`.
+
+Required local execution gate before changing D3 from **IMPLEMENTED** to **CLOSED**:
+
+```text
+gofmt -w internal/app/app.go \
+          internal/app/interaction_migration_test.go \
+          internal/app/modules.go \
+          internal/interaction/sqlite/migration.go \
+          internal/interaction/sqlite/migration_test.go \
+          internal/interaction/sqlite/store.go \
+          internal/interaction/sqlite/store_test.go
+
+gofmt -l internal/app/app.go \
+          internal/app/interaction_migration_test.go \
+          internal/app/modules.go \
+          internal/interaction/sqlite/migration.go \
+          internal/interaction/sqlite/migration_test.go \
+          internal/interaction/sqlite/store.go \
+          internal/interaction/sqlite/store_test.go
+
+go test ./internal/interaction/sqlite ./internal/app
+go test -race ./internal/interaction/sqlite ./internal/app
+go vet ./internal/interaction/sqlite ./internal/app
+git diff --check
+```
+
+`gofmt -l` must print nothing.
+
+#### D3 gate status
+
+Implemented invariants:
+
+- `interaction_sessions` is owned by `interaction.001`;
+- fresh databases create the schema through the namespaced migration runner;
+- baseline durable databases can acquire migration ownership without row loss;
+- malformed baseline schema fails closed before a migration record is written;
+- application startup no longer calls interaction `Store.InitSchema`;
+- interaction store tests use the same migration path as production;
+- application migration aggregation has direct regression coverage;
+- no second migration runner or schema authority was introduced;
+- CI was not inspected.
+
+D3 remains **IMPLEMENTED** rather than **CLOSED** until the focused local execution gate is run on a full repository checkout.
 
 ### D4 — Add real feature restart acceptance
 
