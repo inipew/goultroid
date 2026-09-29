@@ -1,6 +1,6 @@
 # Goultroid Durable A2 Session Hardening — AI Session Plan
 
-Status: **OPEN — implementation pending**
+Status: **OPEN — D1–D3 implemented; D4 implementation present but local acceptance is still pending**
 
 Audit baseline:
 
@@ -84,6 +84,54 @@ Every AI session continuing this plan must preserve all of the following rules.
    - run the relevant focused tests;
    - run `gofmt` first for every Go-changing commit;
    - do not check CI.
+
+### 1.1 Mandatory execution discipline — no unvalidated Go pushes
+
+The rules above are gates, not recommendations.
+
+For every phase that changes Go code, use one continuous loop:
+
+```text
+refresh HEAD
+→ read only the phase + directly affected source
+→ implement scoped production/test changes
+→ gofmt every changed Go file
+→ verify gofmt -l is empty
+→ run focused tests
+→ run race/vet acceptance required by the phase
+→ git diff --check
+→ inspect status/diff for unrelated changes
+→ commit
+→ push
+→ refresh HEAD
+→ update phase documentation from actual results
+```
+
+Hard requirements:
+
+- **Do not push Go changes if the required local validation cannot be executed.**
+- Static review, GitHub source inspection, or reasoning about compilation **must not substitute** for `go test`, `go test -race`, `go vet`, or `gofmt` when the phase requires those checks.
+- If the AI environment has no usable repository checkout, it may audit source, prepare a patch, or document the exact next commands, but it must **stop before commit/push** of Go changes.
+- A user request to "push" does not waive these plan rules unless the user explicitly says to bypass a particular gate.
+- A phase must not be marked `CLOSED` from source inspection alone.
+- Do not rely on CI to discover compile, formatting, lint, race, stale-test, or mock/interface regressions. CI remains uninspected unless explicitly requested.
+- A separate follow-up `fmt` commit is evidence that the previous Go-changing commit did not follow this plan. Fix formatting before the original commit instead.
+- A compile/test correction immediately after a phase commit should be treated as a failed pre-push gate and the workflow should be corrected before starting the next phase.
+
+### 1.2 Fast execution path — avoid repeated full-system re-audits
+
+This plan should be executed faster than the initial audit without weakening validation.
+
+At the start of a continuation session:
+
+1. read this document's **Fast-start context** and the current phase only;
+2. refresh `test-next` HEAD once;
+3. if HEAD has advanced, inspect only the commits/diffs since the documented snapshot and re-read directly affected files;
+4. do **not** re-audit the entire interaction/Telegram/plugin stack unless a new failure crosses those boundaries;
+5. keep one phase in one worktree loop until its local gate is green;
+6. do not start the next phase while the current phase has unresolved compile, format, focused-test, race, or vet failures.
+
+Prefer concrete execution over repeated planning once the current phase contract is already frozen.
 
 ---
 
@@ -1491,7 +1539,18 @@ D3 remains **IMPLEMENTED** rather than **CLOSED** until the focused local execut
 
 ### D4 — Add real feature restart acceptance
 
-Status: **OPEN**
+Status: **IMPLEMENTED / NOT ACCEPTED — feature restart tests exist, but the mandatory local validation gate has not yet been proven green**
+
+Current implementation snapshot before this documentation update:
+
+- Source HEAD: `0d2308be258ac7059d4efd3d2dcf4c0a04ab9290` — `test(myxl): complete D4 durable restart acceptance`.
+- Assistant Shell / Help restart acceptance exists.
+- Settings restart acceptance exists.
+- Calculator restart acceptance exists.
+- MyXL restart coverage now exercises real summary/navigation, saved-package navigation, still-valid confirmation, quote revalidation, no processing replay, and pending-input restore semantics.
+- This snapshot is **not** acceptance evidence. D4 remains blocked until the required local commands pass on a full checkout.
+- Do not start D5 merely because these tests are present in source.
+- CI must remain uninspected unless the user explicitly asks.
 
 Goal:
 
@@ -1547,7 +1606,36 @@ Where a current durable feature arms an input session, prove:
 Gate:
 
 - each current durability opt-in has semantic restart coverage;
-- no test relies only on the generic `demo` catalog.
+- no test relies only on the generic `demo` catalog;
+- all D4 changed Go/test files are `gofmt`-clean;
+- focused D4 packages compile and pass;
+- repository-wide `go test -race ./...` passes, or any pre-existing unrelated failure is explicitly isolated and proven unrelated before D4 closure;
+- `go vet ./...` passes;
+- `git diff --check` passes;
+- no D4 commit is followed by a formatting/compile/test repair that should have been caught by the pre-push gate.
+
+Minimum D4 validation before closure:
+
+```text
+gofmt -w <all D4 changed Go files>
+gofmt -l <all D4 changed Go files>   # must print nothing
+
+go test ./internal/interaction
+go test ./internal/interaction/sqlite
+go test ./internal/plugin
+go test ./internal/app
+go test ./internal/assistant/client
+go test ./plugins/calculator
+go test ./plugins/settings
+go test ./plugins/myxl
+go test ./internal/architecture
+
+go test -race ./...
+go vet ./...
+git diff --check
+```
+
+Do not weaken this gate to source inspection because the current workstream has already demonstrated that unused imports, misspelled symbols, stale expectations, missing test helpers, formatting drift, and race/test regressions can otherwise reach the branch.
 
 ### D5 — Fence durability declarations and compatibility changes
 
@@ -1905,15 +1993,19 @@ These are suggestions, not mandatory exact commit names.
 For **every** commit that changes Go:
 
 1. refresh HEAD if beginning a new phase;
-2. make the scoped code + test changes;
+2. make the scoped code + test changes in one worktree loop;
 3. update stale tests/mocks/signatures in the same phase;
 4. run `gofmt` on every changed Go file;
 5. verify `gofmt -l` is empty for those files;
-6. run focused tests;
-7. inspect `git diff --check`;
-8. inspect the diff for unrelated changes;
-9. commit and push;
-10. **do not check CI unless the user asks**.
+6. run the phase's focused tests until green;
+7. run the phase-required race and vet gates **before** commit;
+8. run `git diff --check`;
+9. inspect status/diff for unrelated changes;
+10. commit and push only after the gate is green;
+11. refresh HEAD after push and record the actual commit;
+12. **do not check CI unless the user asks**.
+
+If steps 4–9 cannot be executed because there is no usable local checkout, stop before committing/pushing Go changes. Prepare the patch/handoff instead. Do not replace executable validation with static reasoning.
 
 ---
 
@@ -1948,17 +2040,135 @@ This hardening item is closed only when all of the following are true:
 
 ## 15. Recommended next action
 
-Start with **D0**, not D3 or D6.
+Continue **D4 validation and stabilization**. Do **not** restart from D0 and do **not** begin D5 yet.
 
-The first implementation session should:
+The next implementation session should:
 
-1. refresh `test-next` HEAD;
-2. reproduce durable-delete failure through the current interaction/plugin lifecycle;
-3. add focused regression tests for error propagation and expiry cleanup;
-4. only then implement **D1**.
+1. refresh `test-next` HEAD and record exact SHA/message;
+2. read the **Fast-start context** below plus D4 only;
+3. inspect only commits that advanced beyond the snapshot and the directly affected D4 test/source files;
+4. on a real local checkout, run `gofmt`/focused D4 tests first;
+5. fix every compile, stale expectation, fixture/mock, race, or vet failure attributable to D4 in the same phase;
+6. run the complete D4 gate, including `go test -race ./...`, `go vet ./...`, and `git diff --check`;
+7. only after the gate is green, update D4 to `CLOSED`, record commands/results/exact HEAD, commit the documentation, and push;
+8. then refresh HEAD again before starting D5.
 
-The highest-value first fix is the lifecycle correctness gap:
+Do not inspect CI unless the user explicitly asks.
 
-> a failed durable delete must not be reduced to a boolean/count that allows plugin disable to look successful.
+---
 
-After D1 and D2 are stable, migrate schema ownership in D3, then prove actual feature restart compatibility in D4–D5, and only then use D6 measurements to decide whether the current synchronous SQLite critical section needs any further design work.
+## 16. Fast-start context for the next AI session
+
+Use this section to avoid rebuilding context from the entire repository history.
+
+### 16.1 What this work is
+
+The active plan is:
+
+`docs/design/goultroid-durable-a2-sessions-ai-plan.md`
+
+Purpose:
+
+> harden the existing canonical A2 durable-session implementation for lifecycle correctness, migration ownership, restart compatibility, bounded retention, and measured performance without introducing a second runtime/executor/persistence worker.
+
+Canonical boundaries remain:
+
+- one A2 interaction runtime;
+- one `a2:<action>:<session>.<revision>` callback protocol;
+- one feature registry;
+- TaskEngine as finite-work execution authority;
+- one durable session representation for opted-in features;
+- single-active-process restart durability only; active-active is out of scope.
+
+### 16.2 Progress already made
+
+Do not redo these phases from scratch:
+
+- **D0**: contract/source audit completed.
+- **D1**: durable deletion was made error-bearing/lifecycle-aware.
+- **D2**: expiry/remove retry invariants were hardened under persistence failure.
+- **D3**: interaction schema ownership was moved to namespaced migrations; application startup no longer relies on ad-hoc interaction schema bootstrap.
+- **D4**: feature-level restart tests have been implemented, but acceptance is **not yet closed** because local validation has not been proven green.
+
+Relevant recent commits before this documentation update include:
+
+```text
+cd167d64  refactor(interaction): migrate durable session schema ownership
+39f1ddbf  docs(interaction): record D3 migration ownership
+3ed26b98  docs(interaction): record exact D3 gofmt validation
+63e8c29a  test(interaction): add durable feature restart acceptance
+e870471e  test(interaction): fix durable restart acceptance tests
+0d2308be  test(myxl): complete D4 durable restart acceptance
+```
+
+The presence of repair commits is the reason the stronger no-unvalidated-push rule now exists.
+
+### 16.3 Current durability inventory
+
+Current nonempty durability versions that D4 must cover semantically:
+
+- Assistant Shell: `"3"`
+- Calculator: `"1"`
+- Settings: `"1"`
+- MyXL: `"1"`
+
+### 16.4 D4 semantic coverage expected
+
+Assistant Shell / Help:
+
+- restore real shell/help state;
+- rebind current generation;
+- dispatch old callback;
+- render valid next view/state;
+- stale callback must fail.
+
+Settings:
+
+- restore real Settings session;
+- continue representative navigation/mutation;
+- stale callback protection remains intact.
+
+Calculator:
+
+- restore callback-heavy expression state;
+- old callback continues from restored state;
+- revision/stale protection remains intact.
+
+MyXL:
+
+- real summary/dashboard navigation;
+- real saved-package navigation;
+- still-valid purchase confirmation continues after restart;
+- fresh quote/idempotency checks remain authoritative;
+- quote drift fails safely;
+- processing/in-flight purchase is not replayed or reconstructed;
+- pending alias input survives only while deadline is live;
+- expired input is not rearmed;
+- actor/chat input binding remains exclusive.
+
+### 16.5 Immediate task
+
+The next AI should **validate and stabilize D4, not redesign it**.
+
+Start by refreshing HEAD. If it advanced beyond the snapshot, inspect only the new diff first.
+
+Then run the D4 local gate exactly as documented. Any failure is work for D4 until fixed. Do not mark D4 closed and do not move to D5 while:
+
+- `gofmt -l` reports changed Go files;
+- focused tests fail;
+- `go test -race ./...` fails because of this work;
+- `go vet ./...` fails;
+- `git diff --check` fails.
+
+If the environment cannot run these commands, stop before any Go push and report/prepare the exact patch instead.
+
+### 16.6 Operational rules that must not be forgotten
+
+- refresh HEAD before each new phase;
+- `gofmt` before every Go-changing commit;
+- update tests/mocks/fixtures in the same phase as API changes;
+- no commit/push of Go work before local gates pass;
+- no CI inspection unless explicitly requested;
+- no second runtime/registry/TaskEngine/RPC executor/downloader/retry engine/persistence worker;
+- keep state/retry/resource retention bounded;
+- do not silently change Help/Settings/MyXL UX or purchase semantics to make tests pass.
