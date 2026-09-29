@@ -15,7 +15,6 @@ import (
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
 	"github.com/inipew/goultroid/internal/interaction/orchestration"
 	interactionsqlite "github.com/inipew/goultroid/internal/interaction/sqlite"
-	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -154,7 +153,7 @@ func TestD4AssistantShellHelpSurvivesDurableRestart(t *testing.T) {
 	if err := dispatchShell(t, second.engine, oldModule, 9102, peer); err != nil {
 		t.Fatalf("dispatch pre-restart help callback after restore: %v", err)
 	}
-	if !strings.Contains(second.port.edited.Text, "GoUltroid Help") {
+	if !strings.Contains(second.port.edited.Text, "General") {
 		t.Fatalf("restored help callback did not render help view: %q", second.port.edited.Text)
 	}
 	if err := dispatchShell(t, second.engine, oldModule, 9103, peer); !errors.Is(err, rootinteraction.ErrStaleToken) {

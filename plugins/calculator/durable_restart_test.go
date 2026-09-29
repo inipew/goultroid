@@ -144,7 +144,7 @@ func TestD4CalculatorCallbackStateSurvivesDurableRestart(t *testing.T) {
 	if port.edited.Text == "" {
 		t.Fatal("restored calculator callback did not render next view")
 	}
-	if err := engine.Dispatch(ctx, orchestration.CallbackRequest{Data: oldData, ActorID: actorID, QueryID: 7302, Target: target}); !errors.Is(err, rootinteraction.ErStaleToken) {
+	if err := engine.Dispatch(ctx, orchestration.CallbackRequest{Data: oldData, ActorID: actorID, QueryID: 7302, Target: target}); !errors.Is(err, rootinteraction.ErrStaleToken) {
 		t.Fatalf("replayed calculator callback error = %v, want %v", err, rootinteraction.ErrStaleToken)
 	}
 }
