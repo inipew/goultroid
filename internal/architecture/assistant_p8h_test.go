@@ -17,7 +17,7 @@ func TestP8HCrossSurfaceLifecycleUsesCanonicalGenerationFences(t *testing.T) {
 	features := string(featuresRaw)
 	for _, required := range []string{
 		"registry.actions.UnregisterScope(scope)",
-		"registry.interactions.CancelScope(scope)",
+		"registry.interactions.CancelScopeContext(cleanupCtx, scope)",
 		"inlineRegistration.Close()",
 		"savedResponseRegistration.Close()",
 	} {
@@ -33,7 +33,7 @@ func TestP8HCrossSurfaceLifecycleUsesCanonicalGenerationFences(t *testing.T) {
 	manager := string(managerRaw)
 	for _, required := range []string{
 		"taskClient.CancelScope(tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}, tasks.CauseScopeClosed)",
-		"featureCleanup()",
+		"featureCleanup(ctx)",
 		"router.UnregisterBatch(cmds)",
 	} {
 		if !strings.Contains(manager, required) {

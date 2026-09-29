@@ -47,7 +47,7 @@ func TestP8CCalculatorUsesCanonicalInlineAndA2Runtime(t *testing.T) {
 		},
 		filepath.Join(root, "internal", "plugin", "features.go"): {
 			"registry.actions.UnregisterScope(scope)",
-			"registry.interactions.CancelScope(scope)",
+			"registry.interactions.CancelScopeContext(cleanupCtx, scope)",
 		},
 		filepath.Join(root, "internal", "interaction", "runtime_callback_test.go"): {
 			"TestCallbackRevisionRejectsOldButtons",
