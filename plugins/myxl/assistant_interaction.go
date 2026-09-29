@@ -426,6 +426,24 @@ func parseAssistantIntent(data string) (namespace, action, opaque string, err er
 	return parts[0], parts[1], opaque, nil
 }
 
+func parseBuyOptPayload(payload string) (origin, optKey string) {
+	if strings.HasPrefix(payload, "saved:") {
+		return "saved", strings.TrimPrefix(payload, "saved:")
+	}
+	if strings.HasPrefix(payload, "fam:") {
+		rest := strings.TrimPrefix(payload, "fam:")
+		idx := strings.LastIndex(rest, ":")
+		if idx != -1 {
+			return "fam:" + rest[:idx], rest[idx+1:]
+		}
+		return "store", rest
+	}
+	if strings.HasPrefix(payload, "store:") {
+		return "store", strings.TrimPrefix(payload, "store:")
+	}
+	return "store", payload
+}
+
 func (p *Plugin) handleAssistantSlot(ctx *orchestration.Context, slot int) error {
 	state := decodeAssistantState(ctx.State())
 	if slot < 0 || slot >= len(state.Slots) {
@@ -645,7 +663,8 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		return ctx.Answer("Kirimkan kode paket…", false)
 
 	case "buy_opt":
-		optionCode := p.menuMgr.ResolveOptionCode(opaque)
+		origin, key := parseBuyOptPayload(opaque)
+		optionCode := p.menuMgr.ResolveOptionCode(key)
 		if optionCode == "" {
 			return ctx.Answer("Kode paket tidak valid", true)
 		}
@@ -653,7 +672,7 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if err != nil || acc == nil {
 			return ctx.Answer("Tidak ada akun aktif", true)
 		}
-		screen, err := p.menuMgr.BuildPackageDetailScreen(ctx.Context(), acc, optionCode)
+		screen, err := p.menuMgr.BuildPackageDetailScreenWithOrigin(ctx.Context(), acc, optionCode, origin)
 		if err != nil {
 			return ctx.Answer("Gagal memuat paket. Silakan coba lagi.", true)
 		}
@@ -777,7 +796,16 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		return ctx.Answer("✅ Foto QRIS berhasil dikirim!", false)
 
 	case "bookmark_add":
-		optionCode := p.menuMgr.ResolveOptionCode(opaque)
+		var origin string
+		rawCode := opaque
+		if strings.HasPrefix(opaque, "det:") {
+			origin = "det"
+			rawCode = strings.TrimPrefix(opaque, "det:")
+		} else if strings.HasPrefix(opaque, "res:") {
+			origin = "res"
+			rawCode = strings.TrimPrefix(opaque, "res:")
+		}
+		optionCode := p.menuMgr.ResolveOptionCode(rawCode)
 		acc, err := p.repo.GetActive(ctx.Context())
 		if err != nil || acc == nil {
 			return ctx.Answer("Tidak ada akun aktif", true)
@@ -797,7 +825,14 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		}); err != nil {
 			return ctx.Answer("Gagal menyimpan favorit. Silakan coba lagi.", true)
 		}
-		return ctx.Answer("⭐ Paket berhasil disimpan ke favorit!", true)
+		_ = ctx.Answer("⭐ Paket berhasil disimpan ke favorit!", false)
+		if origin != "res" {
+			screen, err := p.menuMgr.BuildPackageDetailScreen(ctx.Context(), acc, optionCode)
+			if err == nil && screen != nil {
+				return p.assistantTransition(ctx, state, screen)
+			}
+		}
+		return nil
 
 	case "bookmark_del":
 		optionCode := p.menuMgr.ResolveOptionCode(opaque)
@@ -1043,12 +1078,19 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	}
 
 	state.Draft = nil
-	screen := p.menuMgr.BuildPurchaseResultScreen(
+	isSaved := false
+	if acc, _ := p.repo.GetActive(ctx.Context()); acc != nil {
+		if existing, _ := p.repo.GetSavedPackage(ctx.Context(), acc.MSISDN, resolved.Intent.OptionCode); existing != nil {
+			isSaved = true
+		}
+	}
+	screen := p.menuMgr.BuildPurchaseResultScreenWithSaved(
 		execution.Result,
 		resolved.PackageName,
 		resolved.EffectivePrice,
 		resolved.Intent.Method,
 		resolved.Intent.OptionCode,
+		isSaved,
 	)
 	if err := p.assistantTransition(ctx, state, screen); err != nil {
 		return err

@@ -315,7 +315,7 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 		label := truncateString(sp.Name, 18)
 		optKey := m.RegisterOptionCode(sp.OptionCode)
 		screen.AddRow(
-			newMenuButton("🛒 "+label, fmt.Sprintf("myxl:buy_opt:%s", optKey)),
+			newMenuButton("🛒 "+label, fmt.Sprintf("myxl:buy_opt:saved:%s", optKey)),
 			newMenuButton("❌ Hapus", fmt.Sprintf("myxl:bookmark_del:%s", optKey)),
 		)
 	}
@@ -327,6 +327,10 @@ func (m *MenuManager) BuildSavedPackagesScreen(ctx context.Context) (*ui.Screen,
 }
 
 func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account, optionCode string) (*ui.Screen, error) {
+	return m.BuildPackageDetailScreenWithOrigin(ctx, acc, optionCode, "")
+}
+
+func (m *MenuManager) BuildPackageDetailScreenWithOrigin(ctx context.Context, acc *Account, optionCode string, origin string) (*ui.Screen, error) {
 	details, err := m.plugin.client.GetPackageDetails(ctx, acc, optionCode)
 	if err != nil {
 		return nil, err
@@ -346,13 +350,27 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 		}
 	}
 
+	isSaved := origin == "saved"
+	if !isSaved && m.plugin != nil && m.plugin.repo != nil && acc != nil {
+		if existing, _ := m.plugin.repo.GetSavedPackage(ctx, acc.MSISDN, canonicalOptionCode); existing != nil {
+			isSaved = true
+		} else if optionCode != canonicalOptionCode {
+			if existing, _ := m.plugin.repo.GetSavedPackage(ctx, acc.MSISDN, optionCode); existing != nil {
+				isSaved = true
+			}
+		}
+	}
+
 	card := ui.NewCard("Detail Paket MyXL").
 		WithIcon("📦").
 		WithHeader("Pilih metode pembayaran standar, atau buka opsi lanjutan bila memang diperlukan.").
 		AddField("Paket", html.EscapeString(pkgName)).
 		AddField("Option Code", "<code>"+html.EscapeString(canonicalOptionCode)+"</code>").
-		AddField("Harga Resmi", fmt.Sprintf("Rp %s", formatRupiah(price))).
-		AddField("Status", "✅ Detail terbaru tersedia").
+		AddField("Harga Resmi", fmt.Sprintf("Rp %s", formatRupiah(price)))
+	if isSaved {
+		card.AddField("Status Favorit", "⭐ Tersimpan")
+	}
+	card.AddField("Status", "✅ Detail terbaru tersedia").
 		WithRaw("⚙️ <b>Pembelian lanjutan</b>\n<i>Decoy dan overwrite harga mengubah cara request pembelian dibentuk. Fitur tetap tersedia, tetapi dipisahkan dari metode pembayaran normal agar tidak tertekan tanpa sengaja.</i>").
 		WithFooter("<i>Metode apa pun tetap masuk ke halaman tinjau; harga dan kode paket diverifikasi ulang saat konfirmasi.</i>")
 
@@ -370,13 +388,28 @@ func (m *MenuManager) BuildPackageDetailScreen(ctx context.Context, acc *Account
 		newMenuButton("🔵 DANA", fmt.Sprintf("myxl:method:dana:%s", optKey)),
 		newMenuButton("🟠 ShopeePay", fmt.Sprintf("myxl:method:shopeepay:%s", optKey)),
 	)
-	screen.AddRow(newMenuButton("⭐ Simpan Favorit", fmt.Sprintf("myxl:bookmark_add:%s", optKey)))
+	if !isSaved {
+		screen.AddRow(newMenuButton("⭐ Simpan ke Favorit", fmt.Sprintf("myxl:bookmark_add:det:%s", optKey)))
+	}
 	screen.AddRow(
 		newMenuButton("🧪 Decoy Pulsa", fmt.Sprintf("myxl:method:decoy_balance:%s", optKey)),
 		newMenuButton("🧪 Decoy QRIS", fmt.Sprintf("myxl:method:decoy_qris:%s", optKey)),
 	)
 	screen.AddRow(newMenuButton("⚙️ Overwrite Harga", fmt.Sprintf("myxl:custom_price:%s", optKey)))
-	screen.AddRow(newMenuButton("🔙 Kembali ke Pilih Paket", "myxl:store"))
+
+	switch {
+	case origin == "saved":
+		screen.AddRow(newMenuButton("🔙 Kembali ke Favorit", "myxl:saved"))
+	case strings.HasPrefix(origin, "fam:"):
+		parts := strings.Split(strings.TrimPrefix(origin, "fam:"), ":")
+		if len(parts) >= 2 {
+			screen.AddRow(newMenuButton("🔙 Kembali ke Katalog", fmt.Sprintf("myxl:fam_page:%s:%s", parts[0], parts[1])))
+		} else {
+			screen.AddRow(newMenuButton("🔙 Kembali ke Pilih Paket", "myxl:store"))
+		}
+	default:
+		screen.AddRow(newMenuButton("🔙 Kembali ke Pilih Paket", "myxl:store"))
+	}
 	return screen, nil
 }
 func (m *MenuManager) BuildCheckoutScreen(quote purchaseCheckoutPreview) (*ui.Screen, error) {
@@ -405,6 +438,10 @@ func (m *MenuManager) BuildCheckoutScreen(quote purchaseCheckoutPreview) (*ui.Sc
 }
 
 func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packageName string, effectivePrice int64, method, optionCode string) *ui.Screen {
+	return m.BuildPurchaseResultScreenWithSaved(result, packageName, effectivePrice, method, optionCode, false)
+}
+
+func (m *MenuManager) BuildPurchaseResultScreenWithSaved(result *SettlementResult, packageName string, effectivePrice int64, method, optionCode string, isSaved bool) *ui.Screen {
 	title := "Pembelian Gagal"
 	icon := "❌"
 	status := "Gagal"
@@ -456,14 +493,18 @@ func (m *MenuManager) BuildPurchaseResultScreen(result *SettlementResult, packag
 	screen := ui.NewScreen("myxl:result", "", card.Render())
 	optKey := m.RegisterOptionCode(optionCode)
 	var firstRow []ui.Button
-	firstRow = append(firstRow, newMenuButton("⭐ Simpan ke Favorit", fmt.Sprintf("myxl:bookmark_add:%s", optKey)))
+	if result != nil && result.IsSuccess && !isSaved {
+		firstRow = append(firstRow, newMenuButton("⭐ Simpan ke Favorit", fmt.Sprintf("myxl:bookmark_add:res:%s", optKey)))
+	}
 	if result != nil && result.QRCode != "" {
 		qrKey := m.RegisterQR(result.QRCode)
 		if qrKey != "" {
 			firstRow = append(firstRow, newMenuButton("🖼️ Kirim Foto QRIS", fmt.Sprintf("myxl:qris_img:%s", qrKey)))
 		}
 	}
-	screen.AddRow(firstRow...)
+	if len(firstRow) > 0 {
+		screen.AddRow(firstRow...)
+	}
 	if pendingQRIS {
 		screen.AddRow(newMenuButton("⏳ Lihat Tagihan QRIS", "myxl:pending_qris"))
 	}
@@ -656,7 +697,7 @@ func (m *MenuManager) BuildFamilyPackagesScreen(ctx context.Context, acc *Accoun
 		globalNum := startIdx + i + 1
 		label := fmt.Sprintf("%d", globalNum)
 		optKey := m.RegisterOptionCode(item.Option.PackageOptionCode)
-		numRow = append(numRow, newMenuButton(label, fmt.Sprintf("myxl:buy_opt:%s", optKey)))
+		numRow = append(numRow, newMenuButton(label, fmt.Sprintf("myxl:buy_opt:fam:%s:%d:%s", familyCode, page, optKey)))
 	}
 	if len(numRow) > 0 {
 		screen.AddRow(numRow...)

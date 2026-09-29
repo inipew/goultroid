@@ -223,6 +223,24 @@ func TestMenuManager_Screens(t *testing.T) {
 	if !strings.Contains(detailScreen.Body, "Combo 10GB") {
 		t.Errorf("expected package Combo 10GB in detail, got: %s", detailScreen.Body)
 	}
+	if !screenHasButtonText(detailScreen, "Simpan ke Favorit") {
+		t.Errorf("unsaved package detail screen should offer Simpan ke Favorit button")
+	}
+
+	// 7b. Package Detail screen for already-saved package
+	savedDetailScreen, err := plugin.menuMgr.BuildPackageDetailScreenWithOrigin(ctx, acc, "OPT-1", "saved")
+	if err != nil {
+		t.Fatalf("BuildPackageDetailScreenWithOrigin saved failed: %v", err)
+	}
+	if !strings.Contains(savedDetailScreen.Body, "⭐ Tersimpan") {
+		t.Errorf("saved package detail screen should display '⭐ Tersimpan' badge: %s", savedDetailScreen.Body)
+	}
+	if screenHasButtonText(savedDetailScreen, "Simpan") {
+		t.Errorf("saved package detail screen must NOT show favorite button: %s", savedDetailScreen.Body)
+	}
+	if !screenHasAction(savedDetailScreen, "myxl:saved") {
+		t.Errorf("saved package detail screen with origin=saved should have back button pointing to myxl:saved")
+	}
 
 	// 8. Checkout screen
 	quote := purchaseCheckoutPreview{
@@ -248,6 +266,27 @@ func TestMenuManager_Screens(t *testing.T) {
 	}, "Combo 10GB", 25000, "BALANCE", "OPT-10GB")
 	if !strings.Contains(resScreen.Body, "Pembelian Berhasil") {
 		t.Errorf("expected purchase success screen, got: %s", resScreen.Body)
+	}
+	if !screenHasButtonText(resScreen, "Simpan ke Favorit") {
+		t.Errorf("successful purchase of unsaved package should offer Simpan ke Favorit")
+	}
+
+	// 9a. Result screen for already-saved package
+	resSavedScreen := plugin.menuMgr.BuildPurchaseResultScreenWithSaved(&SettlementResult{
+		IsSuccess:       true,
+		TransactionCode: "TRX-TEST-SAVED",
+	}, "Combo 10GB", 25000, "BALANCE", "OPT-10GB", true)
+	if screenHasButtonText(resSavedScreen, "Simpan") {
+		t.Errorf("purchase result for already-saved package must NOT show save favorite button")
+	}
+
+	// 9b. Result screen for failed purchase
+	resFailedScreen := plugin.menuMgr.BuildPurchaseResultScreenWithSaved(&SettlementResult{
+		IsSuccess: false,
+		Message:   "Gagal",
+	}, "Combo 10GB", 25000, "BALANCE", "OPT-10GB", false)
+	if screenHasButtonText(resFailedScreen, "Simpan") {
+		t.Errorf("purchase result for failed purchase must NOT show save favorite button")
 	}
 
 	// 9b. Result screen with QRIS

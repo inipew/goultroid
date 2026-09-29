@@ -221,3 +221,22 @@ func TestP1EAssistantPurchaseSlotGetsLongExecutionProfile(t *testing.T) {
 		t.Fatalf("ordinary action timeout override = %v, want zero/default", profile.ExecutionTimeout)
 	}
 }
+
+func TestParseBuyOptPayload(t *testing.T) {
+	tests := []struct {
+		input      string
+		wantOrigin string
+		wantKey    string
+	}{
+		{"saved:OPT-123", "saved", "OPT-123"},
+		{"fam:FAM-1:2:OPT-456", "fam:FAM-1:2", "OPT-456"},
+		{"store:OPT-789", "store", "OPT-789"},
+		{"OPT-PLAIN", "store", "OPT-PLAIN"},
+	}
+	for _, tt := range tests {
+		gotOrigin, gotKey := parseBuyOptPayload(tt.input)
+		if gotOrigin != tt.wantOrigin || gotKey != tt.wantKey {
+			t.Errorf("parseBuyOptPayload(%q) = (%q, %q), want (%q, %q)", tt.input, gotOrigin, gotKey, tt.wantOrigin, tt.wantKey)
+		}
+	}
+}
