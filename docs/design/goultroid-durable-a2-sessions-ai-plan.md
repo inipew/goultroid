@@ -1030,48 +1030,189 @@ D1 implementation is complete, but its final status remains **IMPLEMENTED** rath
 
 ### D2 — Repair expiry/remove invariants under persistence failure
 
-Status: **OPEN**
+Status: **IMPLEMENTED — source/test changes complete at `66d620ddf64cc060cad1d591bdb9b69c18d1ce93`; focused package execution still pending because the current AI environment cannot clone the repository**
 
-Goal:
+D2 refresh:
 
-> an expired session cannot disappear from the expiry retry structure while still consuming runtime capacity.
+- Phase start HEAD: `fa717df61ffc75697d17133a72aa46163b6cf2fa`
+- Phase start commit: `fmt`
+- Source fix: `3ca562a1804ede9ea76d664dc7cb512ad1285c01` — `fix(interaction): retain failed expiry cleanup for retry`
+- Regression tests: `66d620ddf64cc060cad1d591bdb9b69c18d1ce93` — `test(interaction): cover durable expiry retry invariants`
+- CI: **not inspected**
 
-Tasks:
+The phase started from the refreshed HEAD rather than the earlier D1 document HEAD. The intervening `fmt` commit was treated as authoritative current source.
 
-- redesign the local prune/remove ordering so durable deletion failure does not orphan the session;
-- keep expiry cleanup lazy/event-driven;
-- avoid a permanent cleanup loop;
-- ensure retry is naturally triggered by later runtime operations or explicit prune;
-- verify accounting remains correct for:
-  - `sessions`;
-  - `byScope`;
-  - `actorCounts`;
-  - `stateBytes`;
-  - `inputs`;
-  - expiry heap.
+#### D2.1 — Expiry removal now retries without losing heap ownership
 
-Potential implementation patterns include:
+The old sequence was:
 
-- attempt persistence deletion before removing the heap item; or
-- reinsert/reschedule the expiry item on failure.
+```text
+heap.Pop(expired item)
+→ entry.expiry = nil
+→ durable Delete
+→ Delete failure leaves session retained but no heap item
+```
 
-Choose the smallest design that preserves heap correctness and avoids hot retry loops.
+The new prune algorithm processes expired items at most once per prune pass:
 
-Tests:
+```text
+pop expired item temporarily
+→ validate session ↔ expiry-item ownership
+→ attempt canonical removeLockedContext
+    → success: session/accounting/context are removed normally
+    → durable failure: keep the same expiry item in a pass-local retry list
+→ continue processing other already-expired items
+→ reinsert failed items after the pass
+```
 
-- first durable delete fails;
-- session remains reachable for cleanup bookkeeping but resolves as expired;
-- capacity/accounting does not become permanently corrupted;
-- later prune after store recovery removes the session exactly once;
-- input claim cleanup remains correct;
-- stats count expiry only when removal actually completes;
-- no duplicate heap item is created.
+This preserves the invariant:
 
-Gate:
+> a durable-delete failure may retain the expired session, but it cannot permanently detach that session from future lazy cleanup.
 
-- no expired durable session can become permanently untracked;
-- no busy-loop retry;
-- bounded memory/accounting invariants remain true.
+No retry worker, timer, ticker, or persistent retry queue was added.
+
+#### D2.2 — No busy loop and no permanent head-of-line blocking
+
+A failed expired row is attempted only once during one call to `pruneExpiredLocked`.
+
+Failed items are reinserted only after the current expired-item pass completes. Therefore:
+
+- the same failed row is not immediately popped and retried in a tight loop;
+- another expired session behind it can still be reclaimed in the same pass;
+- retry happens naturally on a later `PruneExpired`, `Stats`, `Create`, or another runtime operation that triggers lazy pruning.
+
+The temporary retry slice is bounded by the runtime's configured maximum number of retained sessions and exists only for the duration of one prune call.
+
+#### D2.3 — Accounting remains fail-closed while persistence is unavailable
+
+On durable delete failure, the runtime intentionally retains:
+
+- the session map entry;
+- scope ownership;
+- actor count;
+- state-byte accounting;
+- durable database row;
+- expiry retry item.
+
+That means failed durable cleanup still consumes configured capacity.
+
+This is deliberate: capacity must not be released until the runtime has actually completed the authoritative removal.
+
+Once the durable store recovers and retry succeeds, the canonical removal path releases:
+
+- session;
+- scope entry;
+- actor count;
+- state bytes;
+- expiry item;
+- session context.
+
+#### D2.4 — Expired session remains unusable while retained for cleanup
+
+A failed durable DELETE does not make an expired interaction usable again.
+
+Public resolution still returns:
+
+```text
+ErrExpired
+```
+
+for the retained expired session.
+
+Its heap ownership remains intact after that failed resolve-triggered cleanup attempt, so a later lazy prune can still retry deletion.
+
+#### D2.5 — Input claim semantics remain bounded
+
+Pending input expiry is clamped to the parent session deadline.
+
+`PruneExpired` continues to prune expired input claims before attempting parent-session removal.
+
+Therefore, when parent durable deletion fails:
+
+- the expired input claim is removed from the in-memory input index;
+- the expired parent session remains retained only for durable cleanup retry;
+- state/accounting remains retained until parent removal succeeds;
+- the persisted input deadline is already expired and therefore is not eligible for restore as a live claim.
+
+No duplicate input reservation is introduced.
+
+#### D2.6 — Regression coverage added
+
+A dedicated `internal/interaction/durable_expiry_test.go` now covers:
+
+- `TestDurableExpiryDeleteFailureRemainsTracked`
+  - durable delete failure leaves the same session represented in the expiry heap;
+  - scope/actor/state accounting remains intact;
+  - `Expired` is not incremented before successful removal;
+  - public resolve still returns `ErrExpired`.
+
+- `TestDurableExpiryDeleteRetryRemovesExactlyOnce`
+  - repeated failed prune passes keep exactly one heap entry;
+  - one delete attempt occurs per prune pass;
+  - recovery removes the session once;
+  - later prune does not delete the same session again.
+
+- `TestDurableExpiryDeleteFailurePreservesCapacityAccounting`
+  - failed cleanup keeps capacity occupied;
+  - after durable recovery and successful prune, capacity becomes available again.
+
+- `TestDurableExpiryDeleteFailureCleansExpiredInputClaim`
+  - expired pending input is cleared even when parent durable deletion fails;
+  - parent session remains expiry-tracked;
+  - later successful cleanup settles session/input/state accounting to zero.
+
+- `TestDurableExpiryDeleteFailureDoesNotBlockOtherExpiredSessions`
+  - one selected durable row can fail deletion;
+  - a separate expired session behind it is still reclaimed in the same prune pass;
+  - only the failed row is reinserted.
+
+#### D2.7 — Go formatting rule
+
+Before each D2 Go commit, the changed Go source was materialized from the refreshed repository source and run through `gofmt`.
+
+The final D2 files were checked with:
+
+```text
+gofmt -w internal/interaction/runtime_internal.go
+gofmt -w internal/interaction/durable_expiry_test.go
+gofmt -l internal/interaction/runtime_internal.go internal/interaction/durable_expiry_test.go
+```
+
+The equivalent materialized files produced no output from `gofmt -l`.
+
+The repository could not be cloned in the current execution environment because `github.com` DNS resolution fails. D2 therefore does **not** claim a successful `go test`, `go test -race`, or `go vet` run.
+
+Required local execution gate before changing D2 from **IMPLEMENTED** to **CLOSED**:
+
+```text
+gofmt -w internal/interaction/runtime_internal.go \
+          internal/interaction/durable_expiry_test.go
+
+gofmt -l internal/interaction/runtime_internal.go \
+          internal/interaction/durable_expiry_test.go
+
+go test ./internal/interaction
+go test -race ./internal/interaction
+go vet ./internal/interaction
+git diff --check
+```
+
+`gofmt -l` must print nothing.
+
+#### D2 gate status
+
+Implemented invariants:
+
+- failed durable expiry deletion remains retryable;
+- no duplicate heap item is created across failed prune passes;
+- no tight retry loop was introduced;
+- another expired session is not permanently blocked behind one failed row;
+- retained scope/actor/state capacity remains accurate;
+- expired input claims do not remain reserved;
+- successful retry increments expiry/removal accounting exactly once;
+- no new worker/goroutine or unbounded retained retry state exists.
+
+D2 remains **IMPLEMENTED** rather than **CLOSED** until the focused local execution gate is run on a full repository checkout.
 
 ### D3 — Move interaction schema into namespaced migrations
 
