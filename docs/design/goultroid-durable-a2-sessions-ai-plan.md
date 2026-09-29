@@ -835,46 +835,198 @@ Execution caveat: this D0 closure is based on current-source audit, not a claime
 
 ### D1 — Make durable deletion error-bearing and lifecycle-aware
 
-Status: **OPEN**
+Status: **IMPLEMENTED — source/test changes complete at `0db750308d5151a7583cd963787bda9814964325`; local package execution still pending because the current AI environment has no repository checkout/network path**
 
-Goal:
+D1 implementation baseline:
 
-> normal feature teardown cannot claim success when durable session deletion fails.
+- Phase start HEAD: `d545bb3cd385da4b9315474eb394799920f26ee9`
+- Source/test implementation HEAD: `0db750308d5151a7583cd963787bda9814964325`
+- CI: **not inspected**
+- No second runtime, callback protocol, TaskEngine, cleanup worker, or persistence queue was introduced.
 
-Tasks:
+Implementation commits:
 
-- add context-aware removal semantics;
-- add error-bearing scope cancellation;
-- route plugin feature cleanup through the error-bearing path;
-- preserve existing shutdown semantics;
-- ensure durable delete receives the lifecycle context instead of unconditional `context.Background()`;
-- audit public `Cancel`, `CancelScope`, expiry, stale-scope, and resolve-triggered removal callers;
-- retain compatibility wrappers only where justified by caller evidence.
+- `80205ae3372eb101c65e8ab5b96db221eea42ab4` — context-aware internal durable removal;
+- `9534f19b745b917d7398ff2897f8c53d74607e05` — error-bearing `CancelScopeContext` plus compatibility `CancelScope`;
+- `66459b401b2540bc44720113bbddce146bd33ae4` — context/error-bearing feature cleanup;
+- `862f3a88a6a72e13d410e0c755934e4c7abfdd22` — plugin lifecycle propagation into existing `teardownErrors`;
+- `eeb5fd8b5bcd8d00231f385770c8216fea380fdd` — durable scope-cleanup regression coverage;
+- `f92243a5d53fceae4221d52bc4b44fde95fc3b90` — failed durable disable + blocked re-enable coverage;
+- `31619b0cfa831ce2d29bb702c9dd873bd1a2246e` — full-shutdown durable preservation coverage;
+- `0db750308d5151a7583cd963787bda9814964325` — direct lifecycle-context cancellation coverage.
 
-Important:
+#### D1.1 — Context-aware durable removal
 
-- do not move durable delete to a fire-and-forget goroutine;
-- do not treat `PersistenceErrors` metrics as a substitute for returning an error;
-- do not allow feature registration cleanup to close the catalog and then silently ignore durable cleanup failure without recording incomplete teardown.
+The runtime now has an error-bearing internal path:
 
-Plugin lifecycle must retain a safe state if feature cleanup partially fails.
+```go
+removeLockedContext(ctx context.Context, id string, cause error) (bool, error)
+```
 
-Audit whether the existing `teardownErrors` mechanism can represent the failure without inventing another lifecycle error registry.
+The existing `removeLocked` remains as an internal compatibility wrapper using `context.Background()` for callers whose API has not yet been changed.
 
-Tests:
+This keeps D1 scoped: lifecycle teardown can propagate durable failures now, while D2 can separately repair lazy expiry semantics without forcing an unrelated public API break.
 
-- durable delete failure causes normal plugin disable to return an error;
-- failed teardown is visible through existing manager teardown state where appropriate;
-- successful disable removes durable rows;
-- process shutdown still preserves durable rows;
-- supplied context cancellation reaches durable Delete;
-- no stale old API remains in production callers.
+#### D1.2 — Error-bearing scope cancellation
 
-Gate:
+The runtime now exposes:
 
-- successful disable implies durable sessions for that scope are gone;
-- shutdown preservation remains unchanged;
-- no new worker/goroutine is introduced.
+```go
+CancelScopeContext(ctx context.Context, scope tasks.ScopeIdentity) (int, error)
+```
+
+It:
+
+- passes the supplied context to `DurableStore.Delete`;
+- attempts every session in the scope;
+- counts successful removals;
+- joins durable deletion errors;
+- leaves sessions whose durable delete failed retained in memory;
+- increments existing persistence-error diagnostics through the canonical removal path.
+
+The existing:
+
+```go
+CancelScope(scope tasks.ScopeIdentity) int
+```
+
+remains as a compatibility wrapper. Production plugin lifecycle no longer depends on that compatibility-only path.
+
+#### D1.3 — Feature cleanup is now context/error-bearing
+
+`registerFeatureContract` now receives the lifecycle context and returns a cleanup function of shape:
+
+```go
+func(context.Context) error
+```
+
+Feature cleanup still preserves the original ordering:
+
+1. native cleanup;
+2. saved-response cleanup;
+3. inline registrations;
+4. feature catalog registration;
+5. action scope;
+6. interaction sessions.
+
+The interaction step now calls `CancelScopeContext` and returns any durable deletion error instead of discarding it.
+
+#### D1.4 — Manager lifecycle uses existing incomplete-teardown semantics
+
+`Manager.featureCleanups` now stores context/error-bearing cleanup callbacks.
+
+Normal `Manager.Disable` executes feature cleanup through the existing bounded lifecycle callback executor and appends any error to its ordinary teardown error list.
+
+Therefore a durable DELETE failure now results in:
+
+```text
+Disable
+→ feature cleanup
+→ CancelScopeContext
+→ DurableStore.Delete fails
+→ error returns through runLifecycleCallback
+→ Disable returns error
+→ teardownErrors[plugin] records incomplete teardown
+→ Enable refuses the plugin generation
+```
+
+No second teardown-error registry was added.
+
+This closes the original resurrection-risk contract: a disable operation cannot report success while a durable interaction row failed to delete.
+
+#### D1.5 — Full shutdown semantics remain distinct
+
+`ShutdownWithContext` still calls:
+
+```go
+PreserveDurableOnShutdown()
+```
+
+before feature cleanup.
+
+The new error-bearing feature cleanup therefore removes in-memory sessions on shutdown without issuing durable DELETE operations.
+
+A plugin-level regression test now checks that:
+
+- shutdown performs zero durable deletes;
+- the durable row remains present;
+- runtime in-memory sessions/state settle to zero.
+
+This preserves restart recovery while keeping normal disable fail-closed.
+
+#### D1.6 — Context propagation and cancellation coverage
+
+The interaction tests now cover both:
+
+- context identity/value propagation into `DurableStore.Delete`;
+- an actual cancellation path where a test store blocks on `ctx.Done()` and `CancelScopeContext` returns `context.Canceled`.
+
+This proves the old unconditional `context.Background()` lifecycle behavior is no longer used for scope teardown.
+
+#### D1.7 — Regression coverage added
+
+D1 adds coverage equivalent to the planned targets:
+
+- `TestDurableCancelScopeDeleteFailureIsObservable`;
+- `TestDurableScopeDeleteUsesLifecycleContext`;
+- `TestDurableScopeDeleteHonorsContextCancellation`;
+- `TestManagerDisableFailsWhenDurableCleanupFails`;
+- `TestManagerShutdownPreservesDurableSessions`.
+
+The manager disable test also proves:
+
+- the plugin is marked disabled after failed teardown;
+- the durable row remains, rather than being falsely reported removed;
+- the runtime records the persistence failure;
+- the old session is stale after feature registration is detached;
+- re-enable is rejected through the existing incomplete-teardown error.
+
+#### D1.8 — Compatibility/caller classification
+
+D1 intentionally does not change every removal caller.
+
+Current classification:
+
+- **normal plugin lifecycle:** migrated to `CancelScopeContext`;
+- **full shutdown:** migrated through the same context/error-bearing feature cleanup, but `PreserveDurableOnShutdown` suppresses durable DELETE by design;
+- **legacy/general `CancelScope` callers:** compatibility wrapper retained;
+- **single-session `Cancel`:** unchanged because D0 found no production lifecycle path requiring its boolean API to become the D1 teardown authority;
+- **expiry, stale-resolution, and expired input/state checks:** still use the existing internal compatibility removal path and belong to D2's retry/accounting repair.
+
+This prevents D1 from accidentally solving D2 by changing lazy-expiry behavior without its dedicated tests.
+
+#### D1.9 — Formatting and validation status
+
+The changed Go blocks and new tests were run through `gofmt` during implementation, including the new runtime, lifecycle, and test blocks. Source was re-read after publication to check imports/signatures and stale-call-site drift in the affected interaction/plugin packages.
+
+A full local repository checkout is still unavailable in this AI environment because direct GitHub hostname resolution is unavailable. Therefore D1 does **not** claim successful local `go test`, `go test -race`, or `go vet` execution. CI was not inspected.
+
+Required execution gate before changing D1 to **CLOSED**:
+
+```text
+gofmt -w internal/interaction/runtime_internal.go \
+          internal/interaction/session.go \
+          internal/interaction/durable_test.go \
+          internal/plugin/features.go \
+          internal/plugin/manager.go \
+          internal/plugin/interaction_runtime_test.go
+
+gofmt -l internal/interaction/runtime_internal.go \
+          internal/interaction/session.go \
+          internal/interaction/durable_test.go \
+          internal/plugin/features.go \
+          internal/plugin/manager.go \
+          internal/plugin/interaction_runtime_test.go
+
+go test ./internal/interaction ./internal/plugin
+go test -race ./internal/interaction ./internal/plugin
+go vet ./internal/interaction ./internal/plugin
+git diff --check
+```
+
+`gofmt -l` must print nothing. If any API/test compile drift is found, fix both production and test callers in the same D1 follow-up before closure.
+
+D1 implementation is complete, but its final status remains **IMPLEMENTED** rather than **CLOSED** until the local execution gate above is run.
 
 ### D2 — Repair expiry/remove invariants under persistence failure
 
