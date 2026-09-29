@@ -1424,7 +1424,17 @@ internal/interaction/sqlite/store.go
 internal/interaction/sqlite/store_test.go
 ```
 
-`app.go` changed only by removing the already formatted three-line `InitSchema` error block; no replacement syntax was introduced there.
+`app.go` changed only by removing the three-line `InitSchema` error block; no replacement syntax was introduced there. Because that file had not been passed through `gofmt` before the atomic commit, the exact committed file was reconstructed after the commit and validated explicitly:
+
+```text
+sha256 before gofmt: c17cc74c46c3b6af948e3e650cb435119bc63c31a0b4c0d0ad7d76c6daa20969
+gofmt -w internal/app/app.go
+gofmt -l internal/app/app.go   # no output
+sha256 after gofmt:  c17cc74c46c3b6af948e3e650cb435119bc63c31a0b4c0d0ad7d76c6daa20969
+cmp before after              # identical
+```
+
+This confirms the committed bytes were already canonical Go formatting, while preserving the audit fact that this particular validation happened post-commit. Future Go-changing commits must run `gofmt` on **every** changed Go file before commit, with no format-neutral exception.
 
 The source branch was re-read after the atomic commit to verify:
 
