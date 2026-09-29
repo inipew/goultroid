@@ -33,8 +33,11 @@ func (c changingDurableCatalog) HasAction(_, action string) bool { return action
 func (c changingDurableCatalog) DurabilityVersion(string) string { return *c.version }
 
 type memoryDurableStore struct {
-	rows    map[string]DurableSession
-	saveErr error
+	rows        map[string]DurableSession
+	saveErr     error
+	deleteErr   error
+	deleteCtx   context.Context
+	deleteCalls int
 }
 
 func (s *memoryDurableStore) Save(_ context.Context, row DurableSession) error {
@@ -89,7 +92,12 @@ func TestDurableInputWriteFailureDoesNotReserveClaim(t *testing.T) {
 		t.Fatalf("input claimed=%v err=%v", claimed, err)
 	}
 }
-func (s *memoryDurableStore) Delete(_ context.Context, id string) error {
+func (s *memoryDurableStore) Delete(ctx context.Context, id string) error {
+	s.deleteCtx = ctx
+	s.deleteCalls++
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
 	delete(s.rows, id)
 	return nil
 }
@@ -220,6 +228,55 @@ func TestDurableSessionCancelAfterFeatureUnregisterRemovesStoredRow(t *testing.T
 	}
 	if len(store.rows) != 0 {
 		t.Fatal("unregistered feature retained stored session")
+	}
+}
+
+
+func TestDurableCancelScopeDeleteFailureIsObservable(t *testing.T) {
+	store := &memoryDurableStore{}
+	r, _ := NewRuntime(durableCatalog{version: "1"}, Config{})
+	_ = r.SetDurableStore(store)
+	created, err := r.Create(context.Background(), CreateRequest{FeatureID: "demo", Binding: Binding{ActorID: 7}, TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteErr := errors.New("delete unavailable")
+	store.deleteErr = deleteErr
+	removed, err := r.CancelScopeContext(context.Background(), created.Session.Scope)
+	if !errors.Is(err, deleteErr) {
+		t.Fatalf("CancelScopeContext() error = %v, want %v", err, deleteErr)
+	}
+	if removed != 0 {
+		t.Fatalf("CancelScopeContext() removed = %d, want 0", removed)
+	}
+	stats := r.SnapshotStats()
+	if stats.Sessions != 1 || stats.PersistenceErrors != 1 {
+		t.Fatalf("stats after failed durable delete = %+v", stats)
+	}
+	if len(store.rows) != 1 {
+		t.Fatalf("durable rows after failed delete = %d, want 1", len(store.rows))
+	}
+}
+
+func TestDurableScopeDeleteUsesLifecycleContext(t *testing.T) {
+	type contextKey struct{}
+	store := &memoryDurableStore{}
+	r, _ := NewRuntime(durableCatalog{version: "1"}, Config{})
+	_ = r.SetDurableStore(store)
+	created, err := r.Create(context.Background(), CreateRequest{FeatureID: "demo", Binding: Binding{ActorID: 7}, TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), contextKey{}, "d1")
+	removed, err := r.CancelScopeContext(ctx, created.Session.Scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("CancelScopeContext() removed = %d, want 1", removed)
+	}
+	if store.deleteCtx == nil || store.deleteCtx.Value(contextKey{}) != "d1" {
+		t.Fatalf("durable delete context = %v, want lifecycle value", store.deleteCtx)
 	}
 }
 
