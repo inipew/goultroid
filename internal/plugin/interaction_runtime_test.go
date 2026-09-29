@@ -33,9 +33,10 @@ func (interactionRuntimeTestPlugin) FeatureSpec() feature.Spec {
 }
 
 type interactionRuntimeDurableStore struct {
-	rows      map[string]interaction.DurableSession
-	deleteErr error
-	deleteCtx context.Context
+	rows        map[string]interaction.DurableSession
+	deleteErr   error
+	deleteCtx   context.Context
+	deleteCalls int
 }
 
 func (s *interactionRuntimeDurableStore) Save(_ context.Context, row interaction.DurableSession) error {
@@ -48,6 +49,7 @@ func (s *interactionRuntimeDurableStore) Save(_ context.Context, row interaction
 
 func (s *interactionRuntimeDurableStore) Delete(ctx context.Context, id string) error {
 	s.deleteCtx = ctx
+	s.deleteCalls++
 	if s.deleteErr != nil {
 		return s.deleteErr
 	}
@@ -217,5 +219,38 @@ func TestManagerDisableFailsWhenDurableCleanupFails(t *testing.T) {
 	}
 	if err := manager.Enable(context.Background(), plugin.Name()); !errors.Is(err, deleteErr) {
 		t.Fatalf("Enable() after incomplete teardown error = %v, want %v", err, deleteErr)
+	}
+}
+
+
+func TestManagerShutdownPreservesDurableSessions(t *testing.T) {
+	manager := NewManager(core.NewRouter("."))
+	store := &interactionRuntimeDurableStore{}
+	if err := manager.InteractionRuntime().SetDurableStore(store); err != nil {
+		t.Fatal(err)
+	}
+	plugin := interactionRuntimeTestPlugin{}
+	if err := manager.RegisterWithContext(context.Background(), plugin); err != nil {
+		t.Fatal(err)
+	}
+	runtime := manager.InteractionRuntime()
+	created, err := runtime.Create(context.Background(), interaction.CreateRequest{
+		FeatureID: plugin.Name(),
+		Binding:   interaction.Binding{ActorID: 7},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ShutdownWithContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.deleteCalls != 0 {
+		t.Fatalf("durable delete calls during shutdown = %d, want 0", store.deleteCalls)
+	}
+	if _, ok := store.rows[created.Session.ID]; !ok {
+		t.Fatal("shutdown removed durable session row")
+	}
+	if stats := runtime.SnapshotStats(); stats.Sessions != 0 || stats.StateBytes != 0 {
+		t.Fatalf("runtime retained memory after shutdown = %+v", stats)
 	}
 }
