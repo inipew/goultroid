@@ -146,6 +146,7 @@ func (r *Runtime) scheduleExpiryLocked(entry *sessionEntry, expiresAt time.Time)
 
 func (r *Runtime) pruneExpiredLocked(now time.Time) int {
 	removed := 0
+	var retry []*expiryItem
 	for r.expiries.Len() > 0 {
 		item := r.expiries[0]
 		if item.expiresAt.After(now) {
@@ -156,10 +157,21 @@ func (r *Runtime) pruneExpiredLocked(now time.Time) int {
 		if !ok || entry.expiry != item {
 			continue
 		}
-		entry.expiry = nil
-		if r.removeLocked(item.id, ErrExpired) {
+		ok, err := r.removeLockedContext(context.Background(), item.id, ErrExpired)
+		if err != nil {
+			retry = append(retry, item)
+			continue
+		}
+		if ok {
 			removed++
 		}
+	}
+	for _, item := range retry {
+		entry, ok := r.sessions[item.id]
+		if !ok || entry.expiry != item {
+			continue
+		}
+		heap.Push(&r.expiries, item)
 	}
 	return removed
 }
