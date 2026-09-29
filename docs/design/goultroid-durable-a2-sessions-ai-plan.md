@@ -1539,7 +1539,9 @@ D3 remains **IMPLEMENTED** rather than **CLOSED** until the focused local execut
 
 ### D4 — Add real feature restart acceptance
 
-Status: **IMPLEMENTED / NOT ACCEPTED — feature restart tests exist, but the mandatory local validation gate has not yet been proven green**
+Status: **CLOSED** — local acceptance gate passed on `e19d270cd28a7b87c97b5cafb601a8169544f6c3` (`docs(interaction): harden durable session execution discipline`).
+
+D4 implementation commits: `63e8c29a` (`test(interaction): add durable feature restart acceptance`), `e870471e` (`test(interaction): fix durable restart acceptance tests`), and `0d2308be` (`test(myxl): complete D4 durable restart acceptance`). Validation on this checkout ran `gofmt -w` and `gofmt -l` on all four D4 Go files (empty `gofmt -l` output); `go test ./internal/interaction ./internal/interaction/sqlite ./internal/plugin ./internal/app ./internal/assistant/client ./plugins/calculator ./plugins/settings ./plugins/myxl ./internal/architecture` (all nine packages passed); `go test -race ./...` (passed); `go vet ./...` (passed); and `git diff --check` (passed). The working tree had no Go changes after formatting. CI was not inspected.
 
 Current implementation snapshot before this documentation update:
 
