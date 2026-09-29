@@ -128,9 +128,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 
 	pluginManager := plugin.NewManager(coreDeps.router)
 	interactionStore := interactionsqlite.NewStore(coreDeps.db.DB)
-	if err := interactionStore.InitSchema(context.Background()); err != nil {
-		return nil, fmt.Errorf("initialize interaction sessions: %w", err)
-	}
 	if err := pluginManager.InteractionRuntime().SetDurableStore(interactionStore); err != nil {
 		return nil, fmt.Errorf("configure durable interactions: %w", err)
 	}

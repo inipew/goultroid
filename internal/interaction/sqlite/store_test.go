@@ -18,16 +18,21 @@ func (c restartCatalog) FeatureScope(string) (tasks.ScopeIdentity, bool) {
 func (c restartCatalog) HasAction(_, action string) bool { return action == "next" }
 func (c restartCatalog) DurabilityVersion(string) string { return "1" }
 
+func migrateInteractionStore(t *testing.T, db *database.DB) {
+	t.Helper()
+	if err := database.RunFeatureMigrations(context.Background(), db, MigrationProvider{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSQLiteRuntimeRestartKeepsCallback(t *testing.T) {
 	path := t.TempDir() + "/bot.db"
 	firstDB, err := database.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	migrateInteractionStore(t, firstDB)
 	firstStore := NewStore(firstDB.DB)
-	if err := firstStore.InitSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	first, err := interaction.NewRuntime(restartCatalog{generation: 1}, interaction.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -52,10 +57,8 @@ func TestSQLiteRuntimeRestartKeepsCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer secondDB.Close()
+	migrateInteractionStore(t, secondDB)
 	secondStore := NewStore(secondDB.DB)
-	if err := secondStore.InitSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	second, err := interaction.NewRuntime(restartCatalog{generation: 2}, interaction.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -81,10 +84,8 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	migrateInteractionStore(t, db)
 	store := NewStore(db.DB)
-	if err := store.InitSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	row := interaction.DurableSession{Session: interaction.Session{ID: "abcdefghijklmnopqrstuv", FeatureID: "demo", Binding: interaction.Binding{ActorID: 7, ChatID: 8, MessageID: 9}, State: []byte("abc"), Revision: 2, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}, Version: "1"}
 	if err := store.Save(context.Background(), row); err != nil {
 		t.Fatal(err)
@@ -111,10 +112,8 @@ func TestStoreAcceptsEmptyState(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	migrateInteractionStore(t, db)
 	store := NewStore(db.DB)
-	if err := store.InitSchema(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	row := interaction.DurableSession{Session: interaction.Session{ID: "abcdefghijklmnopqrstuv", FeatureID: "demo", Binding: interaction.Binding{ActorID: 7}, Revision: 1, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}, Version: "1"}
 	if err := store.Save(context.Background(), row); err != nil {
 		t.Fatal(err)

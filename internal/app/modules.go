@@ -7,6 +7,7 @@ import (
 
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	"github.com/inipew/goultroid/internal/database"
+	interactionsqlite "github.com/inipew/goultroid/internal/interaction/sqlite"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/services/groupstate"
 	"github.com/inipew/goultroid/internal/services/mediaregistry"
@@ -32,10 +33,11 @@ func registerBuiltinModules(ctx context.Context, rt *module.Runtime) error {
 }
 
 func migrateBuiltinFeatures(ctx context.Context, db *database.DB) error {
-	providers := make([]database.MigrationProvider, 0, len(builtinModules)+5)
+	providers := make([]database.MigrationProvider, 0, len(builtinModules)+6)
 	providers = append(providers,
 		assistantdeeplink.MigrationProvider{},
 		groupstate.MigrationProvider{},
+		interactionsqlite.MigrationProvider{},
 		mediaregistry.MigrationProvider{},
 		pmrelay.MigrationProvider{},
 		savedresponse.MigrationProvider{},

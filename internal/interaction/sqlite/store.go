@@ -13,19 +13,6 @@ type Store struct{ db *sql.DB }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
-func (s *Store) InitSchema(ctx context.Context) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("interaction sqlite: database required")
-	}
-	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS interaction_sessions (
-		id TEXT PRIMARY KEY, feature_id TEXT NOT NULL, version TEXT NOT NULL,
-		actor_id INTEGER NOT NULL, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
-		inline_message_id TEXT NOT NULL, state BLOB NOT NULL, revision INTEGER NOT NULL,
-		created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, input_expires_at INTEGER NOT NULL DEFAULT 0
-	)`)
-	return err
-}
-
 func (s *Store) Save(ctx context.Context, row interaction.DurableSession) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("interaction sqlite: database required")
