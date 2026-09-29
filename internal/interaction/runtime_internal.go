@@ -165,14 +165,22 @@ func (r *Runtime) pruneExpiredLocked(now time.Time) int {
 }
 
 func (r *Runtime) removeLocked(id string, cause error) bool {
+	removed, _ := r.removeLockedContext(context.Background(), id, cause)
+	return removed
+}
+
+func (r *Runtime) removeLockedContext(ctx context.Context, id string, cause error) (bool, error) {
 	entry, ok := r.sessions[id]
 	if !ok {
-		return false
+		return false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if r.durable != nil && !r.preserveDurable && entry.durableVersion != "" {
-		if err := r.durable.Delete(context.Background(), id); err != nil {
+		if err := r.durable.Delete(ctx, id); err != nil {
 			r.persistenceErrorCount++
-			return false
+			return false, err
 		}
 	}
 	r.clearInputLocked(entry)
@@ -203,7 +211,7 @@ func (r *Runtime) removeLocked(id string, cause error) bool {
 	default:
 		r.canceledCount++
 	}
-	return true
+	return true, nil
 }
 
 func inputKeyFromBinding(binding Binding) (inputBindingKey, error) {
