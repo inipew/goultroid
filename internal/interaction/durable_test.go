@@ -51,6 +51,17 @@ func (s *memoryDurableStore) Save(_ context.Context, row DurableSession) error {
 	return nil
 }
 
+type cancelAwareDurableStore struct {
+	*memoryDurableStore
+	started chan struct{}
+}
+
+func (s *cancelAwareDurableStore) Delete(ctx context.Context, _ string) error {
+	close(s.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func TestDurableWriteFailureDoesNotAdvanceState(t *testing.T) {
 	store := &memoryDurableStore{}
 	r, _ := NewRuntime(durableCatalog{version: "1"}, Config{})
@@ -255,6 +266,41 @@ func TestDurableCancelScopeDeleteFailureIsObservable(t *testing.T) {
 	}
 	if len(store.rows) != 1 {
 		t.Fatalf("durable rows after failed delete = %d, want 1", len(store.rows))
+	}
+}
+
+
+
+func TestDurableScopeDeleteHonorsContextCancellation(t *testing.T) {
+	store := &cancelAwareDurableStore{memoryDurableStore: &memoryDurableStore{}, started: make(chan struct{})}
+	r, _ := NewRuntime(durableCatalog{version: "1"}, Config{})
+	_ = r.SetDurableStore(store)
+	created, err := r.Create(context.Background(), CreateRequest{FeatureID: "demo", Binding: Binding{ActorID: 7}, TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.CancelScopeContext(ctx, created.Session.Scope)
+		done <- err
+	}()
+	select {
+	case <-store.started:
+	case <-time.After(time.Second):
+		t.Fatal("durable delete did not receive lifecycle context")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("CancelScopeContext() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("durable delete ignored lifecycle cancellation")
+	}
+	if stats := r.SnapshotStats(); stats.Sessions != 1 || stats.PersistenceErrors != 1 {
+		t.Fatalf("stats after canceled durable delete = %+v", stats)
 	}
 }
 
