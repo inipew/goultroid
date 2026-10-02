@@ -68,6 +68,32 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 		return nil, nil
 	}
 
+	if multi, ok := p.(MessageEventRegistrationsPlugin); ok {
+		registrations := multi.MessageHookRegistrations()
+		cleanups := make([]func(), 0, len(registrations))
+		cleanupAll := func() {
+			for i := len(cleanups) - 1; i >= 0; i-- {
+				cleanups[i]()
+			}
+		}
+		for _, registration := range registrations {
+			if registration.Handler == nil || registration.RawHandler != nil || registration.LegacyRouting {
+				cleanupAll()
+				return nil, fmt.Errorf("invalid canonical message hook registration for plugin %s", p.Name())
+			}
+			registration.Scope = scope
+			cleanup, err := registrar.RegisterMessageHook(registration)
+			if err != nil {
+				cleanupAll()
+				return nil, err
+			}
+			if cleanup != nil {
+				cleanups = append(cleanups, cleanup)
+			}
+		}
+		return cleanupAll, nil
+	}
+
 	if mhp, ok := p.(MessageEventPlugin); ok {
 		routed, ok := p.(MessageEventRoutingPlugin)
 		if !ok {

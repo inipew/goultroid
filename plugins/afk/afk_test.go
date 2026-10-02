@@ -30,6 +30,39 @@ type mockService struct {
 	messages     map[int]*tg.Message
 }
 
+type blockingWelcomeService struct {
+	mockService
+	started chan struct{}
+	release chan struct{}
+}
+
+type blockingAFKRepository struct {
+	Repository
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingAFKRepository) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string) error {
+	if isAFK {
+		r.once.Do(func() {
+			close(r.started)
+			<-r.release
+		})
+	}
+	return r.Repository.SetAFK(ctx, userID, isAFK, reason)
+}
+
+func (s *blockingWelcomeService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	close(s.started)
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return s.mockService.SendMessage(ctx, peer, text)
+}
+
 func (m *mockService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -470,7 +503,7 @@ func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
 	}
 }
 
-func TestAFKPlugin_SilentUnAFKInGroups(t *testing.T) {
+func TestAFKPlugin_WelcomeAfterOutgoingGroupMessage(t *testing.T) {
 	db, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatalf("db open: %v", err)
@@ -480,7 +513,6 @@ func TestAFKPlugin_SilentUnAFKInGroups(t *testing.T) {
 	svc := &mockService{}
 	ownerID := int64(1001)
 	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
-	p.SetWelcomePrivateOnly(true)
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -494,16 +526,155 @@ func TestAFKPlugin_SilentUnAFKInGroups(t *testing.T) {
 		PeerID:  &tg.PeerChannel{ChannelID: 7777},
 	}
 	svc.sent = ""
-	if err := handleMessageEvent(p, ctx, tg.Entities{}, groupMsg, false, ""); err != nil {
+	entities := tg.Entities{Channels: map[int64]*tg.Channel{7777: {ID: 7777, AccessHash: 111, Megagroup: true}}}
+	if err := handleMessageEvent(p, ctx, entities, groupMsg, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Verify AFK was deactivated silently without spamming the group
-	if svc.sent != "" {
-		t.Errorf("expected silent unAFK in group, but sent: %s", svc.sent)
+	if !strings.Contains(svc.sent, "Welcome back") {
+		t.Errorf("expected welcome after first outgoing group message, got: %s", svc.sent)
+	}
+	if _, ok := svc.sentTo.(*tg.InputPeerChannel); !ok {
+		t.Fatalf("expected welcome in the group, got %T", svc.sentTo)
 	}
 	st := p.state.Load()
 	if st.isAFK {
 		t.Fatal("expected AFK to be deactivated")
+	}
+}
+
+func TestAFKPlugin_WelcomeInSavedMessagesWhenPrivatePeerCannotResolve(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	svc := &mockService{}
+	p := New(NewSQLiteRepository(db), 1001, func() core.TelegramServicer { return svc })
+	if err := p.enableAFK(context.Background(), "sleeping"); err != nil {
+		t.Fatal(err)
+	}
+	msg := &tg.Message{ID: 51, Out: true, Message: "P", PeerID: &tg.PeerUser{UserID: 2002}}
+	if err := handleMessageEvent(p, context.Background(), tg.Entities{}, msg, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(svc.sent, "Welcome back") {
+		t.Fatalf("expected welcome in Saved Messages, got %q", svc.sent)
+	}
+	if _, ok := svc.sentTo.(*tg.InputPeerSelf); !ok {
+		t.Fatalf("expected Saved Messages fallback, got %T", svc.sentTo)
+	}
+}
+
+func TestAFKPlugin_DefaultWelcomeRemainsVisible(t *testing.T) {
+	svc := &mockService{deleteCh: make(chan int, 1)}
+	p := New(nil, 1001, func() core.TelegramServicer { return svc })
+	scope := plugin.NewScope(context.Background(), "plugin:afk")
+	if err := p.InitScope(scope.Context(), scope); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = scope.Close(closeCtx)
+	}()
+	if err := p.enableAFK(context.Background(), "sleeping"); err != nil {
+		t.Fatal(err)
+	}
+	msg := &tg.Message{ID: 52, Out: true, Message: "P", PeerID: &tg.PeerUser{UserID: 2002}}
+	entities := tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 111}}}
+	if err := handleMessageEvent(p, context.Background(), entities, msg, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(svc.sent, "Welcome back") {
+		t.Fatalf("expected welcome, got %q", svc.sent)
+	}
+	select {
+	case id := <-svc.deleteCh:
+		t.Fatalf("welcome was deleted automatically: %d", id)
+	case <-time.After(2100 * time.Millisecond):
+	}
+}
+
+func TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder(t *testing.T) {
+	svc := &blockingWelcomeService{started: make(chan struct{}), release: make(chan struct{})}
+	p := New(nil, 1001, func() core.TelegramServicer { return svc })
+	scope := plugin.NewScope(context.Background(), "plugin:afk")
+	if err := p.InitScope(scope.Context(), scope); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		select {
+		case <-svc.release:
+		default:
+			close(svc.release)
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = scope.Close(closeCtx)
+	}()
+	if err := p.enableAFK(context.Background(), "sleeping"); err != nil {
+		t.Fatal(err)
+	}
+	msg := &tg.Message{ID: 53, Out: true, Message: "P", PeerID: &tg.PeerUser{UserID: 2002}}
+	entities := tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 111}}}
+	done := make(chan error, 1)
+	go func() { done <- handleMessageEvent(p, context.Background(), entities, msg, false, "") }()
+	select {
+	case <-svc.started:
+	case <-time.After(time.Second):
+		t.Fatal("welcome send did not start")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("AFK update returned before welcome was sent: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if st := p.state.Load(); st == nil || st.isAFK {
+		t.Fatalf("AFK should be inactive while welcome is being sent: %+v", st)
+	}
+	close(svc.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAFKPlugin_ConcurrentNoArgCommandsToggleTwice(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo := &blockingAFKRepository{Repository: NewSQLiteRepository(db), started: make(chan struct{}), release: make(chan struct{})}
+	svc := &mockService{}
+	p := New(repo, 1001, func() core.TelegramServicer { return svc })
+	cmd := p.Commands()[0]
+	run := func(id int) error {
+		return cmd.Handler(&core.Context{
+			Ctx: context.Background(), Sender: &core.User{ID: 1001},
+			Message: &core.Message{ID: id}, Svc: svc, PeerID: &tg.InputPeerSelf{},
+		})
+	}
+	first := make(chan error, 1)
+	second := make(chan error, 1)
+	go func() { first <- run(61) }()
+	select {
+	case <-repo.started:
+	case <-time.After(time.Second):
+		t.Fatal("first toggle did not reach persistence")
+	}
+	go func() { second <- run(62) }()
+	time.Sleep(50 * time.Millisecond)
+	close(repo.release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	st, err := repo.GetAFK(context.Background(), 1001)
+	if err != nil || st == nil || st.IsAFK {
+		t.Fatalf("two no-arg toggles must leave AFK inactive, got %+v, err: %v", st, err)
 	}
 }
 

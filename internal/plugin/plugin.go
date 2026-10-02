@@ -78,6 +78,13 @@ type MessageEventRoutingPlugin interface {
 	MessageHookRouting() core.MessageHookRouting
 }
 
+// MessageEventRegistrationsPlugin allows one plugin to route distinct message
+// directions through different execution lanes.
+type MessageEventRegistrationsPlugin interface {
+	MessageEventPlugin
+	MessageHookRegistrations() []core.MessageHookRegistration
+}
+
 // MessageEventStatePlugin adds a fast dynamic feature-state gate to a canonical hook.
 type MessageEventStatePlugin interface {
 	MessageEventRoutingPlugin

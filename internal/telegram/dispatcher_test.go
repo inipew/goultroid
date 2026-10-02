@@ -994,6 +994,16 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	if err := dispatcher.OnNewMessage(ctx, dmEntities, manualUpdate); err != nil {
 		t.Fatalf("OnNewMessage manual unAFK failed: %v", err)
 	}
+	st, err = afkRepo.GetAFK(ctx, ownerID)
+	if err != nil || st == nil || st.IsAFK {
+		t.Fatalf("AFK transition must finish before the next update, got: %+v, err: %v", st, err)
+	}
+	svc.mu.Lock()
+	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+	svc.mu.Unlock()
+	if !strings.Contains(lastSent, "Welcome back") {
+		t.Fatalf("welcome must be sent before the next update, got %q", lastSent)
+	}
 
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

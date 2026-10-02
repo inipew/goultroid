@@ -206,6 +206,8 @@ func assistantSlotExecutionProfile(raw []byte, slot int) tasks.ExecutionProfile 
 	switch action {
 	case "checkout", "buy_confirm":
 		return tasks.ExecutionProfile{ExecutionTimeout: assistantPurchaseConfirmExec}
+	case "token_refresh_all":
+		return tasks.ExecutionProfile{ExecutionTimeout: 5 * time.Minute}
 	default:
 		return tasks.ExecutionProfile{}
 	}
@@ -573,6 +575,32 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		if err != nil {
 			return err
 		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "token_refresh_all":
+		_ = ctx.Answer("🔄 Memperbarui token semua akun…", false)
+		results, err := p.refreshAllTokens(ctx.Context())
+		if err != nil {
+			return err
+		}
+		var body strings.Builder
+		body.WriteString("🔄 <b>Refresh Semua Token MyXL</b>\n\n")
+		if len(results) == 0 {
+			body.WriteString("Belum ada akun tersimpan.")
+		} else {
+			success := 0
+			for _, result := range results {
+				if result.Err == nil {
+					success++
+					fmt.Fprintf(&body, "✅ <code>%s</code> berhasil\n", html.EscapeString(result.MSISDN))
+				} else {
+					fmt.Fprintf(&body, "❌ <code>%s</code> gagal; coba login ulang jika sesi kedaluwarsa\n", html.EscapeString(result.MSISDN))
+				}
+			}
+			fmt.Fprintf(&body, "\n<b>Berhasil: %d/%d</b>", success, len(results))
+		}
+		screen := ui.NewScreen("myxl:token_refresh_all_result", "", body.String())
+		screen.AddRow(newMenuButton("🔙 Kembali ke Kelola Akun", "myxl:accounts"))
 		return p.assistantTransition(ctx, state, screen)
 
 	case "login_req":

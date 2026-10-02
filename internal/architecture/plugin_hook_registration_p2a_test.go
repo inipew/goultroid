@@ -74,8 +74,8 @@ func TestP2AHookRegistrarUsesSingleRegistrationContract(t *testing.T) {
 	if strings.Contains(body, "registrar.(") {
 		t.Fatal("registerMessageHook still capability-probes the registrar")
 	}
-	if strings.Count(body, "registrar.RegisterMessageHook(registration)") != 2 {
-		t.Fatal("raw and canonical registration must converge on the single registrar contract")
+	if strings.Count(body, "registrar.RegisterMessageHook(registration)") != 3 {
+		t.Fatal("raw, canonical, and split canonical registration must converge on the single registrar contract")
 	}
 }
 

@@ -18,10 +18,10 @@ import (
 )
 
 var (
-	_ plugin.MessageEventRoutingPlugin = (*Plugin)(nil)
-	_ plugin.ContextInitializer        = (*Plugin)(nil)
-	_ plugin.ScopeInitializer          = (*Plugin)(nil)
-	_ execution.CapabilityProvider     = (*Plugin)(nil)
+	_ plugin.MessageEventRegistrationsPlugin = (*Plugin)(nil)
+	_ plugin.ContextInitializer              = (*Plugin)(nil)
+	_ plugin.ScopeInitializer                = (*Plugin)(nil)
+	_ execution.CapabilityProvider           = (*Plugin)(nil)
 )
 
 var (
@@ -51,7 +51,7 @@ func afkTemplateVars(reason, duration string) savedresponse.TemplateVars {
 	}}
 }
 
-const defaultWelcomeDeleteDelay = 2 * time.Second
+const defaultWelcomeDeleteDelay = 0
 
 type afkState struct {
 	isAFK  bool
@@ -101,7 +101,7 @@ func NewWithService(db Repository, ownerID int64, svcFunc func() TelegramService
 		svcFunc:            svcFunc,
 		cooldownMap:        make(map[[2]int64]time.Time),
 		cooldownDur:        60 * time.Second,
-		welcomePrivateOnly: true,
+		welcomePrivateOnly: false,
 		welcomeDeleteDelay: defaultWelcomeDeleteDelay,
 	}
 	p.state.Store(&afkState{isAFK: false})
@@ -270,14 +270,27 @@ func (p *Plugin) loadState(ctx context.Context) error {
 }
 
 func (p *Plugin) MessageHookPriority() int { return 50 }
-func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
-	return core.MessageHookRouting{
-		Lane: core.MessageHookEvent,
-		Interests: []core.MessageHookInterest{
-			{Directions: core.MessageDirectionOutgoing, Peers: core.MessagePeerStable},
-			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerPrivate},
-			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireMention: true},
-			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireReply: true},
+func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
+	return []core.MessageHookRegistration{
+		{
+			Priority: p.MessageHookPriority(),
+			Routing: core.MessageHookRouting{
+				Lane:      core.MessageHookDecision,
+				Interests: []core.MessageHookInterest{{Directions: core.MessageDirectionOutgoing, Peers: core.MessagePeerStable}},
+			},
+			Handler: p.HandleMessageEvent,
+		},
+		{
+			Priority: p.MessageHookPriority(),
+			Routing: core.MessageHookRouting{
+				Lane: core.MessageHookEvent,
+				Interests: []core.MessageHookInterest{
+					{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerPrivate},
+					{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireMention: true},
+					{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireReply: true},
+				},
+			},
+			Handler: p.HandleMessageEvent,
 		},
 	}
 }
@@ -290,21 +303,7 @@ func (p *Plugin) Commands() []core.Command {
 
 func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 	if len(ctx.Args) == 0 {
-		if st := p.state.Load(); st != nil && st.isAFK {
-			dur, changed, err := p.disableAFK(ctx.Ctx)
-			if err != nil {
-				return ctx.Fail(err, "Failed to deactivate AFK mode.")
-			}
-			if !changed {
-				return ctx.Status("<b>AFK Mode is already inactive.</b>")
-			}
-			return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
-		}
-		const r = "Away from keyboard"
-		if err := p.enableAFK(ctx.Ctx, r); err != nil {
-			return ctx.Fail(err, "Failed to activate AFK mode.")
-		}
-		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(r, ""))
+		return p.handleToggleAFK(ctx)
 	}
 	sub := strings.ToLower(ctx.Args[0])
 	switch sub {
@@ -333,21 +332,7 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 		}
 		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(reason, ""))
 	case "toggle":
-		if st := p.state.Load(); st != nil && st.isAFK {
-			dur, changed, err := p.disableAFK(ctx.Ctx)
-			if err != nil {
-				return ctx.Fail(err, "Failed to deactivate AFK mode.")
-			}
-			if !changed {
-				return ctx.Status("<b>AFK Mode is already inactive.</b>")
-			}
-			return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
-		}
-		const r = "Away from keyboard"
-		if err := p.enableAFK(ctx.Ctx, r); err != nil {
-			return ctx.Fail(err, "Failed to activate AFK mode.")
-		}
-		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(r, ""))
+		return p.handleToggleAFK(ctx)
 	default:
 		reason := strings.TrimSpace(ctx.RawArgs)
 		if err := p.enableAFK(ctx.Ctx, reason); err != nil {
@@ -357,9 +342,36 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 	}
 }
 
+func (p *Plugin) handleToggleAFK(ctx *core.Context) error {
+	const reason = "Away from keyboard"
+	dur, enabled, err := p.toggleAFK(ctx.Ctx, reason)
+	if err != nil {
+		return ctx.Fail(err, "Failed to change AFK mode.")
+	}
+	if enabled {
+		return p.replyTemplate(ctx, afkActivatedResponse, afkActivatedTemplate, afkTemplateVars(reason, ""))
+	}
+	return p.replyTemplate(ctx, afkDeactivatedResponse, afkDeactivatedTemplate, afkTemplateVars("", dur))
+}
+
+func (p *Plugin) toggleAFK(ctx context.Context, reason string) (string, bool, error) {
+	p.transitionMu.Lock()
+	defer p.transitionMu.Unlock()
+	if st := p.state.Load(); st != nil && st.isAFK {
+		dur, _, err := p.disableAFKLocked(ctx)
+		return dur, false, err
+	}
+	err := p.enableAFKLocked(ctx, reason)
+	return "", true, err
+}
+
 func (p *Plugin) enableAFK(ctx context.Context, reason string) error {
 	p.transitionMu.Lock()
 	defer p.transitionMu.Unlock()
+	return p.enableAFKLocked(ctx, reason)
+}
+
+func (p *Plugin) enableAFKLocked(ctx context.Context, reason string) error {
 	now := time.Now().UTC()
 	ownerID := p.ownerID
 	if p.db != nil && ownerID != 0 {
@@ -379,6 +391,10 @@ func (p *Plugin) enableAFK(ctx context.Context, reason string) error {
 func (p *Plugin) disableAFK(ctx context.Context) (string, bool, error) {
 	p.transitionMu.Lock()
 	defer p.transitionMu.Unlock()
+	return p.disableAFKLocked(ctx)
+}
+
+func (p *Plugin) disableAFKLocked(ctx context.Context) (string, bool, error) {
 	st := p.state.Load()
 	if st == nil || !st.isAFK {
 		return "", false, nil
@@ -437,17 +453,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		}
 		p.Cleanup(0)
 		if message.IsPrivate() || !p.isWelcomePrivateOnly() {
-			peer := p.resolveEnvelopePeer(ctx, message)
-			if peer != nil {
-				sent, err := p.sendTemplate(ctx, svc, peer, afkWelcomeResponse, afkWelcomeTemplate, afkTemplateVars("", dur))
-				if err != nil {
-					if logger := p.getLogger(); logger != nil {
-						logger.Warn("failed to send welcome back message", zap.Error(err))
-					}
-				} else if sent != nil && sent.ID > 0 {
-					p.deleteWelcomeAfter(svc, peer, sent.ID)
-				}
-			}
+			p.sendWelcome(ctx, svc, message, dur)
 		}
 		return nil
 	}
@@ -517,6 +523,23 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		}
 	}
 	return nil
+}
+func (p *Plugin) sendWelcome(ctx context.Context, svc TelegramService, message *core.MessageEnvelope, dur string) {
+	peer := p.resolveEnvelopePeer(ctx, message)
+	if peer == nil {
+		if logger := p.getLogger(); logger != nil {
+			logger.Warn("failed to resolve welcome back peer; sending to Saved Messages", zap.Int64("chat_id", message.ChatID))
+		}
+		peer = &tg.InputPeerSelf{}
+	}
+	sent, err := p.sendTemplate(ctx, svc, peer, afkWelcomeResponse, afkWelcomeTemplate, afkTemplateVars("", dur))
+	if err != nil {
+		if logger := p.getLogger(); logger != nil {
+			logger.Warn("failed to send welcome back message", zap.Error(err))
+		}
+	} else if sent != nil && sent.ID > 0 {
+		p.deleteWelcomeAfter(svc, peer, sent.ID)
+	}
 }
 func (p *Plugin) deleteWelcomeAfter(svc TelegramService, peer tg.InputPeerClass, messageID int) {
 	delay := p.getWelcomeDeleteDelay()

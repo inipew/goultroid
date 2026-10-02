@@ -65,6 +65,57 @@ type canonicalHookTestPlugin struct {
 	dummyPlugin
 }
 
+type splitHookTestPlugin struct {
+	dummyPlugin
+}
+
+func (p *splitHookTestPlugin) MessageHookPriority() int { return 50 }
+func (p *splitHookTestPlugin) HandleMessageEvent(context.Context, *core.MessageEnvelope) error {
+	return nil
+}
+func (p *splitHookTestPlugin) MessageHookRegistrations() []core.MessageHookRegistration {
+	return []core.MessageHookRegistration{
+		{Priority: 50, Routing: core.MessageHookRouting{Lane: core.MessageHookDecision}, Handler: p.HandleMessageEvent},
+		{Priority: 50, Routing: core.MessageHookRouting{Lane: core.MessageHookEvent}, Handler: p.HandleMessageEvent},
+	}
+}
+
+type multiRecordingHookRegistrar struct {
+	registrations []core.MessageHookRegistration
+	cleaned       int
+}
+
+func (r *multiRecordingHookRegistrar) RegisterMessageHook(reg core.MessageHookRegistration) (func(), error) {
+	r.registrations = append(r.registrations, reg)
+	return func() { r.cleaned++ }, nil
+}
+
+func TestManager_RegistersAndCleansUpSplitMessageHooks(t *testing.T) {
+	mgr := NewManager(core.NewRouter("."))
+	registrar := &multiRecordingHookRegistrar{}
+	mgr.SetHookRegistrar(registrar)
+	p := &splitHookTestPlugin{dummyPlugin: dummyPlugin{name: "split_hook"}}
+	if err := mgr.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	if len(registrar.registrations) != 2 ||
+		registrar.registrations[0].Routing.Lane != core.MessageHookDecision ||
+		registrar.registrations[1].Routing.Lane != core.MessageHookEvent {
+		t.Fatalf("unexpected split registrations: %+v", registrar.registrations)
+	}
+	for _, reg := range registrar.registrations {
+		if reg.Scope.Owner != "plugin:split_hook" || reg.Scope.Generation == 0 {
+			t.Fatalf("missing plugin scope: %+v", reg.Scope)
+		}
+	}
+	if err := mgr.Disable(context.Background(), "split_hook"); err != nil {
+		t.Fatal(err)
+	}
+	if registrar.cleaned != 2 {
+		t.Fatalf("cleaned %d hooks, want 2", registrar.cleaned)
+	}
+}
+
 func (p *canonicalHookTestPlugin) MessageHookPriority() int { return 20 }
 func (p *canonicalHookTestPlugin) HandleMessageEvent(context.Context, *core.MessageEnvelope) error {
 	return nil

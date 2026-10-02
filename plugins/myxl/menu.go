@@ -237,6 +237,7 @@ func (m *MenuManager) BuildAccountsScreen(ctx context.Context) (*ui.Screen, erro
 		newMenuButton("🗑️ Hapus Akun", "myxl:del_pick"),
 		newMenuButton("🔄 Refresh Token", "myxl:token_refresh"),
 	)
+	screen.AddRow(newMenuButton("🔄 Refresh Semua Token", "myxl:token_refresh_all"))
 	screen.AddRow(
 		newMenuButton("🔙 Kembali ke MyXL", "myxl:home"),
 	)
