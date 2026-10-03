@@ -2503,7 +2503,7 @@ R6 is **CLOSED**.
 
 ### R7 — Audit observability/UserLog execution
 
-Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+Status: **CLOSED — full package, focused race, lifecycle, architecture, formatting, and diff gates passed**
 
 Phase baseline:
 
@@ -2770,152 +2770,390 @@ Architecture fences:
 - require production EventBus -> shared TaskEngine wiring;
 - reject private UserLog RPC executor/limiter/retry policy.
 
-#### R7.10 R5 formatting follow-up requested by user
+#### R7.10 Formatting follow-up and execution result
 
-Before continuing R7, the user explicitly requested formatting of:
+The user explicitly requested formatting of:
 
 `internal/telegram/dispatcher_message_hook_latency_r5_test.go`
 
-R7 ran `gofmt` on that file.
-
-The only semantic diff was none; formatting removed one extra blank line at EOF.
-
-The formatted file is included in:
-
-`720d959c96f5421511891955ab422f770425e702`
-
-alongside the R7 implementation, as requested.
-
-All staged R7 Go files were processed with:
+The R7 implementation included the requested formatting work. After pulling R7, the user ran repository-wide:
 
 ```bash
 gofmt -w .
+git diff --check
 ```
 
-and the staging formatting check returned no files from `gofmt -l`.
+and pushed the final formatting-only follow-up:
 
-The authoritative checkout must still execute the gate below.
+`bdf23696c68941fd39b9ce26418256e8821f52a0` — `fmt`
 
-#### R7.11 Required execution gate
+That commit touched:
 
-Run first:
+- `internal/telegram/dispatcher_message_hook_latency_r5_test.go`;
+- `plugins/userlog/userlog.go`.
+
+It introduced no intended semantic change.
+
+The user's first focused non-race UserLog command was mistyped as `o test`, so that one command did not execute. This does **not** leave the R7 gate unverified because the subsequently executed gates passed:
+
+- full `./plugins/userlog` package tests;
+- focused `-race ./plugins/userlog -run '^TestR7|^TestUserLog'`;
+- focused Telegram R7 tests;
+- focused Telegram R7 race tests;
+- R7 architecture tests;
+- full `internal/core`, `internal/plugin`, `internal/telegram`, `internal/services/userlog`, `plugins/userlog`, and `internal/architecture` package tests;
+- repository-wide `gofmt -w .`;
+- `git diff --check`.
+
+Reported package results were all `ok`.
+
+CI was not inspected or polled.
+
+#### R7 gate
+
+Private UserLog queue removal: **complete**.
+
+Message-hook single-scheduler execution: **complete**.
+
+Domain-event priority demotion: **complete**.
+
+Shared ordering/backpressure ownership: **complete**.
+
+Generation-scoped lifecycle cancellation: **passed**.
+
+Zero-private-worker behavior: **passed**.
+
+Shared RPC authority: **preserved and fenced**.
+
+R5 formatting follow-up: **complete**.
+
+Local execution/race gate: **passed**.
+
+R7 is **CLOSED**.
+
+### R8 — Final cleanup, fences, and acceptance matrix
+
+Status: **IMPLEMENTED / FINAL EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `bdf23696c68941fd39b9ce26418256e8821f52a0` — `fmt`
+- Registration cleanup: `1ce2b4923e2543ebe34fbfa6f13f34ae9761477f` — `refactor(plugin): retire message hook registration adapters`
+- Final lifecycle/resource acceptance: `99442804ac4a48058400ee33edbec53f6a9e63fd` — `test(telegram): add final hook lifecycle acceptance`
+- CI inspected/polled: **no**
+
+Purpose:
+
+Close the redesign by reducing plugin message hooks to one explicit registration contract, fencing the final production decision-hook set, and proving burst/reload/resource settling on the shared TaskEngine.
+
+#### R8.1 Compatibility exit condition
+
+The R8 production inventory found exactly five message-hook plugin domains:
+
+- AFK;
+- Blacklist;
+- PMPermit;
+- Filters;
+- UserLog.
+
+All five already expose:
+
+```go
+MessageHookRegistrations() []core.MessageHookRegistration
+```
+
+No production plugin requires the former plugin-manager adapters for:
+
+- raw `HandleIncomingMessage`;
+- single canonical `MessageHookRouting`;
+- inherited `MessageHookInterested` state gates.
+
+Those adapters were retained only by compatibility tests/helper methods.
+
+That satisfies the cleanup exit condition.
+
+#### R8.2 Final plugin-manager contract
+
+The only production plugin message-hook interface is now:
+
+```go
+type MessageEventRegistrationsPlugin interface {
+    Plugin
+    MessageHookPriority() int
+    MessageHookRegistrations() []core.MessageHookRegistration
+}
+```
+
+Removed from the plugin-manager contract:
+
+- `MessageEventPlugin`;
+- `MessageEventRoutingPlugin`;
+- `MessageEventStatePlugin`;
+- `MessageHookPlugin`;
+- `MessageHookRoutingPlugin`;
+- `MessageHookStatePlugin`;
+- `canonicalMessageHookStateGate`;
+- the single-canonical registration adapter;
+- the raw plugin-hook registration adapter.
+
+`registerMessageHook` now has exactly one registration path:
+
+```text
+MessageEventRegistrationsPlugin
+    -> explicit registrations
+    -> canonical normalization
+    -> HookRegistrar.RegisterMessageHook
+```
+
+Empty registration sets fail fast and partial registration rollback remains reverse-order.
+
+The dispatcher/core raw fields `RawHandler` and `LegacyRouting` are intentionally **not** removed in R8. They remain an internal/dispatcher compatibility surface outside the plugin-manager contract. R8 does not widen cleanup into unrelated Telegram compatibility callers.
+
+#### R8.3 State gates are registration data
+
+Blacklist, Filters, and PMPermit now put their dynamic state gate directly in the registration:
+
+```go
+StateGate: ...
+```
+
+The manager no longer infers a state gate from optional plugin interfaces.
+
+Existing helper methods such as `MessageHookInterested` may remain for direct tests/source compatibility, but production execution no longer depends on manager-side interface composition.
+
+A regression explicitly proves that a helper method named `MessageHookInterested` does not become a state gate unless the registration declares it.
+
+#### R8.4 Explicit decision failure policy
+
+R8 finalizes the execution-policy rule that production decision hooks must not depend on priority as an undocumented failure-policy selector.
+
+AFK now explicitly declares:
+
+```text
+outgoing transition decision -> fail-open
+incoming AFK event          -> fail-open
+```
+
+Blacklist remains explicit fail-closed.
+
+PMPermit remains:
+
+- incoming enforcement -> fail-closed;
+- outgoing auto-approve -> fail-open.
+
+Filters remains explicit fail-open.
+
+UserLog is event-only and remains explicit fail-open.
+
+Priority normalization is retained only as compatibility/default machinery in the core registration normalizer; current production decision registrations are explicit.
+
+#### R8.5 Decision-hook architecture allowlist
+
+R8 adds an architecture fence that inventories production files containing both:
+
+```text
+MessageHookRegistrations()
+MessageHookDecision
+```
+
+The reviewed allowlist is:
+
+- `plugins/afk/afk.go`;
+- `plugins/blacklist/message_hook_r6.go`;
+- `plugins/filters/message_hook_r6.go`;
+- `plugins/pmpermit/message_hook_r6.go`.
+
+A new production decision hook outside that set fails the architecture test and requires explicit review.
+
+Every allowlisted decision-hook file must also contain an explicit:
+
+```go
+Execution: core.MessageHookExecutionPolicy{...}
+FailurePolicy: ...
+```
+
+This prevents future presentation/network work from entering the synchronous lane without deliberate review.
+
+#### R8.6 Burst, zero-idle, reload, and bounded-state acceptance
+
+`TestR8MessageHookBurstReloadAndResourceSettling` uses a real dispatcher, plugin manager, and shared TaskEngine.
+
+The test configures the real general and interactive pools as zero-idle with a short test-only retirement timeout and then performs:
+
+```text
+24 decision messages
++
+24 event messages
+    -> both lanes drain
+    -> workers retire to zero
+    -> waiting/running/dispatching all return to zero
+    -> terminal retention remains <= configured bound
+    -> retained bytes remain <= configured cap
+
+disable plugin
+    -> matching updates no longer invoke old hooks
+
+enable same plugin
+    -> new scope generation != old generation
+    -> decision/event hooks execute exactly once
+
+disable again
+    -> general + interactive workers retire to zero
+    -> scope tombstones remain bounded
+```
+
+The test uses:
+
+- result capacity: 64;
+- max terminal retained: 16;
+- terminal TTL: 100 ms;
+- test-only pool idle timeout: 10 ms.
+
+These reduced timeouts make the lifecycle proof deterministic without changing production TaskEngine defaults.
+
+#### R8.7 Final acceptance evidence map
+
+The required section-13 scenarios are covered by the redesign regressions as follows:
+
+| Area | Primary evidence |
+| --- | --- |
+| inactive AFK / automation / `.afk` skip | R3 fast-gate tests |
+| AFK state-before-command and welcome isolation | R4 acceptance |
+| FloodWait, SQLite contention, event backlog, two-chat transition | R5 acceptance |
+| Blacklist state gate + delete effect split | R6 Blacklist tests |
+| PMPermit security barrier + deferred effects | R6 PMPermit tests |
+| Filters state gate + synchronous suppress-AFK match | R6 Filters tests |
+| stalled UserLog/FloodWait isolation | R7 Telegram acceptance |
+| UserLog disable/re-enable generation fence | R7 lifecycle acceptance |
+| single explicit plugin registration contract | R8 plugin + architecture tests |
+| post-burst worker/queue/state settling | R8 lifecycle/resource acceptance |
+| zero private execution/retry authority | R4/R5/R7/R8 architecture fences |
+
+#### R8.8 Formatting discipline
+
+R8 Go changes were staged through gofmt-compatible source generation; the new lifecycle test was also run through `gofmt` in the local staging workspace before its commit.
+
+Because the authoritative GitHub checkout is not directly mounted in this execution environment, the final repository-wide formatting authority remains the user's checkout.
+
+The final gate therefore **must** run:
+
+```bash
+gofmt -w .
+git diff --check
+```
+
+before R8 can be marked CLOSED.
+
+CI was not inspected or polled.
+
+#### R8.9 Required final execution gate
+
+Run on the real `test-next` checkout:
 
 ```bash
 git pull
 
-go test ./plugins/userlog -run \
-    '^TestR7|^TestUserLog'
+go test ./internal/plugin -run \
+    'TestManager_(RegistersAndCleansUpExplicitMessageHooks|RejectsEmptyExplicitMessageHooks|RollsBackPartialExplicitMessageHookRegistration|RejectsInvalidExplicitExecutionPolicy|DoesNotAdaptLegacySingleHookInterfaces|ExplicitHooksRequireReadCapabilityWhenGateConfigured|ExplicitHookReadCapabilityDeclared|DoesNotInferStateGateFromLegacyHelperMethod|HookRegistrationAndShutdown)'
 
 go test ./internal/telegram -run \
-    '^TestR7|^TestR[3456]'
+    '^TestR8|^TestR7|^TestR6|^TestR5|^TestR4|^TestR3'
+
+go test ./internal/taskengine -run \
+    'Test(DefaultPoolsStartWithZeroPhysicalWorkers|ZeroIdlePoolSpawnsOnDemandAndRetiresToZero)'
 
 go test ./internal/architecture -run \
-    '^TestR7|^TestR6|^TestR5|^TestR4|^TestP2AHook'
-```
+    '^TestR8|^TestR7|^TestR6|^TestR5|^TestR4|^TestP2AHook'
 
-If those focused gates are green, run:
-
-```bash
 go test \
     ./internal/core \
     ./internal/plugin \
     ./internal/telegram \
+    ./internal/taskengine \
+    ./internal/services/pmpermit \
     ./internal/services/userlog \
+    ./plugins/afk \
+    ./plugins/blacklist \
+    ./plugins/pmpermit \
+    ./plugins/filters \
     ./plugins/userlog \
     ./internal/architecture
 
-go test -race ./plugins/userlog -run \
-    '^TestR7|^TestUserLog'
+go test -race ./internal/plugin -run \
+    'TestManager_(RegistersAndCleansUpExplicitMessageHooks|RollsBackPartialExplicitMessageHookRegistration|HookRegistrationAndShutdown)'
 
 go test -race ./internal/telegram -run \
-    '^TestR7'
+    '^TestR8|^TestR7|^TestR5'
+
+go test -race \
+    ./plugins/afk \
+    ./plugins/blacklist \
+    ./plugins/pmpermit \
+    ./plugins/filters \
+    ./plugins/userlog
 
 gofmt -w .
 git diff --check
 ```
 
-Required semantic outcomes:
+Required final outcomes:
 
 ```text
-incoming PM/mention
-    -> exactly one dispatcher event TaskEngine task
-    -> no UserLog private queue/worker
+plugin manager
+    -> one explicit MessageHookRegistrations contract
+    -> no raw/single/state adapter inference
 
-AdminAction High event
-    -> EventBus high callback performs cheap admission only
-    -> Telegram logging executes general/normal
+all production decision hooks
+    -> reviewed allowlist
+    -> explicit failure policy
 
-blocked/FloodWait UserLog delivery
-    -> interactive decision lane still progresses
+burst
+    -> decision/event work drains
+    -> general + interactive physical workers retire to zero
+    -> waiting/running/dispatching return to zero
+    -> retention remains bounded
 
-disable while UserLog delivery blocked
-    -> old generation is cancelled
+disable
+    -> old hook registrations no longer execute
 
 re-enable
-    -> new plugin generation is published
+    -> new generation
+    -> exactly one registration generation executes
 
-idle UserLog
-    -> zero plugin-private goroutines
-
-all UserLog Telegram sends
-    -> canonical Telegram service / shared RPC executor
+shared authority
+    -> same TaskEngine
+    -> same RPC executor/limiter
+    -> no plugin-private retry/runtime resurrected
 ```
 
-If a failure is attributable to R7, repair R7 production/tests before starting R8.
+If this gate passes, record the exact output/status and mark R8 + the redesign **CLOSED**.
 
-Do not reintroduce a UserLog-specific queue/worker merely to satisfy old tests.
+Do not remove dispatcher/core raw compatibility fields as part of a test repair.
 
-Do not run UserLog Telegram delivery directly inside a high-priority EventBus callback.
+Do not weaken the decision-hook allowlist/failure-policy fence.
 
-Do not add a UserLog-specific retry/FloodWait loop.
+Do not increase retained-state bounds merely to make the settling test pass.
 
-#### R7 gate
+#### R8 gate
 
-Private UserLog queue removal: **implemented**.
+Plugin-manager adapter retirement: **implemented**.
 
-Message-hook single-scheduler execution: **implemented**.
+Single explicit production registration contract: **implemented**.
 
-Domain-event priority demotion: **implemented**.
+Explicit production state gates: **implemented**.
 
-Shared ordering/backpressure ownership: **implemented**.
+Explicit AFK failure policy: **implemented**.
 
-Generation-scoped lifecycle cancellation: **implemented**.
+Decision-hook architecture allowlist: **implemented**.
 
-Zero-private-worker behavior: **implemented**.
+Burst/post-burst zero-idle acceptance: **implemented**.
 
-Shared RPC authority: **preserved**.
+Disable/re-enable stale-registration fence: **implemented**.
 
-R5 formatting follow-up: **included**.
+Generation/bounded-state acceptance: **implemented**.
 
-Local execution/race gate: **pending user checkout verification**.
-
-R8 must not start until the R7 execution gate passes.
-
-### R8 — Final cleanup, fences, and acceptance matrix
-
-Status: **PENDING**
-
-Purpose:
-
-Retire compatibility paths only after production callers migrate.
-
-Tasks:
-
-- remove dead registration adapters/interfaces whose exit condition is satisfied;
-- add architecture fences preventing new implicit decision-lane effects;
-- document final registration/execution contract;
-- verify unload/reload/shutdown;
-- verify state/caches/task workers settle after burst;
-- verify no stale generation work survives plugin reload;
-- update this document with final commit SHAs and CLOSED status.
-
-Gate:
-
-- all acceptance scenarios in section 13 pass;
-- no known production hook relies on undocumented cross-lane ordering;
-- no second execution/retry authority was introduced.
-
----
+Final local execution/race/formatting gate: **pending user checkout verification**.
 
 ## 13. Required acceptance matrix
 
