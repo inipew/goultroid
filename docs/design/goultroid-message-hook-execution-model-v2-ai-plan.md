@@ -2135,7 +2135,7 @@ R5 is **CLOSED**.
 
 ### R6 — Audit/migrate Blacklist, PMPermit, Filters
 
-Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+Status: **CLOSED — focused/full package tests, focused race tests, architecture tests, gofmt, and diff check passed**
 
 Phase baseline:
 
@@ -2442,49 +2442,393 @@ The authoritative checkout must still run the final repository-wide `gofmt -w .`
 
 CI was not inspected or polled.
 
-#### R6.8 Required execution gate
+#### R6.8 Execution gate result
 
-Run on the real `test-next` checkout:
+The first local R6 execution attempt exposed one compile-only regression:
+
+```text
+internal/services/pmpermit/service.go:6:2:
+"strconv" imported and not used
+```
+
+The R6 split moved the remaining `strconv` usage into `message_hook_r6.go`, leaving the old import behind.
+
+It was repaired in:
+
+`d20eb50fba97a7ed167658572ebb0044efe4666c` — `fix(pmpermit): remove stale strconv import`
+
+No execution semantics changed in that fix.
+
+After pulling the fix, the user executed the complete R6 gate on the real `test-next` checkout.
+
+All reported commands passed:
+
+- focused Blacklist R6 + existing Blacklist/feature-state tests;
+- focused PMPermit service R6 + existing PMPermit tests;
+- focused PMPermit plugin R6 + existing plugin tests;
+- focused Filters R6 + existing Filters tests;
+- R4/R5/R6/P2-A architecture tests;
+- full `internal/core`, `internal/plugin`, `internal/telegram`, `internal/services/pmpermit`, `plugins/blacklist`, `plugins/pmpermit`, `plugins/filters`, and `internal/architecture` package tests;
+- focused race tests for PMPermit service, Blacklist, PMPermit plugin, and Filters;
+- `gofmt -w .`;
+- `git diff --check`.
+
+Reported focused/full/race packages were all `ok`.
+
+CI was not inspected or polled.
+
+#### R6 gate
+
+Blacklist decision/effect separation: **passed**.
+
+Blacklist explicit execution policy: **passed**.
+
+PMPermit enforcement/effect separation: **passed**.
+
+PMPermit stale-effect revalidation: **passed**.
+
+PMPermit warning cleanup authority: **passed**.
+
+Filters explicit execution policy: **passed**.
+
+Filters production state preload: **passed**.
+
+Architecture fences: **passed**.
+
+Local execution/race gate: **passed**.
+
+Formatting/diff gate: **passed**.
+
+R6 is **CLOSED**.
+
+### R7 — Audit observability/UserLog execution
+
+Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `d20eb50fba97a7ed167658572ebb0044efe4666c`
+- Phase-start commit: `fix(pmpermit): remove stale strconv import`
+- Main R7 implementation: `720d959c96f5421511891955ab422f770425e702` — `refactor(userlog): unify observability execution ownership`
+- Lifecycle acceptance follow-up: `c56a7a1e750c4962f61706ca66fde17af8e5cafc` — `test(userlog): prove generation-scoped shutdown`
+- CI inspected/polled: **no**
+
+Purpose:
+
+Remove UserLog's redundant private scheduling/backpressure layer while ensuring observability work cannot steal or stall the decision/interactive execution domain.
+
+#### R7.1 Pre-R7 execution model
+
+Before R7, UserLog message logging ran as:
+
+```text
+Telegram dispatcher
+    -> shared TaskEngine event/general task
+    -> UserLog chan func() queue (capacity 256)
+    -> lazy plugin Scope.Go worker
+    -> UserLog service
+    -> canonical Telegram SendMessage
+```
+
+Domain-event logging ran as:
+
+```text
+EventBus bounded queue
+    -> EventBus shared TaskEngine task in production
+    -> UserLog chan func() queue
+    -> lazy plugin Scope.Go worker
+    -> Telegram RPC
+```
+
+The UserLog private queue did provide:
+
+- a bound of 256 closures;
+- global one-worker serialization;
+- zero idle after a 15-second worker timeout;
+- plugin-local enqueue/deliver/drop counters.
+
+But all execution ownership already existed above it:
+
+- dispatcher event work already uses the shared TaskEngine;
+- production EventBus is explicitly wired through
+  `coreDeps.eventBus.SetTasks(coreDeps.taskEngine)`;
+- TaskEngine owns bounded waiting, owner quotas, pool priority, ordering, execution timeout, scope cancellation, and zero-idle workers;
+- TelegramServicer owns RPC limiter/retry/FloodWait policy.
+
+The private queue therefore created a second scheduler/backpressure domain without adding a unique correctness guarantee.
+
+#### R7.2 Message-hook path now has one scheduler
+
+UserLog now registers through the canonical multi-registration contract:
+
+```text
+lane:            Event
+failure policy:  fail-open
+handler timeout: 15s
+task timeout:    15s
+ordering:        plugin-global
+```
+
+Its structural interests remain:
+
+- incoming private messages;
+- incoming group/channel messages requiring mention.
+
+The plugin-global ordering key resolves to:
+
+```text
+msg-event:plugin:userlog
+```
+
+`HandleMessageEvent` now performs the UserLog service call directly inside that already-admitted event/general TaskEngine task.
+
+It does **not**:
+
+- enqueue another closure;
+- start another worker;
+- call `scope.Go`;
+- spawn a goroutine.
+
+This removes:
+
+```text
+TaskEngine -> UserLog queue -> UserLog worker
+```
+
+from the message path.
+
+#### R7.3 Domain-event priority inversion audit
+
+A direct EventBus callback was not sufficient by itself.
+
+`AdminActionEvent` is priority High. The core EventBus maps high-priority events to the shared TaskEngine interactive class.
+
+Running UserLog's Telegram RPC directly in that callback would therefore allow a logging FloodWait to occupy an interactive worker.
+
+R7 avoids changing the global EventBus priority contract.
+
+Instead, the UserLog EventBus callback performs only a cheap scoped admission:
+
+```text
+AdminAction / PMPermit EventBus callback
+    -> scoped UserLog TaskClient Submit
+        pool: general
+        class: normal
+        timeout: 15s
+        ordering: msg-event:plugin:userlog
+    -> callback returns
+
+UserLog continuation
+    -> service LogActionDetailed
+    -> canonical Telegram SendMessage
+```
+
+This is not a new scheduler.
+
+Both outer EventBus work and the continuation use the same shared TaskEngine authority.
+
+The extra continuation exists only to demote observability Telegram work out of a potentially interactive EventBus task.
+
+PMPermit events follow the same path so all UserLog domain-event delivery shares one bounded execution policy.
+
+#### R7.4 Unified ordering and backpressure
+
+Message-hook UserLog work and domain-event continuations use the same ordering key:
+
+```text
+msg-event:plugin:userlog
+```
+
+This preserves the old private worker's useful serialization property without retaining its worker or queue.
+
+The scoped TaskClient also assigns:
+
+```text
+scope:       plugin:userlog + current generation
+quota owner: plugin:userlog
+```
+
+Therefore message and domain logging share the canonical TaskEngine owner quota/backlog limits.
+
+There is no unbounded UserLog-specific backlog.
+
+#### R7.5 Lifecycle and zero-idle behavior
+
+Removed from UserLog:
+
+- `chan func()` queue;
+- lazy worker startup;
+- worker generation tracking;
+- worker idle timer;
+- plugin-local WaitGroup;
+- raw shutdown waiter goroutine;
+- enqueue/dropped queue counters.
+
+`ShutdownContext` is now synchronous and lightweight:
+
+```text
+mark closing
+    -> detach EventBus subscriptions
+    -> drop scope/task-client references
+    -> return
+```
+
+Already-admitted work is generation-scoped in TaskEngine and is cancelled by plugin-manager scope cancellation.
+
+The R7 lifecycle acceptance proves:
+
+```text
+UserLog Telegram delivery blocked
+    -> interactive decision task still runs
+    -> disable UserLog
+    -> blocked old-generation delivery context is cancelled
+    -> enable UserLog
+    -> new scope generation != old generation
+```
+
+With no private UserLog worker, idle UserLog goroutine count is zero.
+
+#### R7.6 Telegram RPC ownership
+
+`internal/services/userlog.Service` remains the delivery formatter/health boundary.
+
+Its physical send still delegates exactly once through:
+
+```go
+svc.SendMessage(ctx, dest.InputPeer(), text)
+```
+
+The service continues to contain no private:
+
+- RPC executor;
+- hierarchical limiter;
+- retry policy;
+- FloodWait retry loop;
+- `time.Sleep` retry.
+
+Shared Telegram RPC semantics remain authoritative.
+
+#### R7.7 UserLog dashboard semantics
+
+The old dashboard exposed private queue counters:
+
+```text
+Enqueued / Delivered / Dropped
+```
+
+Those counters no longer represent a real subsystem after queue removal.
+
+R7 replaces that row with service-level delivery health:
+
+```text
+Delivered
+Failed
+Consecutive failures
+```
+
+These counters describe actual Telegram delivery outcomes instead of intermediate private-queue state.
+
+#### R7.8 Compatibility
+
+`SetWorkerIdleTimeout` remains as a no-op source-compatibility method for existing direct tests/integrations.
+
+It no longer controls runtime behavior because no UserLog worker exists.
+
+Direct/manual plugin construction through `InitScope` remains supported for tests and legacy embedding.
+
+Managed production registration uses `PluginContextInitializer` and obtains the scoped TaskClient through:
+
+```text
+PluginContext.TaskClient()
+```
+
+The UserLog module now declares:
+
+```go
+plugin.CapTasks
+```
+
+#### R7.9 Tests and architecture fences
+
+Added:
+
+- `TestR7UserLogMessageHookUsesSingleSharedEventTask`;
+- `TestR7AdminActionDemotesTelegramDeliveryToNormalSharedTask`;
+- `TestR7UserLogOwnsNoPrivateWorker`;
+- `TestR7BlockedUserLogDeliveryDoesNotBlockDecisionLane`.
+
+The Telegram acceptance additionally verifies old-generation task cancellation and new-generation publication after disable/re-enable.
+
+Architecture fences:
+
+- reject UserLog private queue/worker fields;
+- reject `scope.Go`, private worker timers, and old queue counters;
+- require canonical Event/fail-open/plugin-global execution policy;
+- require scoped TaskClient + general/normal domain continuation;
+- require `plugin.CapTasks`;
+- require production EventBus -> shared TaskEngine wiring;
+- reject private UserLog RPC executor/limiter/retry policy.
+
+#### R7.10 R5 formatting follow-up requested by user
+
+Before continuing R7, the user explicitly requested formatting of:
+
+`internal/telegram/dispatcher_message_hook_latency_r5_test.go`
+
+R7 ran `gofmt` on that file.
+
+The only semantic diff was none; formatting removed one extra blank line at EOF.
+
+The formatted file is included in:
+
+`720d959c96f5421511891955ab422f770425e702`
+
+alongside the R7 implementation, as requested.
+
+All staged R7 Go files were processed with:
+
+```bash
+gofmt -w .
+```
+
+and the staging formatting check returned no files from `gofmt -l`.
+
+The authoritative checkout must still execute the gate below.
+
+#### R7.11 Required execution gate
+
+Run first:
 
 ```bash
 git pull
 
-go test ./plugins/blacklist -run \
-    '^TestR6|TestBlacklist|TestFeatureState'
+go test ./plugins/userlog -run \
+    '^TestR7|^TestUserLog'
 
-go test ./internal/services/pmpermit -run \
-    '^TestR6|^TestPMPermit_'
-
-go test ./plugins/pmpermit -run \
-    '^TestR6|^TestPMPermit'
-
-go test ./plugins/filters -run \
-    '^TestR6|^TestFilter'
+go test ./internal/telegram -run \
+    '^TestR7|^TestR[3456]'
 
 go test ./internal/architecture -run \
-    '^TestR6|^TestR5|^TestR4|^TestP2AHook'
+    '^TestR7|^TestR6|^TestR5|^TestR4|^TestP2AHook'
+```
 
+If those focused gates are green, run:
+
+```bash
 go test \
     ./internal/core \
     ./internal/plugin \
     ./internal/telegram \
-    ./internal/services/pmpermit \
-    ./plugins/blacklist \
-    ./plugins/pmpermit \
-    ./plugins/filters \
+    ./internal/services/userlog \
+    ./plugins/userlog \
     ./internal/architecture
 
-go test -race ./internal/services/pmpermit -run \
-    '^TestR6|^TestPMPermit_'
+go test -race ./plugins/userlog -run \
+    '^TestR7|^TestUserLog'
 
-go test -race ./plugins/blacklist -run \
-    '^TestR6|^TestBlacklist'
-
-go test -race ./plugins/pmpermit -run \
-    '^TestR6|^TestPMPermit'
-
-go test -race ./plugins/filters -run \
-    '^TestR6|^TestFilter'
+go test -race ./internal/telegram -run \
+    '^TestR7'
 
 gofmt -w .
 git diff --check
@@ -2493,92 +2837,59 @@ git diff --check
 Required semantic outcomes:
 
 ```text
-Blacklist inactive chat
-    -> state gate skips TaskEngine decision admission
+incoming PM/mention
+    -> exactly one dispatcher event TaskEngine task
+    -> no UserLog private queue/worker
 
-Blacklist match
-    -> handled/suppression remains synchronous
-    -> DeleteMessage runs outside decision barrier
+AdminAction High event
+    -> EventBus high callback performs cheap admission only
+    -> Telegram logging executes general/normal
 
-PMPermit disabled
-    -> state gate skips TaskEngine decision admission
+blocked/FloodWait UserLog delivery
+    -> interactive decision lane still progresses
 
-unapproved incoming PM
-    -> enforcement state/handled decision completes synchronously
-    -> warning/block Telegram RPC runs as effect
+disable while UserLog delivery blocked
+    -> old generation is cancelled
 
-manual outgoing PM
-    -> approved state transition completes synchronously
-    -> warning cleanup/unblock RPC runs as effect
+re-enable
+    -> new plugin generation is published
 
-stale PMPermit warning/cleanup effect
-    -> revalidation prevents crossing newer state
+idle UserLog
+    -> zero plugin-private goroutines
 
-failed warning cleanup delete
-    -> stored warning IDs remain available
-
-Filters inactive chat
-    -> state gate skips TaskEngine admission
-
-Filters match
-    -> suppress-AFK decision remains synchronous
-    -> response delivery remains shared-TaskEngine continuation
+all UserLog Telegram sends
+    -> canonical Telegram service / shared RPC executor
 ```
 
-If a failure is attributable to R6, repair the corresponding plugin and its tests before starting R7.
+If a failure is attributable to R7, repair R7 production/tests before starting R8.
 
-Do not convert Filters matching to an event lane merely to make it asynchronous.
+Do not reintroduce a UserLog-specific queue/worker merely to satisfy old tests.
 
-Do not move PMPermit security state transitions out of the decision barrier.
+Do not run UserLog Telegram delivery directly inside a high-priority EventBus callback.
 
-Do not restore Blacklist DeleteMessage to the decision barrier.
+Do not add a UserLog-specific retry/FloodWait loop.
 
-Do not add plugin-specific RPC/retry workers.
+#### R7 gate
 
-#### R6 gate
+Private UserLog queue removal: **implemented**.
 
-Blacklist decision/effect separation: **implemented**.
+Message-hook single-scheduler execution: **implemented**.
 
-Blacklist explicit execution policy: **implemented**.
+Domain-event priority demotion: **implemented**.
 
-PMPermit enforcement/effect separation: **implemented**.
+Shared ordering/backpressure ownership: **implemented**.
 
-PMPermit stale-effect revalidation: **implemented**.
+Generation-scoped lifecycle cancellation: **implemented**.
 
-PMPermit warning cleanup authority: **implemented**.
+Zero-private-worker behavior: **implemented**.
 
-Filters explicit execution policy: **implemented**.
+Shared RPC authority: **preserved**.
 
-Filters production state preload: **implemented**.
-
-Architecture fences: **implemented**.
+R5 formatting follow-up: **included**.
 
 Local execution/race gate: **pending user checkout verification**.
 
-R7 must not start until the R6 execution gate passes.
-
-### R7 — Audit observability/UserLog execution
-
-Status: **PENDING**
-
-Purpose:
-
-Ensure event/observability work uses shared execution ownership without priority inversion.
-
-Tasks:
-
-- audit dispatcher event task -> UserLog queue -> lazy worker double scheduling;
-- document what backpressure/lifecycle behavior the inner queue currently provides;
-- remove or simplify it only if TaskEngine already provides equivalent guarantees;
-- verify log FloodWait cannot block decision domain;
-- preserve bounded queue/state and zero-idle behavior.
-
-Gate:
-
-- no new permanent worker;
-- no unbounded observability backlog;
-- no decision priority inversion;
-- lifecycle/reload tests pass.
+R8 must not start until the R7 execution gate passes.
 
 ### R8 — Final cleanup, fences, and acceptance matrix
 
