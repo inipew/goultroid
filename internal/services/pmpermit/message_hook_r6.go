@@ -203,7 +203,6 @@ func (s *Service) PrepareAutoApproveOutgoing(
 	}
 	s.approvedCache.Store(userID, approvalCacheEntry{})
 	effect.WarnIDs = s.getWarnIDs(userID)
-	s.clearWarnIDs(userID)
 	_ = s.repo.ResetPMWarn(ctx, userID)
 	s.publishEvent("auto_approve", userID, "", 0, "outgoing auto-approved", true, "")
 	return effect, true, nil
@@ -225,13 +224,35 @@ func (s *Service) ApplyAutoApproveOutgoingEffect(
 	if svc == nil {
 		return nil
 	}
-	if len(effect.WarnIDs) > 0 {
-		if err := svc.DeleteMessage(ctx, peer, effect.WarnIDs); err != nil {
+	warnIDs := mergeWarnIDs(effect.WarnIDs, s.getWarnIDs(effect.UserID))
+	if len(warnIDs) > 0 {
+		if err := svc.DeleteMessage(ctx, peer, warnIDs); err != nil {
 			s.logger.Warn("failed to delete warning messages on auto-approve", zap.Int64("user_id", effect.UserID), zap.Error(err))
+		} else {
+			s.clearWarnIDs(effect.UserID)
 		}
 	}
 	if err := svc.UnblockUser(ctx, peer); err != nil {
 		s.logger.Warn("failed to unblock user on auto-approve", zap.Int64("user_id", effect.UserID), zap.Error(err))
 	}
 	return nil
+}
+
+
+func mergeWarnIDs(groups ...[]int) []int {
+	seen := make(map[int]struct{})
+	var merged []int
+	for _, group := range groups {
+		for _, id := range group {
+			if id == 0 {
+				continue
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			merged = append(merged, id)
+		}
+	}
+	return merged
 }

@@ -2,6 +2,7 @@ package pmpermit_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -104,12 +105,20 @@ func TestR6AutoApproveCommitsStateBeforeTelegramCleanupAndFencesStaleEffect(t *t
 	if len(effect.WarnIDs) != 2 {
 		t.Fatalf("captured warning ids=%v, want two", effect.WarnIDs)
 	}
+	retained, err := repo.GetWarnMsgIDs(context.Background(), userID)
+	if err != nil || len(retained) != 2 {
+		t.Fatalf("prepare lost warning cleanup authority: ids=%v err=%v", retained, err)
+	}
 
 	if err := svc.ApplyAutoApproveOutgoingEffect(context.Background(), peer, effect); err != nil {
 		t.Fatal(err)
 	}
 	if len(transport.deletedIDs) != 2 || len(transport.unblockedIDs) != 1 {
 		t.Fatalf("cleanup effect deleted=%v unblocked=%v", transport.deletedIDs, transport.unblockedIDs)
+	}
+	retained, err = repo.GetWarnMsgIDs(context.Background(), userID)
+	if err != nil || len(retained) != 0 {
+		t.Fatalf("successful cleanup retained warning ids=%v err=%v", retained, err)
 	}
 
 	effect2 := pmpermit.AutoApproveEffect{UserID: userID, WarnIDs: []int{99}}
@@ -123,5 +132,51 @@ func TestR6AutoApproveCommitsStateBeforeTelegramCleanupAndFencesStaleEffect(t *t
 	}
 	if len(transport.deletedIDs) != 0 || len(transport.unblockedIDs) != 0 {
 		t.Fatalf("stale auto-approve effect crossed newer blocked state: deleted=%v unblocked=%v", transport.deletedIDs, transport.unblockedIDs)
+	}
+}
+
+
+type r6DeleteFailTelegram struct {
+	mockTelegram
+	deleteErr error
+}
+
+func (m *r6DeleteFailTelegram) DeleteMessage(
+	context.Context,
+	tg.InputPeerClass,
+	[]int,
+) error {
+	return m.deleteErr
+}
+
+func TestR6AutoApproveRetainsWarningIDsWhenTelegramDeleteFails(t *testing.T) {
+	repo := newMockRepo()
+	transport := &r6DeleteFailTelegram{deleteErr: errors.New("delete unavailable")}
+	svc := pmpermit.NewService(repo, transport, 12345, core.NewPermissions(12345, nil), zap.NewNop())
+
+	const userID int64 = 9004
+	peer := &tg.InputPeerUser{UserID: userID, AccessHash: 100}
+	if err := repo.SetPMStatus(context.Background(), userID, pmpermit.StatusBlocked, "seed", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int{51, 52} {
+		if err := repo.AddWarnMsgID(context.Background(), userID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	effect, changed, err := svc.PrepareAutoApproveOutgoing(context.Background(), userID)
+	if err != nil || !changed {
+		t.Fatalf("prepare changed=%v err=%v", changed, err)
+	}
+	if err := svc.ApplyAutoApproveOutgoingEffect(context.Background(), peer, effect); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := repo.GetWarnMsgIDs(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retained) != 2 || retained[0] != 51 || retained[1] != 52 {
+		t.Fatalf("failed Telegram delete lost warning cleanup authority: %v", retained)
 	}
 }
