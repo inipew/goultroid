@@ -1622,7 +1622,7 @@ R3 is **CLOSED**.
 
 ### R4 — Split AFK transition from presentation effects
 
-Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+Status: **CLOSED — focused/full package tests, focused race tests, architecture tests, formatting, and diff check passed**
 
 Phase baseline:
 
@@ -1942,112 +1942,415 @@ The authoritative checkout still must run the complete gate below before R4 is m
 
 CI was not inspected or polled.
 
-#### R4.13 Required execution gate
+#### R4.13 Execution gate result
+
+The user executed the complete R4 gate on the real `test-next` checkout after pulling the R4 commits.
+
+All reported commands passed:
+
+- focused core execution-policy normalization;
+- Telegram R0/R1/R2/R3/R4 plus AFK end-to-end acceptance;
+- focused AFK fast-gate/effect/concurrency/welcome tests;
+- R3/R4/P2-A architecture fences;
+- full `internal/core`, `internal/plugin`, `internal/telegram`, `plugins/afk`, and `internal/architecture` package tests;
+- focused Telegram race tests;
+- focused AFK race tests;
+- `gofmt -w .`;
+- `git diff --check`.
+
+The user then found remaining formatting drift in several pre-existing/changed Go files, formatted them, and pushed:
+
+`e7f6e314221fdfb900303c52954eac12965a0121` — `fmt`
+
+That formatting-only follow-up touched:
+
+- `internal/core/message_hook_test.go`;
+- `internal/telegram/dispatcher_feature_state_test.go`;
+- `internal/telegram/dispatcher_message_hook_execution_r0_test.go`;
+- `plugins/afk/afk.go`;
+- `plugins/afk/afk_test.go`.
+
+No R4 semantic change was introduced by that follow-up.
+
+CI was not inspected or polled.
+
+#### R4 gate
+
+DB-first synchronous transition: **complete**.
+
+Owner-global AFK transition ordering: **complete**.
+
+Shared scoped TaskEngine welcome effect: **complete**.
+
+Welcome completion removed from command-start barrier: **complete**.
+
+Welcome failure state isolation: **complete**.
+
+Reload/generation cancellation fence: **complete**.
+
+Architecture fence: **complete**.
+
+Local execution/race gate: **passed**.
+
+Formatting/diff gate: **passed after user follow-up formatting commit**.
+
+R4 is **CLOSED**.
+
+### R5 — FloodWait and latency acceptance
+
+Status: **IMPLEMENTED / EXECUTION + BENCHMARK VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `e7f6e314221fdfb900303c52954eac12965a0121`
+- Phase-start commit: `fmt`
+- Acceptance implementation: `43a0fffe78b96c1143c7fb7dc1d84c793dc5eb61` — `test(telegram): add r5 latency and floodwait acceptance`
+- Production code changed: **no**
+- Shared RPC limiter/retry semantics changed: **no**
+- CI inspected/polled: **no**
+
+Purpose:
+
+Prove the R4 execution split removes presentation/FloodWait work from command-start latency without weakening the existing Telegram RPC safety model.
+
+R5 explicitly separates:
+
+```text
+L1 = Telegram ingress -> command handler starts
+
+L2 = command handler starts -> required command Telegram output completes
+```
+
+The acceptance target is not “all Telegram delay disappears”.
+
+The target is:
+
+```text
+AFK state correctness / persistence
+    may remain on L1 when required
+
+AFK welcome presentation / limiter wait / FloodWait
+    must not remain on L1
+
+command's own Telegram output
+    remains governed by shared RPC limiter/executor in L2
+```
+
+#### R5.1 No production rewrite was required
+
+Static audit after R4 found the existing runtime already has the required authorities:
+
+- AFK welcome runs as a scoped shared-TaskEngine effect;
+- command and decision work use the interactive pool;
+- welcome/event work uses the general pool;
+- message-hook decision/event ordering domains are distinct;
+- AFK transition is owner-global;
+- Telegram message delivery still delegates through the canonical message service;
+- the canonical service still owns the shared RPC executor and hierarchical limiter.
+
+R5 therefore adds acceptance/regression coverage and benchmarks only.
+
+It does **not**:
+
+- introduce another TaskEngine;
+- introduce another RPC executor;
+- introduce another limiter;
+- introduce an AFK retry loop;
+- alter FloodWait penalty scope;
+- weaken non-idempotent mutation retry safety.
+
+#### R5.2 Short limiter wait acceptance
+
+`TestR5WelcomeShortLimiterWaitStaysOffCommandBarrier` uses:
+
+- a real shared TaskEngine;
+- active AFK state;
+- the R4 asynchronous welcome path;
+- a real `RPCExecutor`;
+- a limiter that rejects the first reservation for 25 ms;
+- a blocking test sleeper.
+
+The test freezes the welcome effect *inside* the RPC limiter wait and proves the owner command handler can still start.
+
+After releasing the sleeper it additionally requires:
+
+```text
+limiter Reserve #1 -> denied, retry_after=25ms
+sleep
+limiter Reserve #2 -> allowed
+physical RPC -> exactly once
+```
+
+This preserves the existing “wait then re-reserve” safety rule instead of bypassing the limiter.
+
+#### R5.3 Above-threshold server FloodWait acceptance
+
+`TestR5WelcomeServerFloodWaitPenalizesSharedLimiterWithoutHoldingCommandStart` injects:
+
+```text
+FLOOD_WAIT_30
+```
+
+through the real `RPCExecutor` path used by the test welcome service.
+
+Required properties:
+
+- command handler starts independently of welcome completion;
+- physical welcome RPC attempt count is exactly one;
+- no inline sleeper call occurs because 30 seconds exceeds the 5-second inline threshold;
+- the shared limiter receives a 30-second penalty;
+- the result is a structured rate-limit error;
+- committed inactive AFK state is unchanged.
+
+The executor audit confirmed that server FloodWait classification/penalization occurs before transient non-idempotent ambiguity handling.
+
+Therefore `messages.sendMessage` keeps FloodWait semantics without gaining an unsafe automatic retry.
+
+#### R5.4 SQLite contention is intentionally still an L1 dependency
+
+`TestR5SQLiteContentionRemainsInsideRequiredTransitionBarrier` uses a file-backed SQLite database and holds a `BEGIN IMMEDIATE` writer lock while an AFK-active command arrives.
+
+The required behavior is deliberately:
+
+```text
+SQLite AFK=false write blocked
+    -> AFK transition not committed
+    -> command handler must NOT start
+
+writer lock released
+    -> AFK=false persists
+    -> inactive state publishes
+    -> command may start
+```
+
+This distinguishes required durability latency from the cosmetic welcome latency removed by R4.
+
+R5 does not convert AFK persistence to write-behind and does not add an AFK-specific persistence retry path.
+
+#### R5.5 Event backlog and same-chat cross-plugin pressure
+
+`TestR5GeneralEventBacklogAndCrossPluginPressureDoNotBlockDecision` constrains the real TaskEngine general pool to two workers.
+
+Two different plugin event owners in the same chat are then blocked concurrently:
+
+```text
+msg-event:plugin:r5-event-a:chat:<id>
+msg-event:plugin:r5-event-b:chat:<id>
+```
+
+Both general workers remain occupied.
+
+An AFK-active owner command must still:
+
+- run its AFK decision on the interactive pool;
+- commit AFK inactive;
+- start the command handler.
+
+This proves both:
+
+1. event backlog does not consume the interactive decision lane; and
+2. same-chat events from different plugin owners do not serialize solely because the chat ID is equal.
+
+#### R5.6 Two-chat simultaneous AFK transition
+
+`TestR5SimultaneousTwoChatAFKTransitionProducesSingleWelcome` blocks the first AFK persistence transition and sends a second manual outgoing message in another chat while the first is still active.
+
+Both decision tasks are admitted, but owner-global AFK ordering plus the local transition fence preserve one state transition.
+
+Required outcome:
+
+```text
+two chats race while AFK active
+    -> exactly one persisted AFK disable
+    -> maximum concurrent persistence transition = 1
+    -> exactly one welcome effect
+    -> no late duplicate welcome
+```
+
+This covers the owner-global transition semantics under real TaskEngine concurrency rather than only checking ordering-key strings.
+
+#### R5.7 L1 vs L2 command-output acceptance
+
+`TestR5CommandStartAndOutputCompletionAreSeparateLatencyStages` blocks the command's own Telegram `Reply` operation after the command handler has started.
+
+The test proves:
+
+```text
+handler started
+    !=
+Telegram output completed
+```
+
+and records both durations separately.
+
+This prevents future latency reports from conflating:
+
+- command admission/start latency; and
+- Telegram RPC/output latency.
+
+A global/shared limiter penalty can still delay L2. That remains legitimate RPC-layer behavior and is not hidden as an AFK decision delay.
+
+#### R5.8 Quantitative latency benchmarks
+
+R5 adds:
+
+`BenchmarkR5InactiveAFKCommandLatencyStages`
+
+This runs a real dispatcher + TaskEngine + inactive AFK plugin and reports separately:
+
+- `l1-p50-ns`;
+- `l1-p95-ns`;
+- `l1-p99-ns`;
+- `l2-p50-ns`;
+- `l2-p95-ns`;
+- `l2-p99-ns`.
+
+It proves the inactive-AFK path continues to skip AFK decision admission while still measuring the full command execution path.
+
+R5 also adds:
+
+`BenchmarkR5ActiveToInactiveCommandStartL1`
+
+Each untimed setup re-activates AFK, then the timed operation sends an ordinary owner command that must auto-transition inactive.
+
+It reports:
+
+- `l1-p50-ns`;
+- `l1-p95-ns`;
+- `l1-p99-ns`.
+
+The benchmark intentionally leaves the synchronous SQLite transition in L1 because that persistence is a correctness dependency.
+
+TaskEngine benchmark retention is bounded to 32 terminal records so repeated benchmark iterations do not accumulate unbounded execution closures/results.
+
+#### R5.9 RPC safety coverage reused by the gate
+
+R5 intentionally reuses the existing executor/limiter regressions rather than cloning policy logic into AFK.
+
+Important existing tests included in the R5 gate:
+
+- `TestRPCExecutor_LimiterWaitReReservesBeforeRPC`;
+- `TestRPCExecutor_InteractiveShortLimiterWaitRemainsInline`;
+- `TestRPCExecutor_Case10_FloodWaitAboveThreshold`;
+- `TestRPCExecutor_Case13_NonIdempotentAmbiguousNoRetry`;
+- `TestRPCExecutor_DurableContextYieldsShortFloodWait`;
+- `TestHierarchicalRPCLimiter_PenaltyOverflowFailsClosedWithoutDroppingFloodWait`.
+
+Together with the new AFK/dispatcher tests these prove the split changes *where latency is paid*, not who owns Telegram retry/rate-limit policy.
+
+#### R5.10 Architecture fence
+
+R5 adds:
+
+`internal/architecture/afk_latency_r5_test.go`
+
+The fence requires AFK welcome delivery to continue delegating through canonical message service and rejects private constructions/usages inside the welcome path such as:
+
+- `NewRPCExecutor`;
+- `NewHierarchicalRPCLimiter`;
+- private `RetryPolicy`;
+- `time.Sleep`;
+- raw goroutine execution;
+- `scope.Go` as a welcome executor.
+
+The AFK module must continue embedding/delegating through `core.MessageServicer`.
+
+#### R5.11 Formatting discipline
+
+Before the R5 Go-changing commit, all three added Go files were run through `gofmt -w`.
+
+The generated contents were unchanged by gofmt.
+
+A whitespace-error diff check on those files produced no whitespace diagnostics.
+
+The authoritative checkout still must run `gofmt -w .` and `git diff --check` as part of the execution gate.
+
+CI was not inspected or polled.
+
+#### R5.12 Required execution and benchmark gate
 
 Run on the real `test-next` checkout:
 
 ```bash
-go test ./internal/core -run 'TestNormalizeMessageHookExecutionPolicy'
+git pull
 
 go test ./internal/telegram -run \
-    '^TestR[01234]|TestDispatcher_AFK_EndToEnd'
+    '^TestR5|TestRPCExecutor_(LimiterWaitReReservesBeforeRPC|InteractiveShortLimiterWaitRemainsInline|Case10_FloodWaitAboveThreshold|Case13_NonIdempotentAmbiguousNoRetry|DurableContextYieldsShortFloodWait)|TestHierarchicalRPCLimiter_PenaltyOverflowFailsClosedWithoutDroppingFloodWait'
 
-go test ./plugins/afk -run \
-    'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|OutgoingTransitionDoesNotWaitForWelcome|ConcurrentOutgoingAtomicCAS|WelcomeAfterOutgoingGroupMessage|WelcomeInSavedMessagesWhenPrivatePeerCannotResolve|DefaultWelcomeRemainsVisible)'
-
-go test ./internal/architecture -run '^TestR4|^TestR3|^TestP2AHook'
+go test ./internal/architecture -run '^TestR5|^TestR4|^TestR3|^TestP2AHook'
 
 go test ./internal/core ./internal/plugin ./internal/telegram ./plugins/afk ./internal/architecture
 
 go test -race ./internal/telegram -run \
-    '^TestR[01234]|TestDispatcher_AFK_EndToEnd'
+    '^TestR5|TestRPCExecutor_(LimiterWaitReReservesBeforeRPC|InteractiveShortLimiterWaitRemainsInline|Case10_FloodWaitAboveThreshold|Case13_NonIdempotentAmbiguousNoRetry)'
 
-go test -race ./plugins/afk -run \
-    'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|OutgoingTransitionDoesNotWaitForWelcome|ConcurrentOutgoingAtomicCAS)'
+go test ./internal/telegram -run '^$' -bench '^BenchmarkR5' -benchmem -count=3
 
 gofmt -w .
 git diff --check
 ```
 
-Important expected outcomes:
+Record all three benchmark runs in the R5 section before closure.
+
+At minimum preserve:
+
+- inactive AFK L1 p50/p95/p99;
+- inactive command L2 p50/p95/p99;
+- active -> inactive L1 p50/p95/p99;
+- allocs/op and B/op for both benchmarks.
+
+Do not define a nanosecond pass/fail threshold from one host.
+
+The hard acceptance gates are semantic:
 
 ```text
-active AFK + ordinary outgoing command
-    -> persistence + published inactive state complete first
-    -> command starts without waiting for welcome completion
+welcome limiter wait / FloodWait
+    cannot hold command-start barrier
 
-blocked/rate-limited welcome
-    -> command still starts
-    -> dispatcher may return
-    -> AFK remains inactive
+SQLite persistence contention
+    must still hold command-start barrier until durable transition commits
 
-outgoing transition from different chats
-    -> same AFK plugin-global ordering domain
+event backlog / cross-plugin event pressure
+    cannot block interactive AFK decision eligibility
 
-concurrent outgoing transitions
-    -> exactly one successful state transition
-    -> no duplicate welcome
+two-chat AFK transition
+    remains single-transition / single-welcome
 
-disable/re-enable while welcome is running
-    -> old effect cancelled
-    -> new plugin generation differs from old generation
+shared RPC limiter
+    remains penalized and authoritative
+
+non-idempotent transient RPC safety
+    remains no-automatic-retry
+
+no private AFK retry/executor path exists
 ```
 
-If a failure is attributable to R4, repair R4 production/tests before starting R5.
+#### R5 gate
 
-Do not change shared RPC limiter/FloodWait semantics as an R4 repair.
+Inactive AFK L1 benchmark: **implemented, measurement pending**.
 
-Do not move the welcome effect to raw `go`/unmanaged `scope.Go` execution.
+Active -> inactive L1 benchmark: **implemented, measurement pending**.
 
-Do not weaken DB-first persistence.
+L1/L2 separation acceptance: **implemented**.
 
-#### R4 gate
+SQLite contention acceptance: **implemented**.
 
-DB-first synchronous transition: **preserved**.
+Short limiter-wait acceptance: **implemented**.
 
-Owner-global AFK transition ordering: **implemented**.
+Above-threshold FloodWait acceptance: **implemented**.
 
-Shared scoped TaskEngine welcome effect: **implemented**.
+Event backlog/cross-plugin pressure acceptance: **implemented**.
 
-Welcome completion removed from command-start barrier: **implemented**.
+Two-chat transition acceptance: **implemented**.
 
-Welcome failure state isolation: **implemented**.
-
-Reload/generation cancellation fence: **implemented**.
-
-Architecture fence: **implemented**.
+Shared RPC authority architecture fence: **implemented**.
 
 Local execution/race gate: **pending user checkout verification**.
 
-R5 must not start until this execution gate passes.
+Benchmark measurements: **pending user checkout verification**.
 
-### R5 — FloodWait and latency acceptance
-
-Status: **PENDING**
-
-Purpose:
-
-Prove the redesign solves the original latency coupling without weakening RPC safety.
-
-Tests/benchmarks:
-
-- inactive AFK command latency;
-- active -> inactive transition latency;
-- transition under SQLite contention;
-- welcome with short limiter wait;
-- welcome with server FloodWait above inline threshold;
-- event backlog followed by decision arrival;
-- same-chat cross-plugin event pressure;
-- two-chat simultaneous AFK transition;
-- command handler start vs command Telegram output completion.
-
-Record separate L1 and L2 measurements.
-
-Gate:
-
-- welcome FloodWait cannot hold command-start barrier;
-- shared limiter remains authoritative;
-- no second retry path exists.
+R6 must not start until the R5 execution gate and benchmark recording pass.
 
 ### R6 — Audit/migrate Blacklist, PMPermit, Filters
 
