@@ -63,6 +63,7 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 					Peers:      core.MessagePeerPrivate,
 				}},
 			},
+			StateGate: p.MessageHookInterested,
 			Execution: core.MessageHookExecutionPolicy{
 				FailurePolicy: core.MessageHookFailClosed,
 				Ordering:      core.MessageHookOrderingChat,
@@ -79,7 +80,8 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 					Commands:   core.MessagePlain,
 				}},
 			},
-			FastGate: p.outgoingFastGate,
+			FastGate:  p.outgoingFastGate,
+			StateGate: p.MessageHookInterested,
 			Execution: core.MessageHookExecutionPolicy{
 				FailurePolicy: core.MessageHookFailOpen,
 				Ordering:      core.MessageHookOrderingChat,

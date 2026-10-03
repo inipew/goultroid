@@ -19,6 +19,7 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 				RequireText: true,
 			}},
 		},
+		StateGate: p.MessageHookInterested,
 		Execution: core.MessageHookExecutionPolicy{
 			FailurePolicy: core.MessageHookFailOpen,
 			Ordering:      core.MessageHookOrderingChat,

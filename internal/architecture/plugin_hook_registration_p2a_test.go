@@ -74,14 +74,14 @@ func TestP2AHookRegistrarUsesSingleRegistrationContract(t *testing.T) {
 	if strings.Contains(body, "registrar.(") {
 		t.Fatal("registerMessageHook still capability-probes the registrar")
 	}
-	if strings.Count(body, "registrar.RegisterMessageHook(") != 3 {
-		t.Fatal("raw, canonical, and split canonical registration must converge on the single registrar contract")
+	if strings.Count(body, "registrar.RegisterMessageHook(") != 1 {
+		t.Fatal("plugin manager must expose exactly one explicit registration path")
 	}
 	if !strings.Contains(body, "normalizeCanonicalMessageHookRegistration(") {
 		t.Fatal("canonical hook registrations must normalize through one execution-policy path")
 	}
 	if !strings.Contains(body, "len(registrations) == 0") {
-		t.Fatal("split canonical registrations must fail fast when empty")
+		t.Fatal("explicit message-hook registrations must fail fast when empty")
 	}
 }
 
