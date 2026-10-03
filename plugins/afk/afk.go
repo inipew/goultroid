@@ -270,6 +270,26 @@ func (p *Plugin) loadState(ctx context.Context) error {
 }
 
 func (p *Plugin) MessageHookPriority() int { return 50 }
+
+func (p *Plugin) outgoingFastGate(facts core.MessageHookFacts) bool {
+	st := p.state.Load()
+	if st == nil || !st.isAFK {
+		return false
+	}
+	if facts.Origin == core.ExecutionAutomation {
+		return false
+	}
+	if facts.IsCommand && strings.EqualFold(facts.CommandName, "afk") {
+		return false
+	}
+	return true
+}
+
+func (p *Plugin) incomingFastGate(core.MessageHookFacts) bool {
+	st := p.state.Load()
+	return st != nil && st.isAFK && p.AutoReplyEnabled()
+}
+
 func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 	return []core.MessageHookRegistration{
 		{
@@ -278,7 +298,8 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 				Lane:      core.MessageHookDecision,
 				Interests: []core.MessageHookInterest{{Directions: core.MessageDirectionOutgoing, Peers: core.MessagePeerStable}},
 			},
-			Handler: p.HandleMessageEvent,
+			FastGate: p.outgoingFastGate,
+			Handler:  p.HandleMessageEvent,
 		},
 		{
 			Priority: p.MessageHookPriority(),
@@ -290,7 +311,8 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 					{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireReply: true},
 				},
 			},
-			Handler: p.HandleMessageEvent,
+			FastGate: p.incomingFastGate,
+			Handler:  p.HandleMessageEvent,
 		},
 	}
 }

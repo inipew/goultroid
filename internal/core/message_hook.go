@@ -16,6 +16,23 @@ type RawMessageHookHandler = func(ctx context.Context, e tg.Entities, msg *tg.Me
 // CanonicalMessageHookHandler receives the normalized, transport-light message envelope.
 type CanonicalMessageHookHandler = func(ctx context.Context, message *MessageEnvelope) error
 
+// MessageHookFacts is the immutable, transport-neutral fact set available to a
+// pure fast gate before TaskEngine admission. Keep this intentionally small:
+// fields must already be known at dispatcher ingress and must not expose I/O
+// capabilities or raw Telegram objects.
+type MessageHookFacts struct {
+	ChatID      int64
+	Outgoing    bool
+	IsCommand   bool
+	CommandName string
+	Origin      ExecutionSource
+}
+
+// MessageHookFastGate decides whether a structurally routed message is worth
+// admitting to TaskEngine. Implementations must be pure, bounded, and
+// non-blocking; a panic is treated as fail-open by the dispatcher.
+type MessageHookFastGate func(MessageHookFacts) bool
+
 // MessageHookRegistration is the single registration contract shared by the
 // plugin manager and message dispatcher. Routing/state/scope are data rather
 // than registrar capability interfaces.
@@ -26,6 +43,7 @@ type MessageHookRegistration struct {
 	Scope         tasks.ScopeIdentity
 	Priority      int
 	Routing       MessageHookRouting
+	FastGate      MessageHookFastGate
 	StateGate     func(int64) bool
 	Execution     MessageHookExecutionPolicy
 	Handler       CanonicalMessageHookHandler

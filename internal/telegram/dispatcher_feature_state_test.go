@@ -66,3 +66,35 @@ func TestDispatcher_StateGatePanicFailsOpen(t *testing.T) {
 		t.Fatal("panicking state gate must fail open")
 	}
 }
+
+
+func TestDispatcher_FastGatePanicFailsOpen(t *testing.T) {
+	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
+	registered := prioritizedHandler{
+		id:       2,
+		fastGate: func(core.MessageHookFacts) bool { panic("broken fast gate") },
+	}
+	if !d.messageHookFastInterested(registered, core.MessageHookFacts{ChatID: 7}) {
+		t.Fatal("panicking fast gate must fail open")
+	}
+}
+
+func TestMessageHookFactsCarryIngressOriginAndCommand(t *testing.T) {
+	message := &core.MessageEnvelope{
+		ChatID:      42,
+		Outgoing:    true,
+		IsCommand:   true,
+		CommandName: "afk",
+	}
+	decision := core.NewMessageDecision(core.ExecutionAutomation)
+	ctx := core.WithMessageDecision(context.Background(), decision)
+
+	facts := messageHookFacts(ctx, message)
+	if facts.ChatID != 42 ||
+		!facts.Outgoing ||
+		!facts.IsCommand ||
+		facts.CommandName != "afk" ||
+		facts.Origin != core.ExecutionAutomation {
+		t.Fatalf("unexpected fast-gate facts: %+v", facts)
+	}
+}

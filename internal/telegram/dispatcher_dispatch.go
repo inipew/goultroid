@@ -304,8 +304,9 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 	chatID := message.ChatID
 	decisionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	facts := messageHookFacts(decisionCtx, message)
 	for _, registered := range handlers {
-		if !d.messageHookStateInterested(registered, chatID) {
+		if !d.messageHookFastInterested(registered, facts) {
 			continue
 		}
 		execution := messageHookExecutionPolicy(registered)
@@ -402,9 +403,10 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 		return
 	}
 	chatID := message.ChatID
+	facts := messageHookFacts(ctx, message)
 	for _, registered := range handlers {
 		registered := registered
-		if !d.messageHookStateInterested(registered, chatID) {
+		if !d.messageHookFastInterested(registered, facts) {
 			continue
 		}
 		execution := messageHookExecutionPolicy(registered)

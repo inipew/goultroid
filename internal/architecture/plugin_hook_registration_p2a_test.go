@@ -98,6 +98,7 @@ func TestP2AMessageHookRegistrationContractIsShared(t *testing.T) {
 		"Scope":         {},
 		"Priority":      {},
 		"Routing":       {},
+		"FastGate":      {},
 		"StateGate":     {},
 		"Execution":     {},
 		"Handler":       {},

@@ -46,6 +46,7 @@ type prioritizedHandler struct {
 	priority         HandlerPriority
 	failurePolicy    HandlerFailurePolicy
 	routing          core.MessageHookRouting
+	fastGate         core.MessageHookFastGate
 	stateGate        func(int64) bool
 	execution        core.MessageHookExecutionPolicy
 	handler          MessageHandler
@@ -122,6 +123,7 @@ func (d *Dispatcher) RegisterMessageHook(registration core.MessageHookRegistrati
 		registration.Priority,
 		registration.Scope,
 		routing,
+		registration.FastGate,
 		registration.StateGate,
 		execution,
 		registration.RawHandler,
@@ -205,13 +207,14 @@ func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.Sco
 		d.logger.Warn("invalid compatibility message hook execution policy", zap.Error(err))
 		return func() {}
 	}
-	return d.addMessageHandlerWithExecution(priority, scope, routing, stateGate, execution, h, canonical)
+	return d.addMessageHandlerWithExecution(priority, scope, routing, nil, stateGate, execution, h, canonical)
 }
 
 func (d *Dispatcher) addMessageHandlerWithExecution(
 	priority HandlerPriority,
 	scope tasks.ScopeIdentity,
 	routing core.MessageHookRouting,
+	fastGate core.MessageHookFastGate,
 	stateGate func(int64) bool,
 	execution core.MessageHookExecutionPolicy,
 	h MessageHandler,
@@ -224,7 +227,7 @@ func (d *Dispatcher) addMessageHandlerWithExecution(
 	d.nextHandlerID++
 	id := d.nextHandlerID
 	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{
-		id: id, priority: priority, failurePolicy: execution.FailurePolicy, routing: routing, stateGate: stateGate, execution: execution, handler: h, canonicalHandler: canonical, scope: scope,
+		id: id, priority: priority, failurePolicy: execution.FailurePolicy, routing: routing, fastGate: fastGate, stateGate: stateGate, execution: execution, handler: h, canonicalHandler: canonical, scope: scope,
 	})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority

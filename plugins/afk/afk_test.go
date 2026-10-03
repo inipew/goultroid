@@ -1265,3 +1265,52 @@ func TestAFKWelcomeDeleteRequiresManagedScope(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 }
+
+
+func TestAFKPlugin_FastGatesUseOnlyPublishedStateAndFacts(t *testing.T) {
+	p := New(nil, 1001, nil)
+	registrations := p.MessageHookRegistrations()
+	if len(registrations) != 2 {
+		t.Fatalf("registrations=%d, want 2", len(registrations))
+	}
+	outgoing := registrations[0].FastGate
+	incoming := registrations[1].FastGate
+	if outgoing == nil || incoming == nil {
+		t.Fatal("AFK registrations must expose fast gates")
+	}
+
+	manualOutgoing := core.MessageHookFacts{
+		ChatID:   2002,
+		Outgoing: true,
+		Origin:   core.ExecutionInteractive,
+	}
+	if outgoing(manualOutgoing) {
+		t.Fatal("inactive AFK admitted outgoing transition")
+	}
+
+	p.state.Store(&afkState{isAFK: true, reason: "busy", since: time.Now().UTC()})
+	if !outgoing(manualOutgoing) {
+		t.Fatal("active AFK rejected manual outgoing transition")
+	}
+
+	automation := manualOutgoing
+	automation.Origin = core.ExecutionAutomation
+	if outgoing(automation) {
+		t.Fatal("automation origin admitted AFK transition")
+	}
+
+	afkCommand := manualOutgoing
+	afkCommand.IsCommand = true
+	afkCommand.CommandName = "AfK"
+	if outgoing(afkCommand) {
+		t.Fatal("AFK command admitted auto-transition")
+	}
+
+	if !incoming(core.MessageHookFacts{ChatID: 2002}) {
+		t.Fatal("active AFK with auto-reply enabled rejected incoming event")
+	}
+	p.SetAutoReply(false)
+	if incoming(core.MessageHookFacts{ChatID: 2002}) {
+		t.Fatal("disabled AFK auto-reply admitted incoming event")
+	}
+}

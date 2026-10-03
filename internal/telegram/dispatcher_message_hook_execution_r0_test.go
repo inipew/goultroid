@@ -125,7 +125,7 @@ func (c *r0RecordingTaskClient) reset() {
 	c.mu.Unlock()
 }
 
-func TestR0InactiveAFKStillAdmitsDecisionTask(t *testing.T) {
+func TestR3InactiveAFKSkipsDecisionBeforeTaskAdmission(t *testing.T) {
 	const ownerID int64 = 1001
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, core.NewPermissions(ownerID, nil), nil, zap.NewNop())
@@ -137,6 +137,7 @@ func TestR0InactiveAFKStillAdmitsDecisionTask(t *testing.T) {
 		botSentIDs: make(map[int]bool),
 		messages:   make(map[int]*tg.Message),
 	}
+	dispatcher.SetService(svc)
 	mgr := plugin.NewManager(router)
 	mgr.SetHookRegistrar(dispatcher)
 	afkPlugin := afk.New(nil, ownerID, func() core.TelegramServicer { return svc })
@@ -156,22 +157,8 @@ func TestR0InactiveAFKStillAdmitsDecisionTask(t *testing.T) {
 		t.Fatalf("dispatch outgoing message: %v", err)
 	}
 
-	specs := tasksClient.snapshot()
-	if len(specs) != 1 {
-		t.Fatalf("TaskEngine submissions=%d, want exactly one AFK decision admission", len(specs))
-	}
-	spec := specs[0]
-	if !strings.HasPrefix(string(spec.ID), "decision:") {
-		t.Fatalf("task id=%q, want decision task", spec.ID)
-	}
-	if spec.Scope.Owner != "plugin:afk" || spec.QuotaOwner != tasks.OwnerID("plugin:afk") {
-		t.Fatalf("AFK task ownership mismatch: scope=%+v quota=%q", spec.Scope, spec.QuotaOwner)
-	}
-	if spec.Pool != tasks.PoolID("interactive") || spec.Class != tasks.PriorityInteractive {
-		t.Fatalf("AFK inactive task entered unexpected lane: pool=%q class=%q", spec.Pool, spec.Class)
-	}
-	if spec.OrderingKey != "msg-decision:chat:2002" {
-		t.Fatalf("AFK inactive ordering key=%q, want decision-domain chat key", spec.OrderingKey)
+	if specs := tasksClient.snapshot(); len(specs) != 0 {
+		t.Fatalf("inactive AFK TaskEngine submissions=%d, want 0: %+v", len(specs), specs)
 	}
 }
 
