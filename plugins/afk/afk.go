@@ -354,7 +354,8 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 			},
 			FastGate: p.outgoingFastGate,
 			Execution: core.MessageHookExecutionPolicy{
-				Ordering: core.MessageHookOrderingPlugin,
+				FailurePolicy: core.MessageHookFailOpen,
+				Ordering:      core.MessageHookOrderingPlugin,
 			},
 			Handler: p.HandleMessageEvent,
 		},
@@ -369,7 +370,10 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 				},
 			},
 			FastGate: p.incomingFastGate,
-			Handler:  p.HandleMessageEvent,
+			Execution: core.MessageHookExecutionPolicy{
+				FailurePolicy: core.MessageHookFailOpen,
+			},
+			Handler: p.HandleMessageEvent,
 		},
 	}
 }

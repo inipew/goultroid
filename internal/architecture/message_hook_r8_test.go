@@ -86,3 +86,44 @@ func TestR8StatefulProductionHooksDeclareStateGateInRegistration(t *testing.T) {
 		}
 	}
 }
+
+func TestR8ProductionDecisionHookAllowlist(t *testing.T) {
+	root := repositoryRoot(t)
+	allowed := map[string]struct{}{
+		"plugins/afk/afk.go":                         {},
+		"plugins/blacklist/message_hook_r6.go":       {},
+		"plugins/filters/message_hook_r6.go":         {},
+		"plugins/pmpermit/message_hook_r6.go":        {},
+	}
+
+	matches, err := filepath.Glob(filepath.Join(root, "plugins", "*", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range matches {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(raw)
+		if !strings.Contains(source, "MessageHookRegistrations()") ||
+			!strings.Contains(source, "MessageHookDecision") {
+			continue
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rel = filepath.ToSlash(rel)
+		if _, ok := allowed[rel]; !ok {
+			t.Fatalf("new production decision-hook registration requires explicit R8 review: %s", rel)
+		}
+		if !strings.Contains(source, "Execution: core.MessageHookExecutionPolicy") ||
+			!strings.Contains(source, "FailurePolicy:") {
+			t.Fatalf("decision-hook registration in %s does not declare explicit execution/failure policy", rel)
+		}
+	}
+}
