@@ -68,14 +68,18 @@ func TestR4AFKTransitionAndWelcomeEffectBoundaries(t *testing.T) {
 	effectBody := source[effectStart : effectStart+effectEnd]
 	for _, required := range []string{
 		"client.Submit(",
-		"tasks.PoolID("general")",
+		"tasks.PoolID(\"general\")",
 		"tasks.PriorityNormal",
 		"afkWelcomeEffectTimeout",
 		"Scope:            p.taskScope()",
+		"Input: fmt.Sprintf(",
 	} {
 		if !strings.Contains(effectBody, required) {
 			t.Errorf("AFK welcome effect submission missing %q", required)
 		}
+	}
+	if strings.Contains(effectBody, "Input:            effect") {
+		t.Fatal("AFK welcome effect must not submit unsupported struct payloads to TaskEngine")
 	}
 	if strings.Contains(effectBody, "scope.Go(") {
 		t.Fatal("AFK welcome effect must use shared TaskEngine, not Scope.Go")

@@ -649,7 +649,14 @@ func (p *Plugin) submitWelcomeEffect(
 		Class:            tasks.PriorityNormal,
 		OrderingKey:      fmt.Sprintf("afk-effect:%d", p.ownerID),
 		ExecutionTimeout: afkWelcomeEffectTimeout,
-		Input:            effect,
+		Input: fmt.Sprintf(
+			"%d:%d:%d:%d:%s",
+			effect.ChatID,
+			effect.Peer.Kind,
+			effect.Peer.ID,
+			effect.Peer.AccessHash,
+			effect.Duration,
+		),
 		Handler: func(taskCtx context.Context) error {
 			return p.sendWelcomeEffect(taskCtx, effect)
 		},
