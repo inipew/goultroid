@@ -238,7 +238,6 @@ func (s *Service) ApplyAutoApproveOutgoingEffect(
 	return nil
 }
 
-
 func mergeWarnIDs(groups ...[]int) []int {
 	seen := make(map[int]struct{})
 	var merged []int

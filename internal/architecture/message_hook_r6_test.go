@@ -124,6 +124,24 @@ func TestR6PMPermitDecisionAndTelegramEffectBoundary(t *testing.T) {
 		!strings.Contains(serviceSource, "ApplyAutoApproveOutgoingEffect") {
 		t.Fatal("pmpermit asynchronous effect API missing")
 	}
+	if strings.Contains(prepare, "clearWarnIDs(") {
+		t.Fatal("pmpermit auto-approve state phase clears warning cleanup authority before Telegram effect succeeds")
+	}
+	applyAutoApprove := r6FunctionBody(
+		t,
+		serviceSource,
+		"func (s *Service) ApplyAutoApproveOutgoingEffect",
+		"func mergeWarnIDs",
+	)
+	for _, required := range []string{
+		"mergeWarnIDs(effect.WarnIDs, s.getWarnIDs(effect.UserID))",
+		"svc.DeleteMessage(",
+		"s.clearWarnIDs(effect.UserID)",
+	} {
+		if !strings.Contains(applyAutoApprove, required) {
+			t.Fatalf("pmpermit auto-approve effect missing cleanup authority invariant %q", required)
+		}
+	}
 
 	module := r6Read(t, root, "plugins/pmpermit/module.go")
 	if !strings.Contains(module, "plugin.CapTasks") {

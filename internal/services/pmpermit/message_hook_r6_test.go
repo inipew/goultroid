@@ -135,7 +135,6 @@ func TestR6AutoApproveCommitsStateBeforeTelegramCleanupAndFencesStaleEffect(t *t
 	}
 }
 
-
 type r6DeleteFailTelegram struct {
 	mockTelegram
 	deleteErr error
