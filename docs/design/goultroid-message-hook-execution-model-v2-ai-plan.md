@@ -847,7 +847,7 @@ Each phase begins by refreshing and recording current `test-next` HEAD.
 
 ### R0 — Baseline, reproducer, and invariant freeze
 
-Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+Status: **CLOSED — audit, regression baseline, focused tests, and focused race tests passed**
 
 Phase baseline:
 
@@ -957,64 +957,199 @@ Existing tests that also form part of the R0 evidence:
 
 #### R0.4 Formatting and verification state
 
-Before the Go-changing R0 commit, the generated test file was processed with the required command:
+Before the Go-changing R0 commit, the generated test file was processed with:
 
 ```bash
 gofmt -w .
 ```
 
-A staged whitespace check equivalent to `git diff --check` also passed in the available working directory.
+The user then executed the required R0 gate on the real `test-next` checkout:
 
-This tool runtime does **not** expose a full Goultroid checkout and direct shell clone/network access is unavailable. Therefore focused package execution could not honestly be performed here without using CI, and CI inspection/polling is explicitly forbidden by this plan.
-
-Do not claim the R0 tests have executed successfully yet.
-
-Before starting R1 in an executable checkout, run at minimum:
-
-```bash
+```text
 go test ./internal/telegram -run '^TestR0'
+ok   github.com/inipew/goultroid/internal/telegram  0.123s
+
 go test -race ./internal/telegram -run '^TestR0'
+ok   github.com/inipew/goultroid/internal/telegram  1.297s
+
 go test ./plugins/afk -run 'TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder'
+ok   github.com/inipew/goultroid/plugins/afk  0.106s
+
 gofmt -w .
 git diff --check
+# clean
 ```
 
-If any R0 test does not compile or does not reproduce the recorded baseline, repair the R0 test fixture first. Do **not** start R1 by changing production behavior to make a broken baseline test pass.
+CI was not inspected or polled.
 
 #### R0 gate
 
 Audit/inventory: **complete**.
 
-Regression code: **implemented**.
+Regression code: **complete**.
 
-Execution gate: **pending local focused-test execution**.
+Focused execution/race gate: **passed**.
 
-R1 must not start until the focused R0 execution gate above passes.
+R0 is **CLOSED**.
 
 ### R1 — Introduce explicit ordering domains
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `a34ebe0dffdf826736b16aba565c00b800fc3fb6`
+- Phase-start commit: `docs(design): record r0 message hook baseline`
+- Implementation commit: `67aa5624a4fbafd005e11b95cd873690b90f2fb6` — `refactor(telegram): isolate message hook ordering domains`
+- CI inspected/polled: **no**
 
 Purpose:
 
 Eliminate cross-lane ordering-key collision before moving effects.
 
-Tasks:
+#### R1.1 Implemented ordering domains
 
-- introduce centralized ordering-key/domain helpers or an equivalent policy representation;
-- separate decision/barrier ordering from event/observability ordering;
-- preserve same-domain ordering guarantees;
-- migrate dispatcher-created message-hook task keys;
-- update all tests that assert literal ordering keys;
-- add regression proving a stalled event task does not block a same-chat decision task;
-- verify owner quotas/resources remain unchanged.
+Dispatcher-created message-hook ordering now uses centralized helpers in:
 
-Do not move AFK welcome yet.
+`internal/telegram/dispatcher_message_hook_ordering.go`
 
-Gate:
+Decision/barrier tasks use:
 
-- decision and event work cannot contend solely because both use the same chat ID;
-- ordering remains deterministic inside each intended domain.
+```text
+msg-decision:chat:<chatID>
+```
+
+Properties:
+
+- all decision hooks for the same chat retain one shared serialization domain;
+- PMPermit/Blacklist/Filters/AFK decision ordering therefore does not become per-plugin concurrent merely because R1 separates lanes;
+- different chats remain independent;
+- AFK owner-global transition ordering is intentionally **not** introduced in R1 and remains an R4 responsibility.
+
+Event tasks use:
+
+```text
+msg-event:<scope-owner>:chat:<chatID>
+```
+
+For legacy/unscoped handlers:
+
+```text
+msg-event:unscoped:chat:<chatID>
+```
+
+Properties:
+
+- event and decision work for the same chat no longer claim the same global TaskEngine ordering lock;
+- different plugin owners no longer serialize event work solely because they share a chat;
+- events from the same plugin owner and chat remain serialized;
+- lifecycle generation is intentionally not encoded into the ordering key, so two generations of the same plugin owner still represent one side-effect ordering domain while scope cancellation fences stale work.
+
+No TaskEngine/admission-controller implementation was changed.
+
+No worker pool, queue, registry, or RPC path was added.
+
+#### R1.2 Dispatcher changes
+
+`executeDecisionHandlersEnvelope` now assigns:
+
+```go
+OrderingKey: messageHookDecisionOrderingKey(chatID)
+```
+
+`dispatchEventHandlersEnvelope` now assigns:
+
+```go
+OrderingKey: messageHookEventOrderingKey(registered.scope, chatID)
+```
+
+The existing:
+
+- pools;
+- priority classes;
+- quota owners;
+- execution timeouts;
+- handler order;
+- failure policy;
+- state gates;
+- scope/generation cancellation
+
+remain unchanged.
+
+#### R1.3 Test synchronization
+
+R1 updated the R0 baseline test expectations that are intentionally superseded by the new ordering contract:
+
+- inactive AFK still proves an unnecessary decision admission, but now expects `msg-decision:chat:<id>`;
+- the former cross-lane-collision test now proves distinct decision/event domains;
+- different-chat decision ordering still proves AFK's owner-global mismatch remains open for R4.
+
+New file:
+
+`internal/telegram/dispatcher_message_hook_ordering_r1_test.go`
+
+New regression coverage:
+
+- `TestR1MessageHookOrderingDomains`
+  - verifies decision and event prefixes;
+  - verifies plugin-owner isolation for event work;
+  - verifies same owner retains the same key across lifecycle generations;
+  - verifies chat isolation;
+  - verifies deterministic unscoped compatibility domain.
+
+- `TestR1StalledEventOrderingDomainDoesNotBlockDecision`
+  - uses the real admission controller;
+  - dispatches and holds an event ordering lock;
+  - proves a second same-domain event remains ineligible;
+  - proves a same-chat decision with the decision-domain key remains eligible while the event lock is held;
+  - proves the queued event becomes eligible after the first event terminates.
+
+This directly covers the R1 gate instead of merely comparing key strings.
+
+#### R1.4 Formatting state
+
+Before creating the Go-changing R1 commit, the R1 Go sources were processed with:
+
+```bash
+gofmt -w .
+```
+
+A subsequent formatting diff check on those generated Go sources returned no formatting delta.
+
+CI was not inspected or polled.
+
+#### R1.5 Required execution gate
+
+Before R1 is marked CLOSED, run on the real repository checkout:
+
+```bash
+go test ./internal/telegram -run '^TestR[01]'
+go test -race ./internal/telegram -run '^TestR[01]'
+go test ./internal/admission
+gofmt -w .
+git diff --check
+```
+
+Also keep the existing AFK regression green:
+
+```bash
+go test ./plugins/afk -run 'TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder'
+```
+
+If a failure is caused by R1, fix R1 production/tests before starting R2.
+
+Do not weaken/remove admission ordering to make the tests pass.
+
+#### R1 gate
+
+Implementation: **complete**.
+
+Test synchronization: **complete**.
+
+Local execution/race gate: **pending user checkout verification**.
+
+R2 must not start until this execution gate passes.
 
 ### R2 — Canonicalize registration execution policy
 
