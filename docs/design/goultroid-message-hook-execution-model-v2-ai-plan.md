@@ -1389,7 +1389,7 @@ R2 is **CLOSED**.
 
 ### R3 — Add pure fast-gate facts
 
-Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+Status: **CLOSED — focused/full package tests, focused race tests, architecture tests, AFK regression, gofmt, and diff check passed**
 
 Phase baseline:
 
@@ -1579,19 +1579,391 @@ The real checkout gate below must still be run before R3 is marked CLOSED.
 
 CI was not inspected or polled.
 
-#### R3.9 Required execution gate
+#### R3.9 Execution gate result
+
+The user executed the complete R3 gate on the real `test-next` checkout.
+
+The following all passed:
+
+- focused Telegram R0/R1/R2/R3 + state/fast-gate/fact tests;
+- focused AFK fast-gate and outgoing-transition regression;
+- R3/P2-A architecture tests;
+- full `internal/core`, `internal/plugin`, `internal/telegram`, `plugins/afk`, and `internal/architecture` package tests;
+- focused Telegram race tests;
+- focused AFK race tests including concurrent outgoing transition;
+- `gofmt -w .`;
+- `git diff --check`.
+
+Reported package results were all `ok`.
+
+CI was not inspected or polled.
+
+#### R3 gate
+
+Fast-gate fact contract: **complete**.
+
+Pre-admission dispatcher evaluation: **complete**.
+
+Fast-gate panic fail-open: **complete**.
+
+AFK inactive outgoing skip: **complete**.
+
+AFK automation-origin skip: **complete**.
+
+AFK command skip: **complete**.
+
+AFK inactive/auto-reply-disabled incoming skip: **complete**.
+
+Architecture fences: **complete**.
+
+Local execution/race gate: **passed**.
+
+R3 is **CLOSED**.
+
+### R4 — Split AFK transition from presentation effects
+
+Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `bf1c55fba2e5dcd066c968710c1a222e0fa45cd6`
+- Phase-start commit: `docs(design): record r3 fast gate implementation`
+- Main implementation: `bd8e1906df7131ebafbdabad90bd970880d15b30` — `refactor(afk): split transition from welcome effect`
+- Audit hardening: `de53dfc401fe8fd19db146c5d02513db9f66103f` — `fix(afk): harden welcome effect admission`
+- CI inspected/polled: **no**
+
+Purpose:
+
+Make AFK state correctness synchronous while moving welcome-back presentation out of the command-start barrier.
+
+The target invariant is now:
+
+```text
+manual outgoing while AFK active
+    -> AFK transition task
+        -> DB persist inactive
+        -> publish in-memory inactive
+        -> bounded local cleanup
+        -> admit scoped welcome effect
+    -> transition task completes
+    -> downstream command may start
+
+welcome effect
+    -> executes independently on shared TaskEngine
+    -> may still be running / rate-limited / fail
+    -> must never restore AFK active state
+```
+
+#### R4.1 AFK transition remains synchronous and DB-first
+
+`disableAFKLocked` remains the authoritative transition primitive.
+
+Its ordering is unchanged:
+
+```text
+read published AFK state
+    -> persist SetAFK(false)
+    -> only on persistence success publish inactive state
+```
+
+Therefore R4 does not weaken the durable-state invariant.
+
+If persistence fails:
+
+- inactive state is not published;
+- welcome effect is not submitted;
+- downstream processing sees the same fail-open behavior as the existing decision hook policy.
+
+The local `transitionMu` remains in place because explicit `.afk` command transitions are not serialized by the message-hook ordering domain.
+
+#### R4.2 Owner-global AFK transition ordering
+
+R4 adds one explicit execution-policy ordering mode:
+
+```go
+MessageHookOrderingPlugin
+```
+
+For decision hooks this produces:
+
+```text
+msg-decision:<plugin-owner>
+```
+
+AFK therefore uses:
+
+```text
+msg-decision:plugin:afk
+```
+
+instead of:
+
+```text
+msg-decision:chat:<chatID>
+```
+
+This serializes AFK auto-transition decisions across chats for the single owner-scoped AFK plugin instance.
+
+Other hooks retain their existing defaults:
+
+- decision -> chat ordering;
+- event -> plugin + chat ordering.
+
+No dispatcher-global serialization was introduced.
+
+#### R4.3 Welcome delivery is a scoped shared-TaskEngine effect
+
+AFK now implements `PluginContextInitializer`.
+
+During plugin initialization it obtains:
+
+```text
+PluginContext.TaskClient()
+```
+
+which is the existing capability-gated, generation-scoped wrapper over the shared TaskEngine.
+
+The AFK module manifest now declares:
+
+```go
+plugin.CapTasks
+```
+
+No second TaskEngine, worker pool, goroutine runtime, or retry engine was added.
+
+The welcome effect is submitted as:
+
+```text
+pool:             general
+priority:         normal
+ordering:         afk-effect:<ownerID>
+execution timeout: 15s
+scope:            plugin:afk + current generation
+quota owner:      plugin:afk
+```
+
+The effect captures only the minimal presentation facts required after the transition:
+
+- chat ID;
+- canonical `PeerRef`;
+- formatted AFK duration.
+
+It does not retain the full Telegram update or full canonical message envelope.
+
+#### R4.4 TaskEngine admission semantics were explicitly verified
+
+R4 audited the current TaskEngine admission/execution contract before using nested effect submission.
+
+Current semantics are:
+
+```text
+Submit(ctx)
+    -> caller ctx governs admission linearization only
+
+after accepted:
+    -> WorkSpec is retained by TaskEngine
+    -> execution context is derived from TaskEngine root context
+    -> task is cancelled explicitly by TaskEngine lifecycle/scope fences
+```
+
+Therefore finishing the AFK decision context does not automatically cancel an already accepted welcome effect.
+
+This is required for presentation to outlive the synchronous transition barrier safely.
+
+#### R4.5 Welcome payload respects retained-state accounting
+
+The first R4 audit pass found that a struct-valued `WorkSpec.Input` would be rejected by TaskEngine's immutable payload contract.
+
+That was corrected in:
+
+`de53dfc401fe8fd19db146c5d02513db9f66103f`
+
+The effect now supplies a compact immutable accounting string as `Input`.
+
+This satisfies the existing TaskEngine payload contract while the handler closure retains only the small fixed-shape `afkWelcomeEffect`.
+
+Architecture coverage rejects restoring the unsupported struct payload form.
+
+#### R4.6 Transition barrier no longer performs welcome RPC work
+
+The outgoing AFK branch is now limited to:
+
+- defensive bot/automation/`.afk` checks;
+- synchronous AFK transition;
+- bounded cooldown cleanup;
+- cheap TaskEngine effect admission.
+
+It no longer directly performs:
+
+- `SendMessage`;
+- welcome template delivery;
+- network-capable peer resolution;
+- waiting for welcome completion.
+
+Peer resolution and Telegram send happen inside `sendWelcomeEffect`.
+
+If the peer cannot be resolved there, the existing Saved Messages fallback remains.
+
+#### R4.7 Welcome failure cannot roll AFK state back
+
+`sendWelcomeEffect` has no AFK transition mutation.
+
+A send failure, timeout, rate limit, resolver failure/fallback, or lifecycle cancellation therefore cannot set AFK active again.
+
+The state transition is already committed before the effect begins.
+
+This is tested with a simulated `FLOOD_WAIT_30` welcome path.
+
+#### R4.8 Command welcome UX decision
+
+R4 deliberately preserves standalone welcome-back delivery for ordinary outgoing commands other than `.afk`.
+
+The behavior changes from:
+
+```text
+command
+    -> transition
+    -> wait for welcome RPC
+    -> command starts
+```
+
+to:
+
+```text
+command
+    -> transition
+    -> schedule welcome effect
+    -> command starts
+
+welcome
+    -> completes independently
+```
+
+This keeps the existing user-visible welcome behavior while removing it from the correctness/latency barrier.
+
+Exact command-vs-plain presentation deduplication remains available for a later UX refinement if desired; it is not required to prove the execution-model invariant.
+
+#### R4.9 Reload/unload lifecycle fencing
+
+Welcome effects use the scoped TaskClient from `PluginContext`.
+
+The manager already performs:
+
+```text
+Disable / shutdown
+    -> CancelScope(plugin owner + generation)
+    -> detach registrations
+    -> close plugin scope
+```
+
+R4 adds a real regression where:
+
+```text
+welcome effect starts and blocks
+    -> disable AFK plugin
+    -> old generation effect context is cancelled
+    -> re-enable AFK
+    -> new scope generation != old generation
+```
+
+This prevents stale welcome work from silently surviving plugin reload.
+
+The existing `scope.Go` usage for delayed deletion remains only the managed delayed-deletion timer after a successful welcome send. It is not used as the welcome execution engine.
+
+#### R4.10 Tests changed/added
+
+Core:
+
+- `TestNormalizeMessageHookExecutionPolicyPreservesPluginGlobalOrdering`.
+
+Telegram / integration:
+
+- `TestR4AFKCommandStartsBeforeWelcomeRateLimitCompletes`;
+- `TestR4AFKTransitionOrderingIsPluginGlobalAcrossChats`;
+- `TestR4AFKDisableCancelsScopedWelcomeEffect`;
+- AFK end-to-end wiring now shares the same TaskEngine with the plugin manager.
+
+AFK:
+
+- old `TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder` is intentionally superseded by:
+  `TestAFKPlugin_OutgoingTransitionDoesNotWaitForWelcome`;
+- existing concurrent-outgoing test remains the duplicate-welcome guard;
+- existing group/Saved Messages/default-visibility welcome tests now use a test TaskClient so presentation still runs through the effect boundary.
+
+Architecture:
+
+- `TestR4AFKTransitionAndWelcomeEffectBoundaries`
+  fences plugin-global transition ordering, PluginContext TaskClient usage, absence of presentation work in the outgoing barrier, shared general TaskEngine effect submission, bounded execution timeout, supported immutable input, and `CapTasks`.
+
+#### R4.11 R0 baseline intentionally superseded
+
+R0 proved the old defect:
+
+```text
+AFK state already inactive
+AND
+welcome blocked / FloodWait path active
+AND
+command handler has not started
+```
+
+R4 intentionally reverses that invariant.
+
+The replacement regression requires:
+
+```text
+AFK state inactive before command handler starts
+AND
+welcome effect may still be blocked
+AND
+command handler starts anyway
+AND
+welcome failure does not reactivate AFK
+```
+
+#### R4.12 Formatting and audit discipline
+
+Before each R4 Go-changing commit, the changed/generated R4 Go blocks were processed through a formatting workspace using:
+
+```bash
+gofmt -w .
+git diff --check
+```
+
+The post-main-commit source audit found two concrete issues before R4 closure:
+
+1. an unescaped architecture-test string literal;
+2. unsupported struct-valued TaskEngine `Input`.
+
+Both were corrected in `de53dfc401fe8fd19db146c5d02513db9f66103f`.
+
+The authoritative checkout still must run the complete gate below before R4 is marked CLOSED.
+
+CI was not inspected or polled.
+
+#### R4.13 Required execution gate
 
 Run on the real `test-next` checkout:
 
 ```bash
-go test ./internal/telegram -run '^TestR[0123]|TestDispatcher_(StateGate|FastGate)|TestMessageHookFacts'
-go test ./plugins/afk -run 'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|OutgoingTransitionPreservesWelcomeOrder)'
-go test ./internal/architecture -run '^TestR3|^TestP2AHook'
+go test ./internal/core -run 'TestNormalizeMessageHookExecutionPolicy'
+
+go test ./internal/telegram -run \
+    '^TestR[01234]|TestDispatcher_AFK_EndToEnd'
+
+go test ./plugins/afk -run \
+    'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|OutgoingTransitionDoesNotWaitForWelcome|ConcurrentOutgoingAtomicCAS|WelcomeAfterOutgoingGroupMessage|WelcomeInSavedMessagesWhenPrivatePeerCannotResolve|DefaultWelcomeRemainsVisible)'
+
+go test ./internal/architecture -run '^TestR4|^TestR3|^TestP2AHook'
 
 go test ./internal/core ./internal/plugin ./internal/telegram ./plugins/afk ./internal/architecture
 
-go test -race ./internal/telegram -run '^TestR[0123]|TestDispatcher_(StateGate|FastGate)|TestMessageHookFacts'
-go test -race ./plugins/afk -run 'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|ConcurrentOutgoingAtomicCAS|OutgoingTransitionPreservesWelcomeOrder)'
+go test -race ./internal/telegram -run \
+    '^TestR[01234]|TestDispatcher_AFK_EndToEnd'
+
+go test -race ./plugins/afk -run \
+    'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|OutgoingTransitionDoesNotWaitForWelcome|ConcurrentOutgoingAtomicCAS)'
 
 gofmt -w .
 git diff --check
@@ -1600,93 +1972,54 @@ git diff --check
 Important expected outcomes:
 
 ```text
-AFK inactive + ordinary outgoing
-    -> zero AFK TaskEngine tasks
+active AFK + ordinary outgoing command
+    -> persistence + published inactive state complete first
+    -> command starts without waiting for welcome completion
 
-AFK active + automation-origin outgoing
-    -> zero AFK transition tasks
-    -> AFK remains active
+blocked/rate-limited welcome
+    -> command still starts
+    -> dispatcher may return
+    -> AFK remains inactive
 
-AFK active + .afk command
-    -> zero AFK auto-transition decision tasks
-    -> command task still admitted normally
+outgoing transition from different chats
+    -> same AFK plugin-global ordering domain
 
-AFK active + manual ordinary outgoing
-    -> AFK decision task still admitted
+concurrent outgoing transitions
+    -> exactly one successful state transition
+    -> no duplicate welcome
 
-AFK inactive incoming
-    -> zero AFK event tasks
-
-AFK active + auto-reply disabled
-    -> zero AFK event tasks
+disable/re-enable while welcome is running
+    -> old effect cancelled
+    -> new plugin generation differs from old generation
 ```
 
-If an R3 test fails because of the implementation, fix R3 production/tests before starting R4.
+If a failure is attributable to R4, repair R4 production/tests before starting R5.
 
-Do not weaken structural routing or move AFK welcome asynchronously as part of an R3 repair.
+Do not change shared RPC limiter/FloodWait semantics as an R4 repair.
 
-#### R3 gate
+Do not move the welcome effect to raw `go`/unmanaged `scope.Go` execution.
 
-Fast-gate fact contract: **implemented**.
+Do not weaken DB-first persistence.
 
-Pre-admission dispatcher evaluation: **implemented**.
+#### R4 gate
 
-Fast-gate panic fail-open: **implemented**.
+DB-first synchronous transition: **preserved**.
 
-AFK inactive outgoing skip: **implemented**.
+Owner-global AFK transition ordering: **implemented**.
 
-AFK automation-origin skip: **implemented**.
+Shared scoped TaskEngine welcome effect: **implemented**.
 
-AFK command skip: **implemented**.
+Welcome completion removed from command-start barrier: **implemented**.
 
-AFK inactive/auto-reply-disabled incoming skip: **implemented**.
+Welcome failure state isolation: **implemented**.
 
-Architecture fences: **implemented**.
+Reload/generation cancellation fence: **implemented**.
+
+Architecture fence: **implemented**.
 
 Local execution/race gate: **pending user checkout verification**.
 
-R4 must not start until this execution gate passes.
-
-### R4 — Split AFK transition from presentation effects
-
-Status: **PENDING**
-
-Purpose:
-
-Make AFK state correctness synchronous and presentation asynchronous.
-
-Tasks:
-
-- refactor AFK outgoing handling into a transition-only barrier;
-- keep DB-first persistence;
-- move welcome delivery to a scoped shared-TaskEngine effect path;
-- introduce owner-global AFK transition ordering;
-- preserve local transition fence if still needed for direct command transitions;
-- ensure welcome failure does not alter inactive state;
-- decide/document command-vs-plain welcome UX;
-- update AFK and dispatcher end-to-end tests.
-
-Critical test changes:
-
-Tests introduced by `cae28e9d` currently assert that welcome was sent before the next update proceeds.
-
-That is no longer the target invariant.
-
-Replace with:
-
-```text
-AFK transition must be committed before downstream command execution
-
-welcome delivery may complete independently and must not be required
-for the transition barrier to finish
-```
-
-Gate:
-
-- state inactive before command handler starts;
-- welcome completion not required for command handler start;
-- no duplicate welcome under concurrent transition;
-- plugin reload cancels/fences stale welcome work.
+R5 must not start until this execution gate passes.
 
 ### R5 — FloodWait and latency acceptance
 
