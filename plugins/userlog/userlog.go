@@ -43,9 +43,9 @@ func New(svc *userlog.Service, ownerID int64, ownerUsername ...string) *Plugin {
 		username = strings.TrimPrefix(ownerUsername[0], "@")
 	}
 	return &Plugin{
-		svc:               svc,
-		ownerID:           ownerID,
-		ownerUsername:     username,
+		svc:           svc,
+		ownerID:       ownerID,
+		ownerUsername: username,
 	}
 }
 
@@ -228,7 +228,7 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 
 var (
 	_ plugin.ContextShutdowner               = (*Plugin)(nil)
-	_ plugin.PluginContextInitializer         = (*Plugin)(nil)
+	_ plugin.PluginContextInitializer        = (*Plugin)(nil)
 	_ plugin.MessageEventRegistrationsPlugin = (*Plugin)(nil)
 )
 

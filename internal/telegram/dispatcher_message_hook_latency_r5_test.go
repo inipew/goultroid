@@ -473,7 +473,7 @@ func TestR5GeneralEventBacklogAndCrossPluginPressureDoNotBlockDecision(t *testin
 				select {
 				case <-releaseEvents:
 				case <-ctx.Done():
-				return ctx.Err()
+					return ctx.Err()
 				}
 				return nil
 			},
