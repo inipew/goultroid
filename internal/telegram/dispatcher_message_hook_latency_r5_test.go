@@ -836,4 +836,3 @@ func TestR5CommandStartAndOutputCompletionAreSeparateLatencyStages(t *testing.T)
 	l2 := time.Since(startedAt)
 	t.Logf("R5 latency stages: L1 ingress->handler-start=%s, L2 handler-start->output-complete=%s", l1, l2)
 }
-

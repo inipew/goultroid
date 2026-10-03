@@ -12,11 +12,12 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/userlog"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 const (
-	queueCapacity            = 256
-	defaultWorkerIdleTimeout = 15 * time.Second
+	userLogExecutionTimeout = 15 * time.Second
+	userLogOrderingKey      = "msg-event:plugin:userlog"
 )
 
 // Plugin manages user event logging (mentions, PMs, admin actions) to a dedicated Telegram destination.
@@ -25,23 +26,13 @@ type Plugin struct {
 	ownerID       int64
 	ownerUsername string
 
-	mu                sync.RWMutex
-	ctx               context.Context
-	cancel            context.CancelFunc
-	scope             *plugin.Scope
-	eventBus          *core.EventBus
-	subscriptions     []*core.Subscription
-	queue             chan func()
-	closing           bool
-	shutdownDone      chan struct{}
-	workerRunning     bool
-	workerGeneration  uint64
-	workerIdleTimeout time.Duration
-	wg                sync.WaitGroup
-
-	enqueuedCount  atomic.Int64
-	deliveredCount atomic.Int64
-	droppedCount   atomic.Int64
+	mu            sync.RWMutex
+	scope         *plugin.Scope
+	eventBus      *core.EventBus
+	subscriptions []*core.Subscription
+	closing       bool
+	tasks         tasks.Client
+	effectSeq     atomic.Uint64
 }
 
 // New constructs a UserLog plugin without creating a lifecycle context or
@@ -55,7 +46,6 @@ func New(svc *userlog.Service, ownerID int64, ownerUsername ...string) *Plugin {
 		svc:               svc,
 		ownerID:           ownerID,
 		ownerUsername:     username,
-		workerIdleTimeout: defaultWorkerIdleTimeout,
 	}
 }
 
@@ -72,25 +62,9 @@ func (p *Plugin) ownerUsernameValue() string {
 	return p.ownerUsername
 }
 
-// SetWorkerIdleTimeout configures how long the single lazy worker remains alive
-// after the queue becomes idle. It is primarily useful for lifecycle tests.
-func (p *Plugin) SetWorkerIdleTimeout(timeout time.Duration) {
-	if timeout <= 0 {
-		return
-	}
-	p.mu.Lock()
-	p.workerIdleTimeout = timeout
-	p.mu.Unlock()
-}
-
-func (p *Plugin) lifecycleContext() context.Context {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	if p.closing {
-		return nil
-	}
-	return p.ctx
-}
+// SetWorkerIdleTimeout is retained for source compatibility. UserLog no longer
+// owns a private worker, so the value has no runtime effect.
+func (p *Plugin) SetWorkerIdleTimeout(time.Duration) {}
 
 // SetEventBus binds domain-event logging to the current plugin lifecycle.
 // The EventBus reference is retained so disable -> enable can re-subscribe.
@@ -98,7 +72,7 @@ func (p *Plugin) SetEventBus(eb *core.EventBus) {
 	p.mu.Lock()
 	sameBinding := p.eventBus == eb && len(p.subscriptions) > 0
 	p.eventBus = eb
-	active := p.scope != nil && p.ctx != nil && !p.closing
+	active := p.scope != nil && !p.closing
 	p.mu.Unlock()
 	if active && !sameBinding {
 		p.bindEventBus()
@@ -109,7 +83,7 @@ func (p *Plugin) bindEventBus() {
 	p.mu.Lock()
 	eb := p.eventBus
 	scope := p.scope
-	active := eb != nil && scope != nil && p.ctx != nil && !p.closing
+	active := eb != nil && scope != nil && !p.closing
 	old := append([]*core.Subscription(nil), p.subscriptions...)
 	p.subscriptions = nil
 	p.mu.Unlock()
@@ -124,6 +98,7 @@ func (p *Plugin) bindEventBus() {
 	}
 
 	owner := scope.Owner()
+	scopeID := tasks.ScopeIdentity{Owner: owner, Generation: scope.Generation()}
 	var created []*core.Subscription
 	add := func(sub *core.Subscription) {
 		if sub == nil {
@@ -135,58 +110,49 @@ func (p *Plugin) bindEventBus() {
 		}
 	}
 
-	add(eb.SubscribeOwned(owner, core.EventTypeAdminAction, func(event core.Event) {
-		evt, ok := event.(*core.AdminActionEvent)
-		if !ok || p.svc == nil {
-			return
-		}
-		logCtx := p.lifecycleContext()
-		if logCtx == nil {
-			return
-		}
-		p.enqueue(func() {
-			jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
-			defer cancel()
-			_ = p.svc.LogActionDetailed(
-				jobCtx,
-				evt.Action,
-				evt.TargetID,
-				evt.TargetName,
-				evt.ActorID,
-				evt.ChatTitle,
-				evt.Reason,
-				evt.Success,
-				evt.Error,
-			)
-		})
-	}))
+	add(eb.SubscribeWithOptions(
+		core.EventTypeAdminAction,
+		func(ctx context.Context, event core.Event) error {
+			evt, ok := event.(*core.AdminActionEvent)
+			if !ok || p.svc == nil {
+				return nil
+			}
+			action, targetID, targetName := evt.Action, evt.TargetID, evt.TargetName
+			actorID, chatTitle, reason := evt.ActorID, evt.ChatTitle, evt.Reason
+			success, errText := evt.Success, evt.Error
+			return p.submitDomainLog(ctx, "admin", fmt.Sprintf("%s:%d:%d", action, targetID, actorID), func(taskCtx context.Context) error {
+				return p.svc.LogActionDetailed(taskCtx, action, targetID, targetName, actorID, chatTitle, reason, success, errText)
+			})
+		},
+		core.SubscribeOptions{
+			Owner:       owner,
+			Scope:       scopeID,
+			Timeout:     userLogExecutionTimeout,
+			MinPriority: core.PriorityLow,
+		},
+	))
 
-	add(eb.SubscribeOwned(owner, core.EventTypePMPermit, func(event core.Event) {
-		evt, ok := event.(*core.PMPermitEvent)
-		if !ok || p.svc == nil {
-			return
-		}
-		logCtx := p.lifecycleContext()
-		if logCtx == nil {
-			return
-		}
-		p.enqueue(func() {
-			jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
-			defer cancel()
+	add(eb.SubscribeWithOptions(
+		core.EventTypePMPermit,
+		func(ctx context.Context, event core.Event) error {
+			evt, ok := event.(*core.PMPermitEvent)
+			if !ok || p.svc == nil {
+				return nil
+			}
 			actionName := fmt.Sprintf("PMPermit %s", strings.ToUpper(evt.Action))
-			_ = p.svc.LogActionDetailed(
-				jobCtx,
-				actionName,
-				evt.UserID,
-				evt.TargetName,
-				0,
-				"Private Message",
-				evt.Reason,
-				evt.Success,
-				evt.Error,
-			)
-		})
-	}))
+			userID, targetName := evt.UserID, evt.TargetName
+			reason, success, errText := evt.Reason, evt.Success, evt.Error
+			return p.submitDomainLog(ctx, "pmpermit", fmt.Sprintf("%s:%d", evt.Action, userID), func(taskCtx context.Context) error {
+				return p.svc.LogActionDetailed(taskCtx, actionName, userID, targetName, 0, "Private Message", reason, success, errText)
+			})
+		},
+		core.SubscribeOptions{
+			Owner:       owner,
+			Scope:       scopeID,
+			Timeout:     userLogExecutionTimeout,
+			MinPriority: core.PriorityLow,
+		},
+	))
 
 	p.mu.Lock()
 	stale := p.scope != scope || p.eventBus != eb || p.closing
@@ -201,138 +167,55 @@ func (p *Plugin) bindEventBus() {
 	}
 }
 
-func (p *Plugin) startWorkerLocked() error {
-	if p.workerRunning {
+func (p *Plugin) getTaskClient() tasks.Client {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.tasks
+}
+
+func (p *Plugin) submitDomainLog(ctx context.Context, kind, input string, handler func(context.Context) error) error {
+	if handler == nil {
 		return nil
 	}
-	if p.scope == nil || p.queue == nil || p.ctx == nil || p.closing {
-		return fmt.Errorf("userlog lifecycle is not active")
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	idleTimeout := p.workerIdleTimeout
-	if idleTimeout <= 0 {
-		idleTimeout = defaultWorkerIdleTimeout
+	client := p.getTaskClient()
+	if client == nil {
+		// Compatibility for direct/manual plugin construction. Production managed
+		// registration always supplies the scoped TaskClient through InitPlugin.
+		return handler(ctx)
 	}
-	queue := p.queue
-	p.workerGeneration++
-	generation := p.workerGeneration
-	p.workerRunning = true
-	p.wg.Add(1)
-	if err := p.scope.Go(func(ctx context.Context) {
-		p.worker(ctx, queue, idleTimeout, generation)
-	}); err != nil {
-		p.workerRunning = false
-		p.wg.Done()
-		return fmt.Errorf("start userlog worker: %w", err)
+	_, err := client.Submit(ctx, tasks.WorkSpec{
+		ID:               tasks.TaskID(fmt.Sprintf("userlog:%s:%d", kind, p.effectSeq.Add(1))),
+		Pool:             tasks.PoolID("general"),
+		Class:            tasks.PriorityNormal,
+		OrderingKey:      userLogOrderingKey,
+		ExecutionTimeout: userLogExecutionTimeout,
+		Input:            input,
+		Handler:          handler,
+	})
+	if err != nil {
+		return fmt.Errorf("userlog: submit %s log effect: %w", kind, err)
 	}
 	return nil
 }
 
-func (p *Plugin) worker(ctx context.Context, queue chan func(), idleTimeout time.Duration, generation uint64) {
-	defer p.wg.Done()
-	defer func() {
-		p.mu.Lock()
-		if p.queue == queue && p.workerGeneration == generation {
-			p.workerRunning = false
-		}
-		p.mu.Unlock()
-	}()
-
-	timer := time.NewTimer(idleTimeout)
-	defer timer.Stop()
-	resetTimer := func() {
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(idleTimeout)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case job, ok := <-queue:
-			if !ok {
-				return
-			}
-			func() {
-				defer func() { _ = recover() }()
-				job()
-			}()
-			p.deliveredCount.Add(1)
-			resetTimer()
-		case <-timer.C:
-			p.mu.Lock()
-			if p.queue == queue && p.workerGeneration == generation && !p.closing && len(queue) == 0 {
-				p.workerRunning = false
-				p.mu.Unlock()
-				return
-			}
-			p.mu.Unlock()
-			timer.Reset(idleTimeout)
-		}
-	}
-}
-
-func (p *Plugin) enqueue(job func()) {
-	if job == nil {
-		return
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closing || p.ctx == nil || p.scope == nil || p.queue == nil {
-		p.droppedCount.Add(1)
-		return
-	}
-	if !p.workerRunning {
-		if err := p.startWorkerLocked(); err != nil {
-			p.droppedCount.Add(1)
-			return
-		}
-	}
-	select {
-	case p.queue <- job:
-		p.enqueuedCount.Add(1)
-	default:
-		p.droppedCount.Add(1)
-	}
-}
-
-// ShutdownContext stops new work, detaches event subscriptions, drains the
-// bounded queue, and then cancels the lifecycle context.
+// ShutdownContext stops new work and detaches EventBus subscriptions.
+// In-flight message/EventBus tasks are generation-scoped by the shared
+// TaskEngine and are cancelled by plugin-manager scope cancellation.
 func (p *Plugin) ShutdownContext(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
+	_ = ctx
 	p.mu.Lock()
 	if p.closing {
-		done := p.shutdownDone
 		p.mu.Unlock()
-		if done == nil {
-			return nil
-		}
-		select {
-		case <-done:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+		return nil
 	}
-
 	p.closing = true
-	done := make(chan struct{})
-	p.shutdownDone = done
 	subscriptions := append([]*core.Subscription(nil), p.subscriptions...)
 	p.subscriptions = nil
-	queue := p.queue
-	cancel := p.cancel
-	if queue != nil {
-		close(queue)
-	}
+	p.scope = nil
+	p.tasks = nil
 	p.mu.Unlock()
 
 	for _, sub := range subscriptions {
@@ -340,38 +223,13 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 			sub.Close()
 		}
 	}
-
-	go func() {
-		p.wg.Wait()
-		if cancel != nil {
-			cancel()
-		}
-		p.mu.Lock()
-		if p.shutdownDone == done {
-			p.ctx = nil
-			p.cancel = nil
-			p.scope = nil
-			p.queue = nil
-			p.workerRunning = false
-		}
-		p.mu.Unlock()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		if cancel != nil {
-			cancel()
-		}
-		return ctx.Err()
-	}
+	return nil
 }
 
 var (
-	_ plugin.ContextShutdowner         = (*Plugin)(nil)
-	_ plugin.MessageEventRoutingPlugin = (*Plugin)(nil)
+	_ plugin.ContextShutdowner               = (*Plugin)(nil)
+	_ plugin.PluginContextInitializer         = (*Plugin)(nil)
+	_ plugin.MessageEventRegistrationsPlugin = (*Plugin)(nil)
 )
 
 func (p *Plugin) Name() string { return "userlog" }
@@ -382,26 +240,37 @@ func (p *Plugin) Description() string {
 
 func (p *Plugin) Init() error { return nil }
 
-// InitScope initializes a restartable lifecycle without spawning idle workers.
+func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
+	if pctx == nil || pctx.Scope() == nil {
+		return fmt.Errorf("userlog plugin context/scope cannot be nil")
+	}
+	client, err := pctx.TaskClient()
+	if err != nil {
+		return fmt.Errorf("userlog: initialize task client: %w", err)
+	}
+	return p.initScope(pctx.Scope(), client)
+}
+
+// InitScope initializes the generation-owned lifecycle without spawning
+// plugin-private workers. All asynchronous delivery belongs to dispatcher or
+// EventBus TaskEngine execution.
 func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
+	return p.initScope(scope, nil)
+}
+
+func (p *Plugin) initScope(scope *plugin.Scope, client tasks.Client) error {
 	if scope == nil {
 		return fmt.Errorf("userlog plugin scope cannot be nil")
 	}
 
 	p.mu.Lock()
-	if p.ctx != nil && !p.closing {
+	if p.scope != nil && !p.closing {
 		p.mu.Unlock()
 		return fmt.Errorf("userlog plugin lifecycle is already active")
 	}
 	p.scope = scope
-	p.ctx, p.cancel = context.WithCancel(scope.Context())
-	p.queue = make(chan func(), queueCapacity)
+	p.tasks = client
 	p.closing = false
-	p.shutdownDone = nil
-	p.workerRunning = false
-	if p.workerIdleTimeout <= 0 {
-		p.workerIdleTimeout = defaultWorkerIdleTimeout
-	}
 	hasEventBus := p.eventBus != nil
 	p.mu.Unlock()
 
@@ -411,16 +280,27 @@ func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 	return nil
 }
 
-// MessageHookPriority returns priority for the message hook (Observability = 90).
+// MessageHookPriority returns priority for observability work.
 func (p *Plugin) MessageHookPriority() int { return 90 }
-func (p *Plugin) MessageHookRouting() core.MessageHookRouting {
-	return core.MessageHookRouting{
-		Lane: core.MessageHookEvent,
-		Interests: []core.MessageHookInterest{
-			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerPrivate},
-			{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireMention: true},
+
+func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
+	return []core.MessageHookRegistration{{
+		Priority: p.MessageHookPriority(),
+		Routing: core.MessageHookRouting{
+			Lane: core.MessageHookEvent,
+			Interests: []core.MessageHookInterest{
+				{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerPrivate},
+				{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireMention: true},
+			},
 		},
-	}
+		Execution: core.MessageHookExecutionPolicy{
+			FailurePolicy:  core.MessageHookFailOpen,
+			HandlerTimeout: userLogExecutionTimeout,
+			TaskTimeout:    userLogExecutionTimeout,
+			Ordering:       core.MessageHookOrderingPlugin,
+		},
+		Handler: p.HandleMessageEvent,
+	}}
 }
 
 func (p *Plugin) Commands() []core.Command {
@@ -446,7 +326,6 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		return nil
 	}
 
-	// Prevent recursive logging from the configured destination itself.
 	if p.svc.IsLogDestinationRef(message.Peer) {
 		return nil
 	}
@@ -464,13 +343,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if senderID == 777000 || senderID == p.ownerID {
 			return nil
 		}
-		name, id, text, logCtx := senderName, senderID, message.Text, p.lifecycleContext()
-		p.enqueue(func() {
-			jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
-			defer cancel()
-			_ = p.svc.LogPM(jobCtx, name, id, text)
-		})
-		return nil
+		return p.svc.LogPM(ctx, senderName, senderID, message.Text)
 	}
 
 	isMentioned := message.Mentioned ||
@@ -484,14 +357,9 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	if chatTitle == "" {
 		chatTitle = "Group Chat"
 	}
-	name, id, title, text, logCtx := senderName, senderID, chatTitle, message.Text, p.lifecycleContext()
-	p.enqueue(func() {
-		jobCtx, cancel := context.WithTimeout(logCtx, 15*time.Second)
-		defer cancel()
-		_ = p.svc.LogMention(jobCtx, title, name, id, text)
-	})
-	return nil
+	return p.svc.LogMention(ctx, chatTitle, senderName, senderID, message.Text)
 }
+
 func (p *Plugin) handleSetLog(ctx *core.Context) error {
 	if p.svc == nil {
 		return ctx.Status("UserLog service is not configured.")
@@ -670,7 +538,7 @@ func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 		"📋 <b>UserLog Dashboard</b>\n\n"+
 			"• <b>Status:</b> %s\n"+
 			"• <b>Destination:</b> %s\n"+
-			"• <b>Queue Stats:</b> Enqueued: <code>%d</code> | Delivered: <code>%d</code> | Dropped: <code>%d</code>\n\n"+
+			"• <b>Delivery Stats:</b> Delivered: <code>%d</code> | Failed: <code>%d</code> | Consecutive failures: <code>%d</code>\n\n"+
 			"<b>Categories:</b>\n"+
 			"• <b>Mentions/Tags:</b> %s\n"+
 			"• <b>Private Messages:</b> %s\n"+
@@ -681,9 +549,9 @@ func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 			"• <code>.log clear</code> — Disable log destination",
 		statusBadge,
 		destStr,
-		p.enqueuedCount.Load(),
-		p.deliveredCount.Load(),
-		p.droppedCount.Load(),
+		stats.DeliveredCount,
+		stats.FailedCount,
+		stats.ConsecutiveFailures,
 		tagsStr,
 		pmsStr,
 		actionsStr,
