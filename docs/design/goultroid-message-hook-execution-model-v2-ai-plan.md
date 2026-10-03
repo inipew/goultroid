@@ -847,31 +847,149 @@ Each phase begins by refreshing and recording current `test-next` HEAD.
 
 ### R0 — Baseline, reproducer, and invariant freeze
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `7e4f959e04e595fee83f76d9c37a263eead7180a`
+- Phase-start commit: `docs(design): add message hook execution model v2 plan`
+- R0 regression commit: `3ed53366772c0226e191bd009318435f019bc1e0` — `test(telegram): freeze message hook execution r0 baseline`
+- Production semantics changed: **no**
+- CI inspected/polled: **no**
 
 Purpose:
 
 Prove current behavior before changing the execution model.
 
-Tasks:
+#### R0.1 Production hook inventory
 
-- inventory every canonical/raw message-hook registration;
-- inventory lane, priority, state gate, failure policy, RPC usage, DB usage, and ordering requirement;
-- identify all direct/manual `chat:<id>` ordering-key construction in dispatcher hook paths;
-- add focused regression tests demonstrating:
-  - inactive AFK still causes TaskEngine decision admission;
-  - active AFK transition blocks command until welcome returns;
-  - stalled event and decision tasks can collide on same chat ordering key;
-  - AFK different-chat transitions can run concurrently until `transitionMu`;
-  - server/limiter FloodWait in welcome can couple to decision duration;
-- record current focused benchmark numbers where practical.
+A scan of all production Go files under `plugins/` found exactly five plugin message-hook domains.
 
-Do not change production behavior in R0.
+A separate scan of production `internal/plugin/`, `internal/telegram/`, `internal/app/`, and `internal/module/` found the canonical registrar/dispatcher implementation but no additional production plugin/direct hook caller outside that path.
 
-Gate:
+Current production registration flow is therefore:
 
-- all observed problems have deterministic tests or a documented reason why only a lower-level reproducer is practical;
-- current semantics are recorded clearly enough to tell intentional changes from regressions.
+```text
+plugin implementation
+  -> plugin.Manager registerMessageHook
+  -> Dispatcher.RegisterMessageHook
+  -> immutable dispatcher route index
+  -> decision/event TaskEngine admission
+```
+
+The privileged raw hook interfaces and direct `Add*MessageHandler` APIs remain compatibility surfaces, but R0 found no production plugin implementing the raw message-hook contract.
+
+| Domain | Registration | Structural route | Priority / failure | Dynamic gate | Work currently inside hook | Current dispatcher ordering |
+| --- | --- | --- | --- | --- | --- | --- |
+| AFK outgoing | split canonical | outgoing + stable peer | 50 / fail-open | **none** | bot-origin checks, AFK DB deactivate, state publish, cleanup, peer resolution, welcome Telegram send | `chat:<chatID>` |
+| AFK incoming | split canonical | private incoming OR group/channel mention/reply | 50 / event | **none** | AFK snapshot checks, optional replied-message Telegram lookup, cooldown, Telegram auto-reply | `chat:<chatID>` |
+| Blacklist | single canonical | incoming + stable peer + plain text | 10 / fail-closed | `featureState.Interested(chatID)` | compiled-rule lookup; DB load on cache miss; synchronous Telegram delete; suppression decision | `chat:<chatID>` |
+| Filters | single canonical | incoming + stable peer + plain text | 20 / fail-open | `featureState.Interested(chatID)` | compiled-filter lookup; DB load on cache miss; matched delivery is submitted to plugin TaskEngine client when available; suppression metadata | `chat:<chatID>` for hook task |
+| PMPermit | single canonical | incoming/outgoing private | 10 / fail-closed | enabled-state gate | approval/status DB reads+writes, optional resolver work, warning/block/unblock/delete/send Telegram RPC, suppression | `chat:<chatID>` |
+| UserLog | single canonical | incoming private OR mentioned group/channel | 90 / event | none | enqueue to plugin-owned bounded lazy queue, then log Telegram delivery | `chat:<chatID>` for dispatcher event task |
+
+Important R0 observations:
+
+1. AFK is the only current split canonical registration.
+2. AFK split registrations do not supply `StateGate`; the manager's automatic `MessageEventStatePlugin` wiring only applies to the single-registration branch.
+3. Blacklist, Filters, and PMPermit already prove that pre-TaskEngine dynamic feature-state gating is an established production pattern.
+4. Blacklist and PMPermit currently perform Telegram RPC from the synchronous decision lane; those are R6 audit targets, not R0 changes.
+5. Filters already separates response delivery into another TaskEngine submission when its task client is available, but matching/cache/database work still occurs in the decision task.
+6. UserLog is event-oriented but has a second plugin-owned queue/lazy-worker layer after dispatcher TaskEngine admission; R7 owns that audit.
+
+#### R0.2 Ordering-key inventory
+
+In the dispatcher message-hook path, there are two authoritative task-key constructions:
+
+```text
+executeDecisionHandlersEnvelope
+    OrderingKey = chat:<chatID>
+
+dispatchEventHandlersEnvelope
+    OrderingKey = chat:<chatID>
+```
+
+TaskEngine ordering locks are global rather than pool-local, so these identical keys create a real cross-lane serialization domain.
+
+For owner-global AFK transition state, different chats instead produce different keys:
+
+```text
+chat:41
+chat:42
+```
+
+so TaskEngine does not express the real AFK serialization domain; serialization happens later inside `transitionMu`.
+
+R1 must correct both properties without removing ordering where it is semantically required.
+
+#### R0.3 Added deterministic reproducers
+
+R0 added:
+
+`internal/telegram/dispatcher_message_hook_execution_r0_test.go`
+
+The file freezes four current behaviors:
+
+- `TestR0InactiveAFKStillAdmitsDecisionTask`
+  - proves an ordinary outgoing message while AFK is already inactive still admits an AFK task to the interactive TaskEngine lane;
+  - records the current scope/quota owner and `chat:<chatID>` ordering key.
+
+- `TestR0DecisionAndEventTasksShareChatOrderingKey`
+  - proves a decision task and event task for the same chat receive the exact same ordering key even though they use different TaskEngine pools;
+  - this is the deterministic reproducer for the cross-lane collision R1 must remove.
+
+- `TestR0DecisionOrderingIsChatScopedAcrossUpdates`
+  - proves two decision updates in different chats receive distinct chat-scoped keys;
+  - combined with AFK's owner-global state + `transitionMu`, this freezes the mismatch between TaskEngine ordering and AFK's real serialization domain.
+
+- `TestR0AFKCommandStartWaitsForWelcomeRateLimitPath`
+  - activates AFK, sends an ordinary owner command, blocks the welcome transport, and returns a structured 30-second rate-limit error when released;
+  - proves DB state is already inactive while the command handler is still prevented from starting;
+  - proves command admission resumes only after the synchronous welcome/rate-limit path returns.
+
+Existing tests that also form part of the R0 evidence:
+
+- `plugins/afk.TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder` — outgoing AFK handler does not complete while welcome send is blocked;
+- `internal/telegram.TestDispatcher_AFK_EndToEnd` — current E2E invariant explicitly requires welcome before the update continues;
+- RPC executor FloodWait tests — short waits may remain inline and server FloodWait penalties are recorded in the shared limiter;
+- dispatcher feature-state tests — a false state gate skips TaskEngine admission before decision execution.
+
+#### R0.4 Formatting and verification state
+
+Before the Go-changing R0 commit, the generated test file was processed with the required command:
+
+```bash
+gofmt -w .
+```
+
+A staged whitespace check equivalent to `git diff --check` also passed in the available working directory.
+
+This tool runtime does **not** expose a full Goultroid checkout and direct shell clone/network access is unavailable. Therefore focused package execution could not honestly be performed here without using CI, and CI inspection/polling is explicitly forbidden by this plan.
+
+Do not claim the R0 tests have executed successfully yet.
+
+Before starting R1 in an executable checkout, run at minimum:
+
+```bash
+go test ./internal/telegram -run '^TestR0'
+go test -race ./internal/telegram -run '^TestR0'
+go test ./plugins/afk -run 'TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder'
+gofmt -w .
+git diff --check
+```
+
+If any R0 test does not compile or does not reproduce the recorded baseline, repair the R0 test fixture first. Do **not** start R1 by changing production behavior to make a broken baseline test pass.
+
+#### R0 gate
+
+Audit/inventory: **complete**.
+
+Regression code: **implemented**.
+
+Execution gate: **pending local focused-test execution**.
+
+R1 must not start until the focused R0 execution gate above passes.
 
 ### R1 — Introduce explicit ordering domains
 
