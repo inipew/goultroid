@@ -1155,7 +1155,7 @@ R1 is **CLOSED**.
 
 ### R2 — Canonicalize registration execution policy
 
-Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+Status: **CLOSED — implementation, focused/full package tests, focused race tests, architecture tests, and AFK regression passed**
 
 Phase baseline:
 
@@ -1350,78 +1350,302 @@ The real repository checkout must still run the normal project gate below before
 
 CI was not inspected or polled.
 
-#### R2.8 Required execution gate
+#### R2.8 Execution gate result
 
-Run on the real `test-next` checkout:
+The user executed the complete R2 gate on the real `test-next` checkout. The following all passed:
+
+- focused `internal/core` execution-policy tests;
+- focused `internal/plugin` split-registration normalization/rollback tests;
+- focused `internal/telegram` R0/R1/R2 + decision-policy tests;
+- focused `internal/architecture` P2-A hook-contract tests;
+- full `internal/core`, `internal/plugin`, `internal/telegram`, and `internal/architecture` package tests;
+- focused race tests for plugin registration;
+- focused race tests for Telegram R0/R1/R2 + decision policy;
+- AFK outgoing-transition/welcome-order regression;
+- `gofmt -w .`;
+- `git diff --check`.
+
+Reported package results were all `ok`.
+
+CI was not inspected or polled.
+
+#### R2 gate
+
+Canonical registration model: **complete**.
+
+Split state-gate inheritance: **complete**.
+
+Explicit failure/timeout/ordering policy: **complete**.
+
+Zero-registration validation: **complete**.
+
+Partial rollback regression: **complete**.
+
+Architecture fences: **complete**.
+
+Local execution/race gate: **passed**.
+
+R2 is **CLOSED**.
+
+### R3 — Add pure fast-gate facts
+
+Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `7d77d0b18078887ab776f3eef1e8e9c01e72dd49`
+- Phase-start commit: `docs(design): record r2 execution policy implementation`
+- Implementation commit: `d40eb9a8d26a878434193b9fd9a551df196525a6` — `refactor(telegram): add pure message hook fast gates`
+- CI inspected/polled: **no**
+
+Purpose:
+
+Avoid TaskEngine admission for exclusions already known from ingress facts and lock-free published feature state.
+
+#### R3.1 Canonical fast-gate facts
+
+The core hook contract now exposes:
+
+```go
+type MessageHookFacts struct {
+    ChatID      int64
+    Outgoing    bool
+    IsCommand   bool
+    CommandName string
+    Origin      ExecutionSource
+}
+
+type MessageHookFastGate func(MessageHookFacts) bool
+```
+
+`MessageHookRegistration` now carries:
+
+```go
+FastGate MessageHookFastGate
+```
+
+The fact set is intentionally minimal.
+
+Every field is already known before TaskEngine admission:
+
+- `ChatID` from canonical envelope normalization;
+- `Outgoing` from Telegram update classification;
+- `IsCommand` / `CommandName` from the existing cheap router parse;
+- `Origin` from the already-existing bot/automation origin classification.
+
+The fast-gate contract exposes:
+
+- no `context.Context`;
+- no raw `tg.*` object;
+- no Telegram service;
+- no repository;
+- no resolver;
+- no full mutable runtime context.
+
+This prevents the API itself from encouraging I/O in the gate.
+
+#### R3.2 StateGate compatibility is preserved
+
+R3 does not remove:
+
+```go
+StateGate func(chatID int64) bool
+```
+
+Dispatcher evaluation is:
+
+```text
+indexed structural route
+    -> FastGate(facts), when present
+    -> StateGate(chatID), when present
+    -> TaskEngine admission
+```
+
+Both gates therefore compose as an AND.
+
+This preserves Blacklist, Filters, PMPermit, raw compatibility hooks, and existing tests without a mass migration.
+
+If `FastGate` panics, that gate fails open and the dispatcher logs the panic. Existing `StateGate` panic behavior also remains fail-open.
+
+#### R3.3 Dispatcher facts and admission order
+
+The dispatcher now builds one `MessageHookFacts` value per decision/event execution pass from the canonical envelope plus `MessageDecision.Origin()`.
+
+Decision and event paths both evaluate the fast gate before `client.Submit`.
+
+The immutable structural route index remains unchanged.
+
+No additional repository lookup, RPC, peer resolution, or durable claim is added.
+
+#### R3.4 AFK outgoing fast gate
+
+AFK outgoing decision registration now has a pure fast gate.
+
+It reads only the atomically published AFK state plus ingress facts.
+
+It rejects before TaskEngine when:
+
+- AFK is inactive;
+- the outgoing update is classified as `ExecutionAutomation`;
+- the message is an `.afk` command, case-insensitive.
+
+A normal manual outgoing message while AFK is active still enters the existing synchronous AFK decision handler.
+
+The handler keeps its existing bot-origin, automation, command, and state checks as defensive validation. R3 does not remove those checks.
+
+#### R3.5 AFK incoming fast gate
+
+AFK incoming event registration now admits work only when:
+
+```text
+AFK state is active
+AND
+AutoReplyEnabled == true
+```
+
+Both values are atomic reads.
+
+Therefore:
+
+- inactive AFK incoming PM/mention/reply traffic creates zero AFK event tasks;
+- disabling AFK auto-reply creates zero AFK event tasks.
+
+Mention/reply structural classification remains in the immutable route index.
+
+The fast gate does not perform sender inspection, replied-message lookup, cooldown mutation, peer resolution, or Telegram delivery.
+
+#### R3.6 R0 baseline intentionally superseded
+
+R0 recorded the then-current defect:
+
+```text
+inactive AFK outgoing
+-> one AFK decision TaskEngine admission
+```
+
+R3 intentionally reverses that invariant.
+
+The regression formerly named:
+
+```text
+TestR0InactiveAFKStillAdmitsDecisionTask
+```
+
+is replaced by:
+
+```text
+TestR3InactiveAFKSkipsDecisionBeforeTaskAdmission
+```
+
+Other R0 baselines remain valid, including the still-open R4 defect where an active AFK transition waits for welcome delivery before the command can start.
+
+#### R3.7 Tests added/updated
+
+Dispatcher:
+
+- `TestR3InactiveAFKSkipsDecisionBeforeTaskAdmission`;
+- `TestR3AFKAutomationOriginSkipsTransitionAdmission`;
+- `TestR3AFKCommandSkipsAutoTransitionAdmission`;
+- `TestR3AFKManualOutgoingStillAdmitsTransition`;
+- `TestR3AFKIncomingInactiveSkipsEventAdmission`;
+- `TestR3AFKAutoReplyDisabledSkipsEventAdmission`;
+- `TestDispatcher_FastGatePanicFailsOpen`;
+- `TestMessageHookFactsCarryIngressOriginAndCommand`.
+
+AFK:
+
+- `TestAFKPlugin_FastGatesUseOnlyPublishedStateAndFacts`.
+
+Architecture:
+
+- `TestR3MessageHookFastGateFactsStayTransportNeutral`;
+- `TestR3AFKFastGatesStayPureAndBounded`;
+- `TestR3DispatcherRunsFastGateBeforeTaskAdmission`;
+- the existing shared registration-contract fence now requires the `FastGate` field.
+
+The architecture fence prevents the AFK gate implementation from acquiring obvious I/O/blocking dependencies such as repository access, Telegram sends/gets, resolver work, transition/state/cooldown mutexes, or context-based work.
+
+#### R3.8 Formatting state
+
+Before the R3 Go-changing commit, the changed Go snippets and new R3 test/architecture files were processed in the formatting worktree with:
 
 ```bash
-go test ./internal/core -run 'TestNormalizeMessageHookExecutionPolicy'
-go test ./internal/plugin -run 'TestManager_(RegistersAndCleansUpSplitMessageHooks|RejectsEmptySplitMessageHooks|RollsBackPartialSplitHookRegistration|RejectsInvalidSplitExecutionPolicy|PrefersCanonicalMessageHook)'
-go test ./internal/telegram -run '^TestR[012]|TestDecisionHandler'
-go test ./internal/architecture -run '^TestP2AHook'
-go test ./internal/core ./internal/plugin ./internal/telegram ./internal/architecture
-go test -race ./internal/plugin -run 'TestManager_(RegistersAndCleansUpSplitMessageHooks|RollsBackPartialSplitHookRegistration|RejectsInvalidSplitExecutionPolicy)'
-go test -race ./internal/telegram -run '^TestR[012]|TestDecisionHandler'
 gofmt -w .
 git diff --check
 ```
 
-Keep the previous AFK regression green:
+The real checkout gate below must still be run before R3 is marked CLOSED.
+
+CI was not inspected or polled.
+
+#### R3.9 Required execution gate
+
+Run on the real `test-next` checkout:
 
 ```bash
-go test ./plugins/afk -run 'TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder'
+go test ./internal/telegram -run '^TestR[0123]|TestDispatcher_(StateGate|FastGate)|TestMessageHookFacts'
+go test ./plugins/afk -run 'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|OutgoingTransitionPreservesWelcomeOrder)'
+go test ./internal/architecture -run '^TestR3|^TestP2AHook'
+
+go test ./internal/core ./internal/plugin ./internal/telegram ./plugins/afk ./internal/architecture
+
+go test -race ./internal/telegram -run '^TestR[0123]|TestDispatcher_(StateGate|FastGate)|TestMessageHookFacts'
+go test -race ./plugins/afk -run 'TestAFKPlugin_(FastGatesUseOnlyPublishedStateAndFacts|ConcurrentOutgoingAtomicCAS|OutgoingTransitionPreservesWelcomeOrder)'
+
+gofmt -w .
+git diff --check
 ```
 
-If a failure is attributable to R2, fix R2 code/tests before starting R3.
+Important expected outcomes:
 
-Do not weaken execution-policy validation or restore implicit dispatcher priority inference merely to make a test pass.
+```text
+AFK inactive + ordinary outgoing
+    -> zero AFK TaskEngine tasks
 
-#### R2 gate
+AFK active + automation-origin outgoing
+    -> zero AFK transition tasks
+    -> AFK remains active
 
-Canonical registration model: **implemented**.
+AFK active + .afk command
+    -> zero AFK auto-transition decision tasks
+    -> command task still admitted normally
 
-Split state-gate inheritance: **implemented**.
+AFK active + manual ordinary outgoing
+    -> AFK decision task still admitted
 
-Explicit failure/timeout/ordering policy: **implemented**.
+AFK inactive incoming
+    -> zero AFK event tasks
 
-Zero-registration validation: **implemented**.
+AFK active + auto-reply disabled
+    -> zero AFK event tasks
+```
 
-Partial rollback regression: **implemented**.
+If an R3 test fails because of the implementation, fix R3 production/tests before starting R4.
 
-Architecture fences: **updated**.
+Do not weaken structural routing or move AFK welcome asynchronously as part of an R3 repair.
+
+#### R3 gate
+
+Fast-gate fact contract: **implemented**.
+
+Pre-admission dispatcher evaluation: **implemented**.
+
+Fast-gate panic fail-open: **implemented**.
+
+AFK inactive outgoing skip: **implemented**.
+
+AFK automation-origin skip: **implemented**.
+
+AFK command skip: **implemented**.
+
+AFK inactive/auto-reply-disabled incoming skip: **implemented**.
+
+Architecture fences: **implemented**.
 
 Local execution/race gate: **pending user checkout verification**.
 
-R3 must not start until this execution gate passes.
-
-### R3 — Add pure fast-gate facts
-
-Status: **PENDING**
-
-Purpose:
-
-Avoid TaskEngine admission for exclusions already known at ingress.
-
-Tasks:
-
-- determine the minimum canonical facts required by current plugins;
-- expose those facts without raw Telegram types;
-- preserve immutable indexed structural routing;
-- ensure fast gate is called before TaskEngine admission;
-- document and test fail-open behavior if a fast gate panics;
-- architecture-fence the gate against obvious I/O-capable contracts where feasible.
-
-AFK fast gate must be able to skip at least:
-
-- inactive AFK;
-- automation/bot-origin outgoing messages;
-- AFK commands.
-
-Gate:
-
-- inactive AFK outgoing commands/messages create zero AFK TaskEngine submissions;
-- bot-origin messages create zero AFK transition submissions;
-- `.afk` does not pay the auto-transition task.
+R4 must not start until this execution gate passes.
 
 ### R4 — Split AFK transition from presentation effects
 
