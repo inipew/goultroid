@@ -3,7 +3,6 @@ package plugin
 import (
 	"context"
 
-	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -64,54 +63,12 @@ type PluginContextInitializer interface {
 	InitPlugin(PluginContext) error
 }
 
-// MessageEventPlugin is the preferred message hook API. It receives the
-// canonical core envelope and never needs raw MTProto update/entity containers.
-type MessageEventPlugin interface {
-	Plugin
-	MessageHookPriority() int
-	HandleMessageEvent(ctx context.Context, message *core.MessageEnvelope) error
-}
-
-// MessageEventRoutingPlugin declares structural routing for a canonical hook.
-type MessageEventRoutingPlugin interface {
-	MessageEventPlugin
-	MessageHookRouting() core.MessageHookRouting
-}
-
-// MessageEventRegistrationsPlugin allows one plugin to route distinct message
-// directions through different execution lanes.
+// MessageEventRegistrationsPlugin is the only production plugin message-hook
+// contract. Every hook property (routing, gates, execution policy, and handler)
+// is explicit in the returned registrations rather than inferred from optional
+// interface combinations.
 type MessageEventRegistrationsPlugin interface {
-	MessageEventPlugin
-	MessageHookRegistrations() []core.MessageHookRegistration
-}
-
-// MessageEventStatePlugin adds a fast dynamic feature-state gate to a canonical hook.
-type MessageEventStatePlugin interface {
-	MessageEventRoutingPlugin
-	MessageHookInterested(chatID int64) bool
-}
-
-// MessageHookPlugin is the privileged legacy/raw Telegram compatibility API.
-// Production registration requires the telegram.raw capability.
-type MessageHookPlugin interface {
 	Plugin
 	MessageHookPriority() int
-	HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error
-}
-
-// MessageHookRoutingPlugin lets a hook declare its execution lane and
-// structural message interests. The dispatcher indexes these interests at
-// registration time so irrelevant updates never invoke the plugin.
-type MessageHookRoutingPlugin interface {
-	MessageHookPlugin
-	MessageHookRouting() core.MessageHookRouting
-}
-
-// MessageHookStatePlugin optionally supplies a lock-free dynamic interest gate
-// for chat-scoped feature state. Returning false lets the dispatcher skip the
-// hook before TaskEngine admission. Implementations must fail open whenever
-// persistent state is not known to be complete.
-type MessageHookStatePlugin interface {
-	MessageHookRoutingPlugin
-	MessageHookInterested(chatID int64) bool
+	MessageHookRegistrations() []core.MessageHookRegistration
 }

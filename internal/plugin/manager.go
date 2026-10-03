@@ -30,15 +30,9 @@ type ManifestPlugin interface {
 	Manifest() Manifest
 }
 
-// MessageHookHandler represents the privileged raw Telegram compatibility signature.
-type MessageHookHandler = core.RawMessageHookHandler
-
-// CanonicalMessageHookHandler is the preferred normalized message hook signature.
-type CanonicalMessageHookHandler = core.CanonicalMessageHookHandler
-
 // HookRegistrar accepts one explicit registration contract. Scope, routing,
-// dynamic state, and raw/canonical handler shape are data rather than separate
-// registrar capability interfaces.
+// dynamic state, and handler shape are registration data rather than optional
+// plugin-manager adapter interfaces.
 type HookRegistrar interface {
 	RegisterMessageHook(core.MessageHookRegistration) (func(), error)
 }
@@ -49,18 +43,38 @@ func validateMessageHookAccess(pluginID string, p Plugin, gate *CapabilityGate) 
 		// composition root always installs a fail-closed capability gate.
 		return nil
 	}
-	if _, canonical := p.(MessageEventPlugin); canonical {
-		if err := gate.Check(pluginID, CapTelegramRead); err != nil {
-			return fmt.Errorf("canonical message hook requires %s: %w", CapTelegramRead, err)
-		}
+	if _, canonical := p.(MessageEventRegistrationsPlugin); !canonical {
 		return nil
 	}
-	if _, raw := p.(MessageHookPlugin); raw {
-		if err := gate.Check(pluginID, CapTelegramRaw); err != nil {
-			return fmt.Errorf("raw message hook requires %s: %w", CapTelegramRaw, err)
-		}
+	if err := gate.Check(pluginID, CapTelegramRead); err != nil {
+		return fmt.Errorf("canonical message hook requires %s: %w", CapTelegramRead, err)
 	}
 	return nil
+}
+
+func normalizeCanonicalMessageHookRegistration(
+	pluginID string,
+	registration core.MessageHookRegistration,
+	scope tasks.ScopeIdentity,
+	defaultPriority int,
+) (core.MessageHookRegistration, error) {
+	if registration.Handler == nil || registration.RawHandler != nil || registration.LegacyRouting {
+		return core.MessageHookRegistration{}, fmt.Errorf("invalid canonical message hook registration for plugin %s", pluginID)
+	}
+	if registration.Priority == 0 {
+		registration.Priority = defaultPriority
+	}
+	registration.Scope = scope
+	execution, err := core.NormalizeMessageHookExecutionPolicy(
+		registration.Priority,
+		registration.Routing.Lane,
+		registration.Execution,
+	)
+	if err != nil {
+		return core.MessageHookRegistration{}, fmt.Errorf("invalid message hook execution policy for plugin %s: %w", pluginID, err)
+	}
+	registration.Execution = execution
+	return registration, nil
 }
 
 func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIdentity) (func(), error) {
@@ -68,69 +82,42 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 		return nil, nil
 	}
 
-	if multi, ok := p.(MessageEventRegistrationsPlugin); ok {
-		registrations := multi.MessageHookRegistrations()
-		cleanups := make([]func(), 0, len(registrations))
-		cleanupAll := func() {
-			for i := len(cleanups) - 1; i >= 0; i-- {
-				cleanups[i]()
-			}
-		}
-		for _, registration := range registrations {
-			if registration.Handler == nil || registration.RawHandler != nil || registration.LegacyRouting {
-				cleanupAll()
-				return nil, fmt.Errorf("invalid canonical message hook registration for plugin %s", p.Name())
-			}
-			registration.Scope = scope
-			cleanup, err := registrar.RegisterMessageHook(registration)
-			if err != nil {
-				cleanupAll()
-				return nil, err
-			}
-			if cleanup != nil {
-				cleanups = append(cleanups, cleanup)
-			}
-		}
-		return cleanupAll, nil
-	}
-
-	if mhp, ok := p.(MessageEventPlugin); ok {
-		routed, ok := p.(MessageEventRoutingPlugin)
-		if !ok {
-			return nil, fmt.Errorf("canonical message hook plugin %s must declare MessageHookRouting", p.Name())
-		}
-		registration := core.MessageHookRegistration{
-			Scope:    scope,
-			Priority: mhp.MessageHookPriority(),
-			Routing:  routed.MessageHookRouting(),
-			Handler:  mhp.HandleMessageEvent,
-		}
-		if stateful, ok := p.(MessageEventStatePlugin); ok {
-			registration.StateGate = stateful.MessageHookInterested
-		}
-		return registrar.RegisterMessageHook(registration)
-	}
-
-	mhp, ok := p.(MessageHookPlugin)
+	multi, ok := p.(MessageEventRegistrationsPlugin)
 	if !ok {
 		return nil, nil
 	}
-	registration := core.MessageHookRegistration{
-		Scope:         scope,
-		Priority:      mhp.MessageHookPriority(),
-		RawHandler:    mhp.HandleIncomingMessage,
-		LegacyRouting: true,
+	registrations := multi.MessageHookRegistrations()
+	if len(registrations) == 0 {
+		return nil, fmt.Errorf("canonical message hook plugin %s returned no registrations", p.Name())
 	}
-	if routed, ok := p.(MessageHookRoutingPlugin); ok {
-		registration.Routing = routed.MessageHookRouting()
-		registration.LegacyRouting = false
+
+	cleanups := make([]func(), 0, len(registrations))
+	cleanupAll := func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
 	}
-	if stateful, ok := p.(MessageHookStatePlugin); ok {
-		registration.Routing = stateful.MessageHookRouting()
-		registration.StateGate = stateful.MessageHookInterested
-		registration.LegacyRouting = false
+	for _, registration := range registrations {
+		normalized, err := normalizeCanonicalMessageHookRegistration(
+			p.Name(),
+			registration,
+			scope,
+			multi.MessageHookPriority(),
+		)
+		if err != nil {
+			cleanupAll()
+			return nil, err
+		}
+		cleanup, err := registrar.RegisterMessageHook(normalized)
+		if err != nil {
+			cleanupAll()
+			return nil, err
+		}
+		if cleanup != nil {
+			cleanups = append(cleanups, cleanup)
+		}
 	}
-	return registrar.RegisterMessageHook(registration)
+	return cleanupAll, nil
 }
 
 // SchedulerTaskCleaner allows the plugin manager to unregister periodic tasks owned by disabled plugins.

@@ -3,7 +3,6 @@ package pmpermit
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -352,40 +351,11 @@ func (s *Service) resolvePeer(userID int64) tg.InputPeerClass {
 }
 
 func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClass, userID int64) error {
-	if userID == 0 || userID == s.ownerID {
-		return nil
-	}
-	if s.IsSudoID(userID) {
-		return nil
-	}
-	if approved, _ := s.IsApproved(ctx, userID); approved {
-		return nil
-	}
-	if s.repo == nil {
-		return fmt.Errorf("pm permit database is unavailable")
-	}
-	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, "outgoing auto-approved", nil); err != nil {
-		s.logger.Error("failed to set pm status approved", zap.Int64("user_id", userID), zap.Error(err))
+	effect, changed, err := s.PrepareAutoApproveOutgoing(ctx, userID)
+	if err != nil || !changed {
 		return err
 	}
-	s.approvedCache.Store(userID, approvalCacheEntry{})
-	ids := s.getWarnIDs(userID)
-	if len(ids) > 0 {
-		if svc := s.getService(); svc != nil {
-			if err := svc.DeleteMessage(ctx, peer, ids); err != nil {
-				s.logger.Warn("failed to delete warning messages on auto-approve", zap.Int64("user_id", userID), zap.Error(err))
-			}
-		}
-	}
-	s.clearWarnIDs(userID)
-	_ = s.repo.ResetPMWarn(ctx, userID)
-	if svc := s.getService(); svc != nil {
-		if err := svc.UnblockUser(ctx, peer); err != nil {
-			s.logger.Warn("failed to unblock user on auto-approve", zap.Int64("user_id", userID), zap.Error(err))
-		}
-	}
-	s.publishEvent("auto_approve", userID, "", 0, "outgoing auto-approved", true, "")
-	return nil
+	return s.ApplyAutoApproveOutgoingEffect(ctx, peer, effect)
 }
 
 func (s *Service) Approve(ctx context.Context, userID int64, reason string, duration time.Duration) error {
@@ -498,95 +468,17 @@ func (s *Service) BlockWithPeer(ctx context.Context, peer tg.InputPeerClass, use
 }
 
 func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, senderID int64, actorOpts ...PMActor) (bool, error) {
-	if !s.IsEnabled() {
-		return false, nil
-	}
-
-	// 1. Actor-level bypass: bots, verified users, self
+	actor := PMActor{UserID: senderID}
 	if len(actorOpts) > 0 {
-		actor := actorOpts[0]
-		if actor.IsBot || actor.IsSelf || actor.Verified {
-			return false, nil
-		}
+		actor = actorOpts[0]
 	}
-
-	// 2. Privilege bypass: owner & sudo
-	if senderID == s.ownerID || s.IsSudoID(senderID) {
-		return false, nil
+	decision, err := s.DecideIncomingPM(ctx, senderID, actor)
+	if err != nil || !decision.Handled {
+		return decision.Handled, err
 	}
-
-	// 3. Approval check
-	approved, err := s.IsApproved(ctx, senderID)
-	if err != nil {
-		s.logger.Warn("pm permit approval check failed", zap.Error(err), zap.Int64("sender_id", senderID))
-		return true, nil
+	if err := s.ApplyIncomingPMEffect(ctx, peer, decision); err != nil {
+		s.logger.Warn("failed to apply pm permit presentation effect", zap.Int64("user_id", senderID), zap.Error(err))
 	}
-	if approved {
-		return false, nil
-	}
-	if s.repo == nil {
-		return true, nil
-	}
-
-	// 4. Blocked state handling: SILENT DROP (no reply loop!)
-	if rec, _ := s.repo.GetPMRecord(ctx, senderID); rec != nil && rec.Status == StatusBlocked {
-		return true, nil
-	}
-
-	// 5. Rate-limiting check to prevent warning reply storms and FloodWait
-	if s.warnCooldown > 0 {
-		s.warnTimeMu.Lock()
-		lastTime := s.lastWarnTime[senderID]
-		now := time.Now()
-		inCooldown := !lastTime.IsZero() && now.Sub(lastTime) < s.warnCooldown
-		if !inCooldown {
-			s.lastWarnTime[senderID] = now
-		}
-		s.warnTimeMu.Unlock()
-
-		if inCooldown {
-			// Silently drop burst messages during cooldown
-			return true, nil
-		}
-	}
-
-	// 6. Warning counter increment
-	warnCount, err := s.repo.IncrementPMWarn(ctx, senderID)
-	if err != nil {
-		s.logger.Warn("failed to increment pm warn", zap.Error(err))
-		return true, nil
-	}
-	s.mu.RLock()
-	maxWarns := s.maxWarns
-	s.mu.RUnlock()
-	svc := s.getService()
-	if svc == nil {
-		return true, nil
-	}
-
-	if warnCount >= maxWarns {
-		_ = s.BlockWithPeer(ctx, peer, senderID, "exceeded pm warning threshold")
-		msg, err := s.sendTemplate(ctx, svc, peer, pmLimitResponse, pmLimitTemplate, savedresponse.TemplateVars{})
-		if err != nil {
-			s.logger.Warn("failed to send pm limit reached message", zap.Int64("user_id", senderID), zap.Error(err))
-		} else if msg != nil {
-			s.addWarnID(senderID, msg.ID)
-		}
-		return true, nil
-	}
-
-	remaining := maxWarns - warnCount
-	msg, err := s.sendTemplate(ctx, svc, peer, pmWarningResponse, pmWarningTemplate, savedresponse.TemplateVars{
-		Extra: map[string]string{
-			"count": strconv.Itoa(warnCount), "limit": strconv.Itoa(maxWarns), "remaining": strconv.Itoa(remaining),
-		},
-	})
-	if err != nil {
-		s.logger.Warn("failed to send pm warning message", zap.Int64("user_id", senderID), zap.Error(err))
-	} else if msg != nil {
-		s.addWarnID(senderID, msg.ID)
-	}
-	s.publishEvent("warn", senderID, "", warnCount, fmt.Sprintf("warning %d/%d", warnCount, maxWarns), true, "")
 	return true, nil
 }
 

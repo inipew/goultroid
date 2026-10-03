@@ -5,22 +5,24 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
-	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/pmpermit"
 	"github.com/inipew/goultroid/internal/settings"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
-var _ plugin.MessageEventPlugin = (*Plugin)(nil)
-var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
-
 type Plugin struct {
-	svc      *pmpermit.Service
-	resolver core.PeerResolver
-	settings *settings.Service
+	svc       *pmpermit.Service
+	resolver  core.PeerResolver
+	settings  *settings.Service
+	taskMu    sync.RWMutex
+	tasks     tasks.Client
+	effectSeq atomic.Uint64
 }
 
 func New(svc *pmpermit.Service) *Plugin                        { return &Plugin{svc: svc} }
