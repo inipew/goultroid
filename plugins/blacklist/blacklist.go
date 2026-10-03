@@ -13,6 +13,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 var _ plugin.MessageEventPlugin = (*Plugin)(nil)
@@ -53,6 +54,9 @@ type Plugin struct {
 	chatRevision  map[int64]uint64
 	chatBlacklist map[int64]*compiledBlacklistSet
 	ruleLocks     [ruleLockStripes]sync.RWMutex
+	taskMu        sync.RWMutex
+	tasks         tasks.Client
+	effectSeq     atomic.Uint64
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
