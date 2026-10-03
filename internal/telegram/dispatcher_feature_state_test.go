@@ -67,7 +67,6 @@ func TestDispatcher_StateGatePanicFailsOpen(t *testing.T) {
 	}
 }
 
-
 func TestDispatcher_FastGatePanicFailsOpen(t *testing.T) {
 	d := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
 	registered := prioritizedHandler{

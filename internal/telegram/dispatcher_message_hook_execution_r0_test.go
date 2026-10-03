@@ -481,8 +481,6 @@ func TestR4AFKTransitionOrderingIsPluginGlobalAcrossChats(t *testing.T) {
 	}
 }
 
-
-
 func TestR4AFKDisableCancelsScopedWelcomeEffect(t *testing.T) {
 	const ownerID int64 = 1001
 	db, err := database.Open(":memory:")

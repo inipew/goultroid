@@ -20,7 +20,7 @@ import (
 
 var (
 	_ plugin.MessageEventRegistrationsPlugin = (*Plugin)(nil)
-	_ plugin.PluginContextInitializer         = (*Plugin)(nil)
+	_ plugin.PluginContextInitializer        = (*Plugin)(nil)
 	_ plugin.ContextInitializer              = (*Plugin)(nil)
 	_ plugin.ScopeInitializer                = (*Plugin)(nil)
 	_ execution.CapabilityProvider           = (*Plugin)(nil)

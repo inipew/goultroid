@@ -44,7 +44,6 @@ type blockingAFKRepository struct {
 	release chan struct{}
 }
 
-
 type afkTestTicket struct {
 	id     tasks.TaskID
 	done   chan struct{}
@@ -1357,7 +1356,6 @@ func TestAFKWelcomeDeleteRequiresManagedScope(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 }
-
 
 func TestAFKPlugin_FastGatesUseOnlyPublishedStateAndFacts(t *testing.T) {
 	p := New(nil, 1001, nil)

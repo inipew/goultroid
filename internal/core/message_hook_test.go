@@ -74,7 +74,6 @@ func TestNormalizeMessageHookExecutionPolicyRejectsInvalidBudgets(t *testing.T) 
 	}
 }
 
-
 func TestNormalizeMessageHookExecutionPolicyPreservesPluginGlobalOrdering(t *testing.T) {
 	policy, err := NormalizeMessageHookExecutionPolicy(
 		50,
