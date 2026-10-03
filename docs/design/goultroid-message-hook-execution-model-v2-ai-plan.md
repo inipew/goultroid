@@ -1998,385 +1998,564 @@ R4 is **CLOSED**.
 
 ### R5 — FloodWait and latency acceptance
 
-Status: **IMPLEMENTED / EXECUTION + BENCHMARK VERIFICATION PENDING**
+Status: **CLOSED — execution/race gates and three-run latency benchmarks passed**
 
 Phase baseline:
 
-- Refreshed branch: `test-next`
-- Phase-start HEAD: `e7f6e314221fdfb900303c52954eac12965a0121`
-- Phase-start commit: `fmt`
+- Phase-start HEAD: `e7f6e314221fdfb900303c52954eac12965a0121` — `fmt`
 - Acceptance implementation: `43a0fffe78b96c1143c7fb7dc1d84c793dc5eb61` — `test(telegram): add r5 latency and floodwait acceptance`
-- Production code changed: **no**
+- Documentation implementation record: `013e14a91d18be65d3171887917ee0a847574dbe` — `docs(design): record r5 latency acceptance implementation`
+- Production runtime changes: **none**
 - Shared RPC limiter/retry semantics changed: **no**
 - CI inspected/polled: **no**
 
 Purpose:
 
-Prove the R4 execution split removes presentation/FloodWait work from command-start latency without weakening the existing Telegram RPC safety model.
+Prove that the R4 AFK redesign removed welcome/presentation RPC from command-start latency without weakening Telegram rate-limit and retry safety.
 
-R5 explicitly separates:
+R5 defines two distinct latency stages:
 
 ```text
 L1 = Telegram ingress -> command handler starts
-
 L2 = command handler starts -> required command Telegram output completes
 ```
 
-The acceptance target is not “all Telegram delay disappears”.
-
-The target is:
+The required semantic split is:
 
 ```text
-AFK state correctness / persistence
-    may remain on L1 when required
+AFK state persistence / correctness
+    may remain in L1 where downstream correctness depends on it
 
-AFK welcome presentation / limiter wait / FloodWait
-    must not remain on L1
+AFK welcome presentation / limiter waits / FloodWait
+    must not remain in L1
 
-command's own Telegram output
-    remains governed by shared RPC limiter/executor in L2
+the command's own Telegram output
+    remains governed by the shared RPC executor/limiter in L2
 ```
 
-#### R5.1 No production rewrite was required
-
-Static audit after R4 found the existing runtime already has the required authorities:
-
-- AFK welcome runs as a scoped shared-TaskEngine effect;
-- command and decision work use the interactive pool;
-- welcome/event work uses the general pool;
-- message-hook decision/event ordering domains are distinct;
-- AFK transition is owner-global;
-- Telegram message delivery still delegates through the canonical message service;
-- the canonical service still owns the shared RPC executor and hierarchical limiter.
-
-R5 therefore adds acceptance/regression coverage and benchmarks only.
-
-It does **not**:
-
-- introduce another TaskEngine;
-- introduce another RPC executor;
-- introduce another limiter;
-- introduce an AFK retry loop;
-- alter FloodWait penalty scope;
-- weaken non-idempotent mutation retry safety.
-
-#### R5.2 Short limiter wait acceptance
-
-`TestR5WelcomeShortLimiterWaitStaysOffCommandBarrier` uses:
-
-- a real shared TaskEngine;
-- active AFK state;
-- the R4 asynchronous welcome path;
-- a real `RPCExecutor`;
-- a limiter that rejects the first reservation for 25 ms;
-- a blocking test sleeper.
-
-The test freezes the welcome effect *inside* the RPC limiter wait and proves the owner command handler can still start.
-
-After releasing the sleeper it additionally requires:
-
-```text
-limiter Reserve #1 -> denied, retry_after=25ms
-sleep
-limiter Reserve #2 -> allowed
-physical RPC -> exactly once
-```
-
-This preserves the existing “wait then re-reserve” safety rule instead of bypassing the limiter.
-
-#### R5.3 Above-threshold server FloodWait acceptance
-
-`TestR5WelcomeServerFloodWaitPenalizesSharedLimiterWithoutHoldingCommandStart` injects:
-
-```text
-FLOOD_WAIT_30
-```
-
-through the real `RPCExecutor` path used by the test welcome service.
-
-Required properties:
-
-- command handler starts independently of welcome completion;
-- physical welcome RPC attempt count is exactly one;
-- no inline sleeper call occurs because 30 seconds exceeds the 5-second inline threshold;
-- the shared limiter receives a 30-second penalty;
-- the result is a structured rate-limit error;
-- committed inactive AFK state is unchanged.
-
-The executor audit confirmed that server FloodWait classification/penalization occurs before transient non-idempotent ambiguity handling.
-
-Therefore `messages.sendMessage` keeps FloodWait semantics without gaining an unsafe automatic retry.
-
-#### R5.4 SQLite contention is intentionally still an L1 dependency
-
-`TestR5SQLiteContentionRemainsInsideRequiredTransitionBarrier` uses a file-backed SQLite database and holds a `BEGIN IMMEDIATE` writer lock while an AFK-active command arrives.
-
-The required behavior is deliberately:
-
-```text
-SQLite AFK=false write blocked
-    -> AFK transition not committed
-    -> command handler must NOT start
-
-writer lock released
-    -> AFK=false persists
-    -> inactive state publishes
-    -> command may start
-```
-
-This distinguishes required durability latency from the cosmetic welcome latency removed by R4.
-
-R5 does not convert AFK persistence to write-behind and does not add an AFK-specific persistence retry path.
-
-#### R5.5 Event backlog and same-chat cross-plugin pressure
-
-`TestR5GeneralEventBacklogAndCrossPluginPressureDoNotBlockDecision` constrains the real TaskEngine general pool to two workers.
-
-Two different plugin event owners in the same chat are then blocked concurrently:
-
-```text
-msg-event:plugin:r5-event-a:chat:<id>
-msg-event:plugin:r5-event-b:chat:<id>
-```
-
-Both general workers remain occupied.
-
-An AFK-active owner command must still:
-
-- run its AFK decision on the interactive pool;
-- commit AFK inactive;
-- start the command handler.
-
-This proves both:
-
-1. event backlog does not consume the interactive decision lane; and
-2. same-chat events from different plugin owners do not serialize solely because the chat ID is equal.
-
-#### R5.6 Two-chat simultaneous AFK transition
-
-`TestR5SimultaneousTwoChatAFKTransitionProducesSingleWelcome` blocks the first AFK persistence transition and sends a second manual outgoing message in another chat while the first is still active.
-
-Both decision tasks are admitted, but owner-global AFK ordering plus the local transition fence preserve one state transition.
-
-Required outcome:
-
-```text
-two chats race while AFK active
-    -> exactly one persisted AFK disable
-    -> maximum concurrent persistence transition = 1
-    -> exactly one welcome effect
-    -> no late duplicate welcome
-```
-
-This covers the owner-global transition semantics under real TaskEngine concurrency rather than only checking ordering-key strings.
-
-#### R5.7 L1 vs L2 command-output acceptance
-
-`TestR5CommandStartAndOutputCompletionAreSeparateLatencyStages` blocks the command's own Telegram `Reply` operation after the command handler has started.
-
-The test proves:
-
-```text
-handler started
-    !=
-Telegram output completed
-```
-
-and records both durations separately.
-
-This prevents future latency reports from conflating:
-
-- command admission/start latency; and
-- Telegram RPC/output latency.
-
-A global/shared limiter penalty can still delay L2. That remains legitimate RPC-layer behavior and is not hidden as an AFK decision delay.
-
-#### R5.8 Quantitative latency benchmarks
-
-R5 adds:
-
-`BenchmarkR5InactiveAFKCommandLatencyStages`
-
-This runs a real dispatcher + TaskEngine + inactive AFK plugin and reports separately:
-
-- `l1-p50-ns`;
-- `l1-p95-ns`;
-- `l1-p99-ns`;
-- `l2-p50-ns`;
-- `l2-p95-ns`;
-- `l2-p99-ns`.
-
-It proves the inactive-AFK path continues to skip AFK decision admission while still measuring the full command execution path.
-
-R5 also adds:
-
-`BenchmarkR5ActiveToInactiveCommandStartL1`
-
-Each untimed setup re-activates AFK, then the timed operation sends an ordinary owner command that must auto-transition inactive.
-
-It reports:
-
-- `l1-p50-ns`;
-- `l1-p95-ns`;
-- `l1-p99-ns`.
-
-The benchmark intentionally leaves the synchronous SQLite transition in L1 because that persistence is a correctness dependency.
-
-TaskEngine benchmark retention is bounded to 32 terminal records so repeated benchmark iterations do not accumulate unbounded execution closures/results.
-
-#### R5.9 RPC safety coverage reused by the gate
-
-R5 intentionally reuses the existing executor/limiter regressions rather than cloning policy logic into AFK.
-
-Important existing tests included in the R5 gate:
-
-- `TestRPCExecutor_LimiterWaitReReservesBeforeRPC`;
-- `TestRPCExecutor_InteractiveShortLimiterWaitRemainsInline`;
-- `TestRPCExecutor_Case10_FloodWaitAboveThreshold`;
-- `TestRPCExecutor_Case13_NonIdempotentAmbiguousNoRetry`;
-- `TestRPCExecutor_DurableContextYieldsShortFloodWait`;
-- `TestHierarchicalRPCLimiter_PenaltyOverflowFailsClosedWithoutDroppingFloodWait`.
-
-Together with the new AFK/dispatcher tests these prove the split changes *where latency is paid*, not who owns Telegram retry/rate-limit policy.
-
-#### R5.10 Architecture fence
-
-R5 adds:
-
-`internal/architecture/afk_latency_r5_test.go`
-
-The fence requires AFK welcome delivery to continue delegating through canonical message service and rejects private constructions/usages inside the welcome path such as:
-
-- `NewRPCExecutor`;
-- `NewHierarchicalRPCLimiter`;
-- private `RetryPolicy`;
-- `time.Sleep`;
+#### R5.1 Acceptance coverage
+
+The R5 regressions prove:
+
+- inactive AFK produces no AFK decision admission before the command path;
+- active -> inactive AFK commits durable state before the command handler starts;
+- SQLite writer contention remains inside the required transition barrier;
+- a short welcome limiter wait remains outside command-start latency;
+- `FLOOD_WAIT_30` on welcome remains outside command-start latency;
+- server FloodWait still penalizes the shared limiter;
+- the above-threshold non-idempotent send is not retried automatically;
+- saturated general/event workers do not block interactive AFK decision eligibility;
+- same-chat event work from different plugin owners does not create cross-lane serialization;
+- simultaneous outgoing messages from two chats still produce one AFK transition and one welcome;
+- command handler start and command Telegram output completion are measured separately.
+
+Architecture coverage keeps AFK welcome on the canonical message service and rejects a private:
+
+- RPC executor;
+- hierarchical limiter;
+- retry policy;
 - raw goroutine execution;
-- `scope.Go` as a welcome executor.
+- `time.Sleep`;
+- `scope.Go` welcome executor.
 
-The AFK module must continue embedding/delegating through `core.MessageServicer`.
+#### R5.2 Execution gate result
 
-#### R5.11 Formatting discipline
+The user executed the complete R5 gate on the real `test-next` checkout.
 
-Before the R5 Go-changing commit, all three added Go files were run through `gofmt -w`.
+All reported commands passed:
 
-The generated contents were unchanged by gofmt.
+- focused R5 Telegram acceptance plus the selected RPC/limiter safety regressions;
+- R3/R4/R5/P2-A architecture tests;
+- full `internal/core`, `internal/plugin`, `internal/telegram`, `plugins/afk`, and `internal/architecture` package tests;
+- focused R5/RPC race tests;
+- three benchmark runs;
+- `gofmt -w .`;
+- `git diff --check`.
 
-A whitespace-error diff check on those files produced no whitespace diagnostics.
+Reported test packages were all `ok`.
 
-The authoritative checkout still must run `gofmt -w .` and `git diff --check` as part of the execution gate.
+Benchmark host:
+
+```text
+linux/amd64
+AMD Ryzen 7 5700U with Radeon Graphics
+```
+
+#### R5.3 Recorded benchmark results
+
+`BenchmarkR5InactiveAFKCommandLatencyStages-16`:
+
+| Run | ns/op | L1 p50 | L1 p95 | L1 p99 | L2 p50 | L2 p95 | L2 p99 | B/op | allocs/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 34,860 | 23,407 ns | 64,289 ns | 179,880 ns | 230 ns | 981 ns | 3,066 ns | 12,197 | 104 |
+| 2 | 33,183 | 23,046 ns | 58,046 ns | 180,049 ns | 230 ns | 882 ns | 2,485 ns | 12,174 | 104 |
+| 3 | 35,220 | 24,488 ns | 67,063 ns | 168,626 ns | 231 ns | 952 ns | 2,805 ns | 12,174 | 104 |
+
+`BenchmarkR5ActiveToInactiveCommandStartL1-16`:
+
+| Run | ns/op | L1 p50 | L1 p95 | L1 p99 | B/op | allocs/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 113,052 | 95,891 ns | 165,208 ns | 305,067 ns | 25,948 | 209 |
+| 2 | 114,810 | 95,599 ns | 187,301 ns | 338,060 ns | 25,869 | 209 |
+| 3 | 131,069 | 109,797 ns | 219,013 ns | 354,460 ns | 25,801 | 209 |
+
+These values are recorded as a host-specific baseline, not as hard nanosecond pass/fail thresholds.
+
+Observed behavior is consistent across the three runs:
+
+- inactive-AFK L1 p50 is roughly 23–24.5 µs;
+- inactive-AFK L1 p95 is roughly 58–67 µs;
+- inactive-AFK L1 p99 is roughly 169–180 µs;
+- local mock output L2 is sub-microsecond at p50 and remains only a few microseconds at p99;
+- active -> inactive L1, which intentionally includes SQLite state transition work, is roughly 96–110 µs at p50 and 305–354 µs at p99.
+
+#### R5 gate
+
+L1/L2 semantic separation: **passed**.
+
+SQLite durability barrier: **passed**.
+
+Short limiter-wait separation: **passed**.
+
+Above-threshold FloodWait separation: **passed**.
+
+Shared limiter authority: **passed**.
+
+Non-idempotent retry safety: **passed**.
+
+Event backlog / cross-plugin pressure: **passed**.
+
+Two-chat AFK transition: **passed**.
+
+Architecture fence: **passed**.
+
+Formatting/diff gate: **passed**.
+
+R5 is **CLOSED**.
+
+### R6 — Audit/migrate Blacklist, PMPermit, Filters
+
+Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `013e14a91d18be65d3171887917ee0a847574dbe`
+- Phase-start commit: `docs(design): record r5 latency acceptance implementation`
+- Blacklist: `9426518326cf962a9ea479f7ed30a4937811c0fe` — `refactor(blacklist): split decision from delete effect`
+- PMPermit: `cb4602decf47f9f0bef5be67653c9675b9f1c1f4` — `refactor(pmpermit): split enforcement from telegram effects`
+- Filters: `21fa9f4f3ef69ca6bb79a849487a8a891b3c03e7` — `refactor(filters): canonicalize decision execution policy`
+- Architecture fence: `7cf7254a77b8f4f0cb4e31735886438e8aa0c6d1` — `test(architecture): fence r6 hook effect boundaries`
+- PMPermit cleanup-authority hardening: `46485c4e13f2a50e0c0b692139a2a864ddcdb951` — `fix(pmpermit): retain warning cleanup authority`
+- PMPermit formatting/fence follow-up: `7643770ce6f5e4fd831ceb190375a2042ac66b2d` — `test(pmpermit): fence deferred warning cleanup`
+- CI inspected/polled: **no**
+
+Purpose:
+
+Apply the R0–R5 execution model to the remaining stateful decision hooks without blindly converting every plugin to an event hook.
+
+The common rule is:
+
+```text
+structural routing
+    -> fast feature-state gate
+    -> only state/decision work required for downstream correctness
+    -> shared TaskEngine effect/continuation for Telegram presentation/network work
+```
+
+R6 deliberately produces three different migration shapes because Blacklist, PMPermit, and Filters have different correctness barriers.
+
+#### R6.1 Blacklist classification
+
+Blacklist requires a synchronous semantic decision:
+
+```text
+incoming plain text
+    -> rule match
+    -> if matched, downstream processing must stop
+```
+
+Telegram deletion itself is not required to determine that the message is blacklisted.
+
+Before R6:
+
+```text
+decision task
+    -> match
+    -> DeleteMessage RPC
+    -> publish handled/suppression
+    -> return
+```
+
+After R6:
+
+```text
+decision task
+    -> match
+    -> admit scoped delete effect
+    -> publish handled/suppression
+    -> return ErrInterceptHandled
+
+delete effect
+    -> shared TaskEngine general pool
+    -> canonical DeleteMessage transport
+```
+
+The registration is now explicit:
+
+- lane: Decision;
+- failure policy: fail-closed;
+- ordering: chat;
+- routing: incoming stable peer, plain text, text required;
+- existing feature-state gate is inherited by the multi-registration contract.
+
+The delete effect uses:
+
+- scoped plugin TaskClient;
+- shared TaskEngine;
+- general pool;
+- normal priority;
+- ordering `blacklist-effect:chat:<chatID>`;
+- 15-second execution timeout;
+- immutable/accountable string input.
+
+Blacklist manifest now declares `plugin.CapTasks`.
+
+No second worker/runtime/RPC/retry path was added.
+
+#### R6.2 PMPermit classification
+
+PMPermit contains two separate synchronous state decisions.
+
+Incoming private messages:
+
+```text
+enabled/bypass/approval check
+    -> blocked/cooldown decision
+    -> durable warning count / blocked status transition
+    -> publish handled/suppression
+```
+
+The following are effects, not decision requirements:
+
+- peer resolution;
+- warning message send;
+- limit message send;
+- Telegram BlockUser.
+
+Outgoing private messages:
+
+```text
+manual/non-command eligibility
+    -> durable approved-state transition
+```
+
+The following are effects:
+
+- deletion of old warning messages;
+- Telegram UnblockUser.
+
+R6 therefore introduces service-level state/effect APIs while retaining compatibility wrappers:
+
+- `DecideIncomingPM`;
+- `ApplyIncomingPMEffect`;
+- `PrepareAutoApproveOutgoing`;
+- `ApplyAutoApproveOutgoingEffect`.
+
+Existing `HandleIncomingPM` and `AutoApproveOutgoing` delegate to those APIs for direct/legacy callers, so there is not a second independent PMPermit algorithm.
+
+Production PMPermit now has two explicit decision registrations:
+
+1. incoming private:
+   - fail-closed;
+   - chat ordering;
+   - synchronous security state;
+   - async Telegram effect;
+2. outgoing private/plain:
+   - fail-open;
+   - chat ordering;
+   - pure fast gate rejects automation origin and commands;
+   - synchronous approved-state transition;
+   - async cleanup/unblock effect.
+
+Both effect types use the existing scoped TaskClient and shared general TaskEngine pool with:
+
+```text
+ordering: pmpermit-effect:user:<userID>
+timeout:  15s
+```
+
+Peer resolution for a missing access hash moved into the effect phase.
+
+#### R6.3 PMPermit stale-effect and cleanup-authority fences
+
+R6 revalidates state immediately before effect execution:
+
+- a queued warning is skipped if the user has since become approved;
+- a queued limit/block effect is skipped if the user is no longer blocked;
+- a queued auto-approve cleanup/unblock effect is skipped if the user has since been blocked again.
+
+Post-commit audit found one additional ownership issue:
+
+```text
+PrepareAutoApproveOutgoing
+    -> captured warning IDs
+    -> cleared stored IDs
+    -> effect admission or Telegram delete could fail
+```
+
+That could leave warning messages in Telegram while losing the stored IDs required to clean them later.
+
+The hardening changes the invariant to:
+
+```text
+Prepare
+    -> persist approved state
+    -> capture warning IDs
+    -> KEEP warning cleanup authority
+
+Effect
+    -> revalidate still approved
+    -> union captured IDs with latest stored IDs
+    -> DeleteMessage
+    -> only on successful delete clear stored warning IDs
+    -> best-effort UnblockUser
+```
+
+Taking the union at effect execution also covers a warning effect that was already in flight when the outgoing auto-approve transition occurred.
+
+If Telegram deletion fails, warn IDs remain stored.
+
+This does not add an automatic retry engine. It preserves cleanup authority for later explicit/recovery handling instead of silently discarding it.
+
+PMPermit manifest now declares `plugin.CapTasks`.
+
+#### R6.4 Filters classification
+
+Filters must **remain a decision hook**.
+
+A matched filter sets suppression state used by AFK. Moving matching itself to the event lane would allow:
+
+```text
+filter response event
+AFK response event
+```
+
+to race and both answer the same message.
+
+Therefore R6 keeps:
+
+```text
+incoming text
+    -> synchronous filter match
+    -> synchronous suppress-AFK decision
+    -> async response delivery
+```
+
+The registration is now explicit:
+
+- lane: Decision;
+- failure policy: fail-open;
+- ordering: chat;
+- incoming stable peer;
+- plain text only;
+- text required.
+
+Filters already routed its response through the shared TaskEngine continuation path; R6 preserves that rather than inventing another effect runtime.
+
+#### R6.5 Filters production initialization defect fixed
+
+R6 audit found a separate production-state bug:
+
+`filters.Plugin` implements `PluginContextInitializer`.
+
+The manager therefore calls:
+
+```text
+InitPlugin(...)
+```
+
+instead of separately calling:
+
+```text
+InitContext(...)
+```
+
+Before R6, `InitPlugin` acquired Files + TaskClient and returned without loading active chat IDs.
+
+That meant the production feature-state snapshot used by the pre-admission gate could miss startup preload.
+
+R6 changes `InitPlugin` to:
+
+```text
+configure saved-response Files
+    -> obtain scoped TaskClient
+    -> InitContext(pctx)
+    -> preload active chat IDs
+```
+
+This makes the existing Filters state gate authoritative after production initialization/reload.
+
+#### R6.6 Tests added/updated
+
+Blacklist:
+
+- `TestR6BlacklistDecisionAdmitsDeleteEffectWithoutWaitingForRPC`
+  verifies the synchronous match/suppression boundary and proves DeleteMessage is deferred to the submitted effect.
+
+PMPermit service:
+
+- `TestR6IncomingDecisionDefersTelegramPresentationEffect`;
+- `TestR6IncomingEffectRevalidatesStateBeforeSending`;
+- `TestR6AutoApproveCommitsStateBeforeTelegramCleanupAndFencesStaleEffect`;
+- `TestR6AutoApproveRetainsWarningIDsWhenTelegramDeleteFails`.
+
+PMPermit plugin:
+
+- `TestR6PMPermitRegistrationsSeparateIncomingEnforcementAndOutgoingTransition`.
+
+Filters:
+
+- `TestR6FiltersRegistrationKeepsMatchDecisionSynchronous`.
+
+Architecture:
+
+- `TestR6BlacklistDecisionAndDeleteEffectBoundary`;
+- `TestR6PMPermitDecisionAndTelegramEffectBoundary`;
+- `TestR6FiltersKeepMatchBarrierButPreloadStateAndDeferDelivery`.
+
+The PMPermit architecture fence also prevents auto-approve state preparation from clearing warning cleanup authority before the Telegram effect succeeds.
+
+#### R6.7 Formatting and commit discipline
+
+R6 was intentionally split by plugin rather than mass-converted.
+
+The new R6 Go files were processed in the formatting workspace with:
+
+```bash
+gofmt -w .
+```
+
+The PMPermit hardening follow-up re-ran `gofmt -w .` across the complete R6 staging tree and verified no files remained in `gofmt -l .`.
+
+The authoritative checkout must still run the final repository-wide `gofmt -w .` and `git diff --check` gate.
 
 CI was not inspected or polled.
 
-#### R5.12 Required execution and benchmark gate
+#### R6.8 Required execution gate
 
 Run on the real `test-next` checkout:
 
 ```bash
 git pull
 
-go test ./internal/telegram -run \
-    '^TestR5|TestRPCExecutor_(LimiterWaitReReservesBeforeRPC|InteractiveShortLimiterWaitRemainsInline|Case10_FloodWaitAboveThreshold|Case13_NonIdempotentAmbiguousNoRetry|DurableContextYieldsShortFloodWait)|TestHierarchicalRPCLimiter_PenaltyOverflowFailsClosedWithoutDroppingFloodWait'
+go test ./plugins/blacklist -run \
+    '^TestR6|TestBlacklist|TestFeatureState'
 
-go test ./internal/architecture -run '^TestR5|^TestR4|^TestR3|^TestP2AHook'
+go test ./internal/services/pmpermit -run \
+    '^TestR6|^TestPMPermit_'
 
-go test ./internal/core ./internal/plugin ./internal/telegram ./plugins/afk ./internal/architecture
+go test ./plugins/pmpermit -run \
+    '^TestR6|^TestPMPermit'
 
-go test -race ./internal/telegram -run \
-    '^TestR5|TestRPCExecutor_(LimiterWaitReReservesBeforeRPC|InteractiveShortLimiterWaitRemainsInline|Case10_FloodWaitAboveThreshold|Case13_NonIdempotentAmbiguousNoRetry)'
+go test ./plugins/filters -run \
+    '^TestR6|^TestFilter'
 
-go test ./internal/telegram -run '^$' -bench '^BenchmarkR5' -benchmem -count=3
+go test ./internal/architecture -run \
+    '^TestR6|^TestR5|^TestR4|^TestP2AHook'
+
+go test \
+    ./internal/core \
+    ./internal/plugin \
+    ./internal/telegram \
+    ./internal/services/pmpermit \
+    ./plugins/blacklist \
+    ./plugins/pmpermit \
+    ./plugins/filters \
+    ./internal/architecture
+
+go test -race ./internal/services/pmpermit -run \
+    '^TestR6|^TestPMPermit_'
+
+go test -race ./plugins/blacklist -run \
+    '^TestR6|^TestBlacklist'
+
+go test -race ./plugins/pmpermit -run \
+    '^TestR6|^TestPMPermit'
+
+go test -race ./plugins/filters -run \
+    '^TestR6|^TestFilter'
 
 gofmt -w .
 git diff --check
 ```
 
-Record all three benchmark runs in the R5 section before closure.
-
-At minimum preserve:
-
-- inactive AFK L1 p50/p95/p99;
-- inactive command L2 p50/p95/p99;
-- active -> inactive L1 p50/p95/p99;
-- allocs/op and B/op for both benchmarks.
-
-Do not define a nanosecond pass/fail threshold from one host.
-
-The hard acceptance gates are semantic:
+Required semantic outcomes:
 
 ```text
-welcome limiter wait / FloodWait
-    cannot hold command-start barrier
+Blacklist inactive chat
+    -> state gate skips TaskEngine decision admission
 
-SQLite persistence contention
-    must still hold command-start barrier until durable transition commits
+Blacklist match
+    -> handled/suppression remains synchronous
+    -> DeleteMessage runs outside decision barrier
 
-event backlog / cross-plugin event pressure
-    cannot block interactive AFK decision eligibility
+PMPermit disabled
+    -> state gate skips TaskEngine decision admission
 
-two-chat AFK transition
-    remains single-transition / single-welcome
+unapproved incoming PM
+    -> enforcement state/handled decision completes synchronously
+    -> warning/block Telegram RPC runs as effect
 
-shared RPC limiter
-    remains penalized and authoritative
+manual outgoing PM
+    -> approved state transition completes synchronously
+    -> warning cleanup/unblock RPC runs as effect
 
-non-idempotent transient RPC safety
-    remains no-automatic-retry
+stale PMPermit warning/cleanup effect
+    -> revalidation prevents crossing newer state
 
-no private AFK retry/executor path exists
+failed warning cleanup delete
+    -> stored warning IDs remain available
+
+Filters inactive chat
+    -> state gate skips TaskEngine admission
+
+Filters match
+    -> suppress-AFK decision remains synchronous
+    -> response delivery remains shared-TaskEngine continuation
 ```
 
-#### R5 gate
+If a failure is attributable to R6, repair the corresponding plugin and its tests before starting R7.
 
-Inactive AFK L1 benchmark: **implemented, measurement pending**.
+Do not convert Filters matching to an event lane merely to make it asynchronous.
 
-Active -> inactive L1 benchmark: **implemented, measurement pending**.
+Do not move PMPermit security state transitions out of the decision barrier.
 
-L1/L2 separation acceptance: **implemented**.
+Do not restore Blacklist DeleteMessage to the decision barrier.
 
-SQLite contention acceptance: **implemented**.
+Do not add plugin-specific RPC/retry workers.
 
-Short limiter-wait acceptance: **implemented**.
+#### R6 gate
 
-Above-threshold FloodWait acceptance: **implemented**.
+Blacklist decision/effect separation: **implemented**.
 
-Event backlog/cross-plugin pressure acceptance: **implemented**.
+Blacklist explicit execution policy: **implemented**.
 
-Two-chat transition acceptance: **implemented**.
+PMPermit enforcement/effect separation: **implemented**.
 
-Shared RPC authority architecture fence: **implemented**.
+PMPermit stale-effect revalidation: **implemented**.
+
+PMPermit warning cleanup authority: **implemented**.
+
+Filters explicit execution policy: **implemented**.
+
+Filters production state preload: **implemented**.
+
+Architecture fences: **implemented**.
 
 Local execution/race gate: **pending user checkout verification**.
 
-Benchmark measurements: **pending user checkout verification**.
-
-R6 must not start until the R5 execution gate and benchmark recording pass.
-
-### R6 — Audit/migrate Blacklist, PMPermit, Filters
-
-Status: **PENDING**
-
-Purpose:
-
-Apply the same semantic separation to existing decision hooks.
-
-For each plugin:
-
-1. classify structural routing;
-2. classify fast feature-state gating;
-3. identify actual barrier decision;
-4. identify presentation/network effects;
-5. choose real ordering domain;
-6. choose explicit failure policy;
-7. update tests before commit.
-
-Do not mass-convert all plugins in one commit.
-
-Gate per plugin:
-
-- only necessary semantic decision remains synchronous;
-- inactive feature work is rejected before TaskEngine;
-- effect RPC cannot introduce unrelated command-start latency.
+R7 must not start until the R6 execution gate passes.
 
 ### R7 — Audit observability/UserLog execution
 
