@@ -128,7 +128,6 @@ func TestR8ProductionDecisionHookAllowlist(t *testing.T) {
 	}
 }
 
-
 func TestR8ProductionPluginsDoNotReferenceRetiredHookAdapters(t *testing.T) {
 	root := repositoryRoot(t)
 	retired := []string{
