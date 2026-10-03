@@ -37,9 +37,6 @@ var filterTaskSequence atomic.Uint64
 
 var ErrRuleLimit = fmt.Errorf("%w: filter rule limit exceeded", core.ErrResourceLimit)
 
-var _ plugin.MessageEventPlugin = (*Plugin)(nil)
-var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
-
 type compiledFilter struct {
 	keyword     string
 	response    savedresponse.Response

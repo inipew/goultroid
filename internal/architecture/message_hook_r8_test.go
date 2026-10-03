@@ -90,10 +90,10 @@ func TestR8StatefulProductionHooksDeclareStateGateInRegistration(t *testing.T) {
 func TestR8ProductionDecisionHookAllowlist(t *testing.T) {
 	root := repositoryRoot(t)
 	allowed := map[string]struct{}{
-		"plugins/afk/afk.go":                         {},
-		"plugins/blacklist/message_hook_r6.go":       {},
-		"plugins/filters/message_hook_r6.go":         {},
-		"plugins/pmpermit/message_hook_r6.go":        {},
+		"plugins/afk/afk.go":                   {},
+		"plugins/blacklist/message_hook_r6.go": {},
+		"plugins/filters/message_hook_r6.go":   {},
+		"plugins/pmpermit/message_hook_r6.go":  {},
 	}
 
 	matches, err := filepath.Glob(filepath.Join(root, "plugins", "*", "*.go"))
@@ -124,6 +124,43 @@ func TestR8ProductionDecisionHookAllowlist(t *testing.T) {
 		if !strings.Contains(source, "Execution: core.MessageHookExecutionPolicy") ||
 			!strings.Contains(source, "FailurePolicy:") {
 			t.Fatalf("decision-hook registration in %s does not declare explicit execution/failure policy", rel)
+		}
+	}
+}
+
+
+func TestR8ProductionPluginsDoNotReferenceRetiredHookAdapters(t *testing.T) {
+	root := repositoryRoot(t)
+	retired := []string{
+		"plugin.MessageEventPlugin",
+		"plugin.MessageEventRoutingPlugin",
+		"plugin.MessageEventStatePlugin",
+		"plugin.MessageHookPlugin",
+		"plugin.MessageHookRoutingPlugin",
+		"plugin.MessageHookStatePlugin",
+	}
+
+	matches, err := filepath.Glob(filepath.Join(root, "plugins", "*", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range matches {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := string(raw)
+		for _, name := range retired {
+			if strings.Contains(source, name) {
+				rel, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					t.Fatal(relErr)
+				}
+				t.Fatalf("production plugin %s still references retired hook adapter %s", filepath.ToSlash(rel), name)
+			}
 		}
 	}
 }

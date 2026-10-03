@@ -12,12 +12,8 @@ import (
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
-	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/tasks"
 )
-
-var _ plugin.MessageEventPlugin = (*Plugin)(nil)
-var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
 
 const (
 	MaxRulesPerChat       = 512

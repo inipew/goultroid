@@ -19,7 +19,7 @@ type r8LifecycleHookPlugin struct {
 	eventCount    atomic.Int32
 }
 
-func (*r8LifecycleHookPlugin) Name() string            { return "r8-lifecycle" }
+func (*r8LifecycleHookPlugin) Name() string             { return "r8-lifecycle" }
 func (*r8LifecycleHookPlugin) Commands() []core.Command { return nil }
 func (*r8LifecycleHookPlugin) Init() error              { return nil }
 func (*r8LifecycleHookPlugin) MessageHookPriority() int { return 50 }

@@ -17,8 +17,18 @@ func TestR4AFKTransitionAndWelcomeEffectBoundaries(t *testing.T) {
 	}
 	source := string(raw)
 
-	if !strings.Contains(source, "Ordering: core.MessageHookOrderingPlugin") {
-		t.Fatal("AFK outgoing transition must use plugin-global TaskEngine ordering")
+	registrationStart := strings.Index(source, "func (p *Plugin) MessageHookRegistrations()")
+	if registrationStart < 0 {
+		t.Fatal("AFK MessageHookRegistrations missing")
+	}
+	registrationEnd := strings.Index(source[registrationStart:], "func (p *Plugin) Capabilities()")
+	if registrationEnd < 0 {
+		t.Fatal("AFK MessageHookRegistrations boundary missing")
+	}
+	registrationBody := source[registrationStart : registrationStart+registrationEnd]
+	if !strings.Contains(registrationBody, "core.MessageHookDecision") ||
+		strings.Count(registrationBody, "core.MessageHookOrderingPlugin") != 1 {
+		t.Fatal("AFK outgoing transition must keep exactly one plugin-global decision ordering policy")
 	}
 	if !strings.Contains(source, "func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error") ||
 		!strings.Contains(source, "pctx.TaskClient()") {

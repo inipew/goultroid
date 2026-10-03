@@ -10,10 +10,10 @@ import (
 )
 
 type recordingHookRegistrar struct {
-	calls        int
-	registration core.MessageHookRegistration
+	calls         int
+	registration  core.MessageHookRegistration
 	registrations []core.MessageHookRegistration
-	cleaned      int
+	cleaned       int
 }
 
 func (r *recordingHookRegistrar) RegisterMessageHook(registration core.MessageHookRegistration) (func(), error) {
