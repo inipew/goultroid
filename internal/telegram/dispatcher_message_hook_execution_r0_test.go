@@ -170,12 +170,12 @@ func TestR0InactiveAFKStillAdmitsDecisionTask(t *testing.T) {
 	if spec.Pool != tasks.PoolID("interactive") || spec.Class != tasks.PriorityInteractive {
 		t.Fatalf("AFK inactive task entered unexpected lane: pool=%q class=%q", spec.Pool, spec.Class)
 	}
-	if spec.OrderingKey != "chat:2002" {
-		t.Fatalf("AFK inactive ordering key=%q, want current chat-scoped key", spec.OrderingKey)
+	if spec.OrderingKey != "msg-decision:chat:2002" {
+		t.Fatalf("AFK inactive ordering key=%q, want decision-domain chat key", spec.OrderingKey)
 	}
 }
 
-func TestR0DecisionAndEventTasksShareChatOrderingKey(t *testing.T) {
+func TestR1DecisionAndEventTasksUseDistinctOrderingDomains(t *testing.T) {
 	dispatcher := NewDispatcher(core.NewRouter("."), core.NewPermissions(1, nil), nil, zap.NewNop())
 	tasksClient := &r0RecordingTaskClient{runWork: true}
 	dispatcher.SetTasks(tasksClient)
@@ -223,11 +223,14 @@ func TestR0DecisionAndEventTasksShareChatOrderingKey(t *testing.T) {
 	if specs[0].Pool != tasks.PoolID("interactive") || specs[1].Pool != tasks.PoolID("general") {
 		t.Fatalf("unexpected pools: decision=%q event=%q", specs[0].Pool, specs[1].Pool)
 	}
-	if specs[0].OrderingKey != "chat:42" || specs[1].OrderingKey != "chat:42" {
-		t.Fatalf("current ordering keys: decision=%q event=%q, want both chat:42", specs[0].OrderingKey, specs[1].OrderingKey)
+	if specs[0].OrderingKey != "msg-decision:chat:42" {
+		t.Fatalf("decision ordering key=%q, want msg-decision:chat:42", specs[0].OrderingKey)
 	}
-	if specs[0].OrderingKey != specs[1].OrderingKey {
-		t.Fatalf("R0 reproducer requires current cross-lane collision: decision=%q event=%q", specs[0].OrderingKey, specs[1].OrderingKey)
+	if specs[1].OrderingKey != "msg-event:plugin:r0-event:chat:42" {
+		t.Fatalf("event ordering key=%q, want plugin-scoped event domain", specs[1].OrderingKey)
+	}
+	if specs[0].OrderingKey == specs[1].OrderingKey {
+		t.Fatalf("decision and event ordering domains still collide: %q", specs[0].OrderingKey)
 	}
 }
 
@@ -262,7 +265,7 @@ func TestR0DecisionOrderingIsChatScopedAcrossUpdates(t *testing.T) {
 	if len(specs) != 2 {
 		t.Fatalf("TaskEngine submissions=%d, want 2", len(specs))
 	}
-	if specs[0].OrderingKey != "chat:41" || specs[1].OrderingKey != "chat:42" {
+	if specs[0].OrderingKey != "msg-decision:chat:41" || specs[1].OrderingKey != "msg-decision:chat:42" {
 		t.Fatalf("unexpected chat-scoped ordering keys: %q, %q", specs[0].OrderingKey, specs[1].OrderingKey)
 	}
 	if specs[0].OrderingKey == specs[1].OrderingKey {

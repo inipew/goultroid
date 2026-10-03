@@ -335,7 +335,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			QuotaOwner:       tasks.OwnerID(registered.scope.Owner),
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
-			OrderingKey:      fmt.Sprintf("chat:%d", chatID),
+			OrderingKey:      messageHookDecisionOrderingKey(chatID),
 			ExecutionTimeout: 5 * time.Second,
 			Handler: func(taskCtx context.Context) error {
 				handled.Store(d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message))
@@ -422,7 +422,7 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 			QuotaOwner:       owner,
 			Pool:             "general",
 			Class:            class,
-			OrderingKey:      fmt.Sprintf("chat:%d", chatID),
+			OrderingKey:      messageHookEventOrderingKey(registered.scope, chatID),
 			ExecutionTimeout: 10 * time.Second,
 			Handler: func(taskCtx context.Context) error {
 				_ = d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message)
