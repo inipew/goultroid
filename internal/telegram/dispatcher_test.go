@@ -23,7 +23,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) *taskengine.Engine {
+func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) {
 	t.Helper()
 	engine := taskengine.NewEngine(taskengine.DefaultConfig)
 	if err := engine.Start(context.Background()); err != nil {
@@ -31,7 +31,6 @@ func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) *taskengine.
 	}
 	dispatcher.SetTasks(engine)
 	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
-	return engine
 }
 
 func TestDispatcher_OnNewMessage(t *testing.T) {
@@ -844,13 +843,12 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher(router, perms, nil, logger)
-	engine := configureDispatcherTasks(t, dispatcher)
+	configureDispatcherTasks(t, dispatcher)
 	dispatcher.SetSelfID(ownerID)
 	dispatcher.SetService(svc)
 
 	mgr := plugin.NewManager(router)
 	mgr.SetHookRegistrar(dispatcher)
-	mgr.SetTaskClient(engine)
 
 	afkRepo := afk.NewSQLiteRepository(db)
 	afkPlugin := afk.New(afkRepo, ownerID, func() core.TelegramServicer { return svc })
@@ -1000,8 +998,13 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	if err != nil || st == nil || st.IsAFK {
 		t.Fatalf("AFK transition must finish before the next update, got: %+v, err: %v", st, err)
 	}
-	// R4 invariant: state transition is committed before this update returns,
-	// but welcome delivery is an independent scoped TaskEngine effect.
+	svc.mu.Lock()
+	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
+	svc.mu.Unlock()
+	if !strings.Contains(lastSent, "Welcome back") {
+		t.Fatalf("welcome must be sent before the next update, got %q", lastSent)
+	}
+
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		st, err = afkRepo.GetAFK(ctx, ownerID)

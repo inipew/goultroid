@@ -14,13 +14,11 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
-	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
 var (
 	_ plugin.MessageEventRegistrationsPlugin = (*Plugin)(nil)
-	_ plugin.PluginContextInitializer        = (*Plugin)(nil)
 	_ plugin.ContextInitializer              = (*Plugin)(nil)
 	_ plugin.ScopeInitializer                = (*Plugin)(nil)
 	_ execution.CapabilityProvider           = (*Plugin)(nil)
@@ -53,21 +51,12 @@ func afkTemplateVars(reason, duration string) savedresponse.TemplateVars {
 	}}
 }
 
-const (
-	defaultWelcomeDeleteDelay = 0
-	afkWelcomeEffectTimeout   = 15 * time.Second
-)
+const defaultWelcomeDeleteDelay = 0
 
 type afkState struct {
 	isAFK  bool
 	reason string
 	since  time.Time
-}
-
-type afkWelcomeEffect struct {
-	ChatID   int64
-	Peer     core.PeerRef
-	Duration string
 }
 
 type TelegramService interface {
@@ -94,8 +83,6 @@ type Plugin struct {
 	cooldownMap        map[[2]int64]time.Time
 	cooldownDur        time.Duration
 	scope              *plugin.Scope
-	tasks              tasks.Client
-	effectSeq          atomic.Uint64
 	delivery           *savedresponse.ResponseDelivery
 }
 
@@ -247,25 +234,6 @@ func (p *Plugin) SetCooldown(duration time.Duration) {
 }
 func (p *Plugin) InitContext(ctx context.Context) error { return p.loadState(ctx) }
 
-func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
-	if pctx == nil {
-		return fmt.Errorf("afk plugin context cannot be nil")
-	}
-	scope := pctx.Scope()
-	if scope == nil {
-		return fmt.Errorf("afk plugin scope cannot be nil")
-	}
-	client, err := pctx.TaskClient()
-	if err != nil {
-		return fmt.Errorf("afk: initialize task client: %w", err)
-	}
-	p.stateMu.Lock()
-	p.scope = scope
-	p.tasks = client
-	p.stateMu.Unlock()
-	return p.loadState(pctx)
-}
-
 func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 	if scope == nil {
 		return fmt.Errorf("afk plugin scope cannot be nil")
@@ -274,28 +242,6 @@ func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 	p.scope = scope
 	p.stateMu.Unlock()
 	return p.loadState(scope.Context())
-}
-
-func (p *Plugin) SetTaskClient(client tasks.Client) {
-	p.stateMu.Lock()
-	p.tasks = client
-	p.stateMu.Unlock()
-}
-
-func (p *Plugin) getTaskClient() tasks.Client {
-	p.stateMu.RLock()
-	defer p.stateMu.RUnlock()
-	return p.tasks
-}
-
-func (p *Plugin) taskScope() tasks.ScopeIdentity {
-	p.stateMu.RLock()
-	scope := p.scope
-	p.stateMu.RUnlock()
-	if scope == nil {
-		return tasks.ScopeIdentity{}
-	}
-	return tasks.ScopeIdentity{Owner: scope.Owner(), Generation: scope.Generation()}
 }
 
 func (p *Plugin) Init() error {
@@ -324,26 +270,6 @@ func (p *Plugin) loadState(ctx context.Context) error {
 }
 
 func (p *Plugin) MessageHookPriority() int { return 50 }
-
-func (p *Plugin) outgoingFastGate(facts core.MessageHookFacts) bool {
-	st := p.state.Load()
-	if st == nil || !st.isAFK {
-		return false
-	}
-	if facts.Origin == core.ExecutionAutomation {
-		return false
-	}
-	if facts.IsCommand && strings.EqualFold(facts.CommandName, "afk") {
-		return false
-	}
-	return true
-}
-
-func (p *Plugin) incomingFastGate(core.MessageHookFacts) bool {
-	st := p.state.Load()
-	return st != nil && st.isAFK && p.AutoReplyEnabled()
-}
-
 func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 	return []core.MessageHookRegistration{
 		{
@@ -351,11 +277,6 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 			Routing: core.MessageHookRouting{
 				Lane:      core.MessageHookDecision,
 				Interests: []core.MessageHookInterest{{Directions: core.MessageDirectionOutgoing, Peers: core.MessagePeerStable}},
-			},
-			FastGate: p.outgoingFastGate,
-			Execution: core.MessageHookExecutionPolicy{
-				FailurePolicy: core.MessageHookFailOpen,
-				Ordering:      core.MessageHookOrderingPlugin,
 			},
 			Handler: p.HandleMessageEvent,
 		},
@@ -368,10 +289,6 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 					{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireMention: true},
 					{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireReply: true},
 				},
-			},
-			FastGate: p.incomingFastGate,
-			Execution: core.MessageHookExecutionPolicy{
-				FailurePolicy: core.MessageHookFailOpen,
 			},
 			Handler: p.HandleMessageEvent,
 		},
@@ -506,16 +423,16 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		return nil
 	}
 	ownerID := p.ownerID
-	if ownerID == 0 {
+	if ownerID == 0 || p.svcFunc == nil {
+		return nil
+	}
+	svc := p.svcFunc()
+	if svc == nil {
 		return nil
 	}
 
 	if message.Outgoing {
-		var svc TelegramService
-		if p.svcFunc != nil {
-			svc = p.svcFunc()
-		}
-		if svc != nil && svc.IsBotSent(message.ID) {
+		if svc.IsBotSent(message.ID) {
 			return nil
 		}
 		if decision := core.GetMessageDecision(ctx); decision != nil && decision.Origin() == core.ExecutionAutomation {
@@ -536,20 +453,8 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		}
 		p.Cleanup(0)
 		if message.IsPrivate() || !p.isWelcomePrivateOnly() {
-			if err := p.submitWelcomeEffect(ctx, message, dur); err != nil {
-				if logger := p.getLogger(); logger != nil {
-					logger.Warn("failed to schedule welcome back effect", zap.Error(err), zap.Int64("chat_id", message.ChatID))
-				}
-			}
+			p.sendWelcome(ctx, svc, message, dur)
 		}
-		return nil
-	}
-
-	if p.svcFunc == nil {
-		return nil
-	}
-	svc := p.svcFunc()
-	if svc == nil {
 		return nil
 	}
 
@@ -619,86 +524,23 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	}
 	return nil
 }
-
-func (p *Plugin) submitWelcomeEffect(
-	admissionCtx context.Context,
-	message *core.MessageEnvelope,
-	duration string,
-) error {
-	if message == nil {
-		return nil
-	}
-	client := p.getTaskClient()
-	if client == nil {
-		return fmt.Errorf("afk: TaskEngine client is not configured")
-	}
-	if admissionCtx == nil {
-		admissionCtx = context.Background()
-	}
-	effect := afkWelcomeEffect{
-		ChatID:   message.ChatID,
-		Peer:     message.Peer,
-		Duration: duration,
-	}
-	owner := tasks.OwnerID("plugin:afk")
-	spec := tasks.WorkSpec{
-		ID: tasks.TaskID(fmt.Sprintf(
-			"afk:welcome:%d:%d",
-			p.ownerID,
-			p.effectSeq.Add(1),
-		)),
-		Scope:            p.taskScope(),
-		QuotaOwner:       owner,
-		Pool:             tasks.PoolID("general"),
-		Class:            tasks.PriorityNormal,
-		OrderingKey:      fmt.Sprintf("afk-effect:%d", p.ownerID),
-		ExecutionTimeout: afkWelcomeEffectTimeout,
-		Input: fmt.Sprintf(
-			"%d:%d:%d:%d:%s",
-			effect.ChatID,
-			effect.Peer.Kind,
-			effect.Peer.ID,
-			effect.Peer.AccessHash,
-			effect.Duration,
-		),
-		Handler: func(taskCtx context.Context) error {
-			return p.sendWelcomeEffect(taskCtx, effect)
-		},
-	}
-	if _, err := client.Submit(admissionCtx, spec); err != nil {
-		return fmt.Errorf("submit AFK welcome effect: %w", err)
-	}
-	return nil
-}
-
-func (p *Plugin) sendWelcomeEffect(ctx context.Context, effect afkWelcomeEffect) error {
-	if p.svcFunc == nil {
-		return fmt.Errorf("afk: telegram service is unavailable")
-	}
-	svc := p.svcFunc()
-	if svc == nil {
-		return fmt.Errorf("afk: telegram service is unavailable")
-	}
-	peer := p.resolvePeerRef(ctx, effect.Peer)
+func (p *Plugin) sendWelcome(ctx context.Context, svc TelegramService, message *core.MessageEnvelope, dur string) {
+	peer := p.resolveEnvelopePeer(ctx, message)
 	if peer == nil {
 		if logger := p.getLogger(); logger != nil {
-			logger.Warn("failed to resolve welcome back peer; sending to Saved Messages", zap.Int64("chat_id", effect.ChatID))
+			logger.Warn("failed to resolve welcome back peer; sending to Saved Messages", zap.Int64("chat_id", message.ChatID))
 		}
 		peer = &tg.InputPeerSelf{}
 	}
-	sent, err := p.sendTemplate(ctx, svc, peer, afkWelcomeResponse, afkWelcomeTemplate, afkTemplateVars("", effect.Duration))
+	sent, err := p.sendTemplate(ctx, svc, peer, afkWelcomeResponse, afkWelcomeTemplate, afkTemplateVars("", dur))
 	if err != nil {
-		if logger := p.getLogger(); logger != nil && ctx.Err() == nil {
+		if logger := p.getLogger(); logger != nil {
 			logger.Warn("failed to send welcome back message", zap.Error(err))
 		}
-		return err
-	}
-	if sent != nil && sent.ID > 0 {
+	} else if sent != nil && sent.ID > 0 {
 		p.deleteWelcomeAfter(svc, peer, sent.ID)
 	}
-	return nil
 }
-
 func (p *Plugin) deleteWelcomeAfter(svc TelegramService, peer tg.InputPeerClass, messageID int) {
 	delay := p.getWelcomeDeleteDelay()
 	if delay <= 0 || svc == nil || peer == nil || messageID <= 0 {
@@ -780,28 +622,24 @@ func (p *Plugin) resolveEnvelopePeer(ctx context.Context, message *core.MessageE
 	if message == nil {
 		return nil
 	}
-	return p.resolvePeerRef(ctx, message.Peer)
-}
-
-func (p *Plugin) resolvePeerRef(ctx context.Context, ref core.PeerRef) tg.InputPeerClass {
-	if peer, err := ref.InputPeer(); err == nil && peer != nil {
+	if peer, err := message.Peer.InputPeer(); err == nil && peer != nil {
 		return peer
 	}
 	resolver := p.getResolver()
-	if resolver == nil || ref.ID == 0 {
+	if resolver == nil || message.Peer.ID == 0 {
 		return nil
 	}
-	switch ref.Kind {
+	switch message.Peer.Kind {
 	case core.PeerKindUser:
-		if peer, _, err := resolver.ResolveUser(ctx, strconv.FormatInt(ref.ID, 10)); err == nil {
+		if peer, _, err := resolver.ResolveUser(ctx, strconv.FormatInt(message.Peer.ID, 10)); err == nil {
 			if userPeer, ok := peer.(*tg.InputPeerUser); ok && userPeer.AccessHash != 0 {
 				return userPeer
 			}
 		}
 	case core.PeerKindChat:
-		return &tg.InputPeerChat{ChatID: ref.ID}
+		return &tg.InputPeerChat{ChatID: message.Peer.ID}
 	case core.PeerKindChannel:
-		if peer, err := resolver.ResolveChat(ctx, fmt.Sprintf("-100%d", ref.ID)); err == nil {
+		if peer, err := resolver.ResolveChat(ctx, fmt.Sprintf("-100%d", message.Peer.ID)); err == nil {
 			if channelPeer, ok := peer.(*tg.InputPeerChannel); ok && channelPeer.AccessHash != 0 {
 				return channelPeer
 			}

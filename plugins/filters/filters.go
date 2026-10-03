@@ -37,6 +37,9 @@ var filterTaskSequence atomic.Uint64
 
 var ErrRuleLimit = fmt.Errorf("%w: filter rule limit exceeded", core.ErrResourceLimit)
 
+var _ plugin.MessageEventPlugin = (*Plugin)(nil)
+var _ plugin.MessageEventStatePlugin = (*Plugin)(nil)
+
 type compiledFilter struct {
 	keyword     string
 	response    savedresponse.Response
@@ -184,7 +187,7 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return fmt.Errorf("filters: initialize task client: %w", err)
 	}
 	p.tasks = client
-	return p.InitContext(pctx)
+	return nil
 }
 
 func (p *Plugin) InitContext(ctx context.Context) error {

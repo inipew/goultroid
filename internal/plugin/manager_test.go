@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 )
 
@@ -159,21 +160,16 @@ func (r *rawCommandPlugin) Shutdown() error          { return nil }
 
 type mockHookPlugin struct {
 	dummyPlugin
+	hookCalled bool
 }
 
-func (m *mockHookPlugin) MessageHookPriority() int { return 42 }
+func (m *mockHookPlugin) HandleIncomingMessage(ctx context.Context, e tg.Entities, msg *tg.Message, isCmd bool, cmdName string) error {
+	m.hookCalled = true
+	return nil
+}
 
-func (m *mockHookPlugin) MessageHookRegistrations() []core.MessageHookRegistration {
-	return []core.MessageHookRegistration{{
-		Routing: core.MessageHookRouting{
-			Lane: core.MessageHookEvent,
-			Interests: []core.MessageHookInterest{{
-				Directions: core.MessageDirectionIncoming,
-				Peers:      core.MessagePeerPrivate,
-			}},
-		},
-		Handler: func(context.Context, *core.MessageEnvelope) error { return nil },
-	}}
+func (m *mockHookPlugin) MessageHookPriority() int {
+	return 42
 }
 
 type mockHookRegistrar struct {
@@ -208,8 +204,11 @@ func TestManager_HookRegistrationAndShutdown(t *testing.T) {
 		t.Errorf("expected 1 hook registered, got %d", registrar.registered)
 	}
 
-	if registrar.last.Handler == nil || registrar.last.RawHandler != nil || registrar.last.LegacyRouting {
-		t.Fatalf("unexpected explicit hook registration: %+v", registrar.last)
+	if registrar.last.RawHandler == nil || registrar.last.Handler != nil {
+		t.Fatal("raw compatibility hook was not registered through the raw handler slot")
+	}
+	if !registrar.last.LegacyRouting {
+		t.Fatal("unrouted raw compatibility hook lost legacy routing semantics")
 	}
 	if registrar.last.Scope.Owner != "plugin:hook_plugin" || registrar.last.Scope.Generation == 0 {
 		t.Fatalf("unexpected hook scope: %+v", registrar.last.Scope)

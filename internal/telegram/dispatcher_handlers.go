@@ -22,23 +22,18 @@ const (
 	PriorityObservability HandlerPriority = 90 // UserLog, Analytics, Auditing
 )
 
-type HandlerFailurePolicy = core.MessageHookFailurePolicy
+type HandlerFailurePolicy uint8
 
 const (
-	FailurePolicyFailOpen   = core.MessageHookFailOpen
-	FailurePolicyFailClosed = core.MessageHookFailClosed
+	FailurePolicyFailOpen HandlerFailurePolicy = iota
+	FailurePolicyFailClosed
 )
 
 func failurePolicyForPriority(priority HandlerPriority) HandlerFailurePolicy {
-	policy, err := core.NormalizeMessageHookExecutionPolicy(
-		priority,
-		core.MessageHookDecision,
-		core.MessageHookExecutionPolicy{},
-	)
-	if err != nil {
-		return FailurePolicyFailOpen
+	if priority <= PrioritySecurity {
+		return FailurePolicyFailClosed
 	}
-	return policy.FailurePolicy
+	return FailurePolicyFailOpen
 }
 
 type prioritizedHandler struct {
@@ -46,34 +41,10 @@ type prioritizedHandler struct {
 	priority         HandlerPriority
 	failurePolicy    HandlerFailurePolicy
 	routing          core.MessageHookRouting
-	fastGate         core.MessageHookFastGate
 	stateGate        func(int64) bool
-	execution        core.MessageHookExecutionPolicy
 	handler          MessageHandler
 	canonicalHandler CanonicalMessageHandler
 	scope            tasks.ScopeIdentity
-}
-
-func messageHookExecutionPolicy(registered prioritizedHandler) core.MessageHookExecutionPolicy {
-	policy := registered.execution
-	if policy.FailurePolicy == core.MessageHookFailureDefault &&
-		registered.failurePolicy != core.MessageHookFailureDefault {
-		policy.FailurePolicy = registered.failurePolicy
-	}
-	normalized, err := core.NormalizeMessageHookExecutionPolicy(
-		registered.priority,
-		registered.routing.Lane,
-		policy,
-	)
-	if err == nil {
-		return normalized
-	}
-	fallback, _ := core.NormalizeMessageHookExecutionPolicy(
-		registered.priority,
-		registered.routing.Lane,
-		core.MessageHookExecutionPolicy{},
-	)
-	return fallback
 }
 
 const messageRouteClassCount = 256
@@ -111,21 +82,11 @@ func (d *Dispatcher) RegisterMessageHook(registration core.MessageHookRegistrati
 	if registration.LegacyRouting {
 		routing = legacyMessageHookRouting(registration.Priority, registration.Scope)
 	}
-	execution, err := core.NormalizeMessageHookExecutionPolicy(
-		registration.Priority,
-		routing.Lane,
-		registration.Execution,
-	)
-	if err != nil {
-		return nil, err
-	}
-	return d.addMessageHandlerWithExecution(
+	return d.addMessageHandler(
 		registration.Priority,
 		registration.Scope,
 		routing,
-		registration.FastGate,
 		registration.StateGate,
-		execution,
 		registration.RawHandler,
 		registration.Handler,
 	), nil
@@ -198,28 +159,6 @@ func (d *Dispatcher) AddScopedCanonicalMessageHandlerWithRoutingAndState(priorit
 }
 
 func (d *Dispatcher) addMessageHandler(priority HandlerPriority, scope tasks.ScopeIdentity, routing core.MessageHookRouting, stateGate func(int64) bool, h MessageHandler, canonical CanonicalMessageHandler) func() {
-	execution, err := core.NormalizeMessageHookExecutionPolicy(
-		priority,
-		routing.Lane,
-		core.MessageHookExecutionPolicy{},
-	)
-	if err != nil {
-		d.logger.Warn("invalid compatibility message hook execution policy", zap.Error(err))
-		return func() {}
-	}
-	return d.addMessageHandlerWithExecution(priority, scope, routing, nil, stateGate, execution, h, canonical)
-}
-
-func (d *Dispatcher) addMessageHandlerWithExecution(
-	priority HandlerPriority,
-	scope tasks.ScopeIdentity,
-	routing core.MessageHookRouting,
-	fastGate core.MessageHookFastGate,
-	stateGate func(int64) bool,
-	execution core.MessageHookExecutionPolicy,
-	h MessageHandler,
-	canonical CanonicalMessageHandler,
-) func() {
 	if h == nil && canonical == nil {
 		return func() {}
 	}
@@ -227,7 +166,7 @@ func (d *Dispatcher) addMessageHandlerWithExecution(
 	d.nextHandlerID++
 	id := d.nextHandlerID
 	d.messageHandlers = append(d.messageHandlers, prioritizedHandler{
-		id: id, priority: priority, failurePolicy: execution.FailurePolicy, routing: routing, fastGate: fastGate, stateGate: stateGate, execution: execution, handler: h, canonicalHandler: canonical, scope: scope,
+		id: id, priority: priority, failurePolicy: failurePolicyForPriority(priority), routing: routing, stateGate: stateGate, handler: h, canonicalHandler: canonical, scope: scope,
 	})
 	sort.SliceStable(d.messageHandlers, func(i, j int) bool {
 		return d.messageHandlers[i].priority < d.messageHandlers[j].priority
@@ -479,16 +418,10 @@ func (d *Dispatcher) safeExecuteRegisteredInterceptor(
 	msg *tg.Message,
 	message *core.MessageEnvelope,
 ) bool {
-	execution := messageHookExecutionPolicy(registered)
 	if registered.canonicalHandler != nil {
-		return d.safeExecuteMessageHookWithTimeout(
-			ctx,
-			execution.FailurePolicy,
-			execution.HandlerTimeout,
-			func(interceptorCtx context.Context) error {
-				return registered.canonicalHandler(interceptorCtx, message)
-			},
-		)
+		return d.safeExecuteMessageHook(ctx, registered.failurePolicy, func(interceptorCtx context.Context) error {
+			return registered.canonicalHandler(interceptorCtx, message)
+		})
 	}
 	if registered.handler == nil {
 		return false
@@ -498,33 +431,12 @@ func (d *Dispatcher) safeExecuteRegisteredInterceptor(
 		isCmd = message.IsCommand
 		cmdName = message.CommandName
 	}
-	return d.safeExecuteMessageHookWithTimeout(
-		ctx,
-		execution.FailurePolicy,
-		execution.HandlerTimeout,
-		func(interceptorCtx context.Context) error {
-			return registered.handler(interceptorCtx, e, msg, isCmd, cmdName)
-		},
-	)
+	return d.safeExecuteInterceptor(ctx, registered.handler, e, msg, isCmd, cmdName, registered.failurePolicy)
 }
 
 func (d *Dispatcher) safeExecuteMessageHook(
 	ctx context.Context,
 	policy HandlerFailurePolicy,
-	run func(context.Context) error,
-) bool {
-	return d.safeExecuteMessageHookWithTimeout(
-		ctx,
-		policy,
-		core.DefaultMessageHookHandlerTimeout,
-		run,
-	)
-}
-
-func (d *Dispatcher) safeExecuteMessageHookWithTimeout(
-	ctx context.Context,
-	policy HandlerFailurePolicy,
-	timeout time.Duration,
 	run func(context.Context) error,
 ) (handled bool) {
 	failClosed := policy == FailurePolicyFailClosed
@@ -538,7 +450,7 @@ func (d *Dispatcher) safeExecuteMessageHookWithTimeout(
 		}
 	}()
 
-	interceptorCtx, cancel := context.WithTimeout(ctx, timeout)
+	interceptorCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	if run == nil {

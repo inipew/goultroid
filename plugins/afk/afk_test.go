@@ -12,7 +12,6 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
-	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
 )
 
@@ -42,87 +41,6 @@ type blockingAFKRepository struct {
 	once    sync.Once
 	started chan struct{}
 	release chan struct{}
-}
-
-type afkTestTicket struct {
-	id     tasks.TaskID
-	done   chan struct{}
-	mu     sync.Mutex
-	result tasks.TaskResult
-}
-
-func (t *afkTestTicket) TaskID() tasks.TaskID { return t.id }
-func (t *afkTestTicket) State() tasks.TaskState {
-	select {
-	case <-t.done:
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		if t.result.IsSuccess() {
-			return tasks.StateCompleted
-		}
-		return tasks.StateFailed
-	default:
-		return tasks.StateRunning
-	}
-}
-func (t *afkTestTicket) Done() <-chan struct{} { return t.done }
-func (t *afkTestTicket) Result() (tasks.TaskResult, bool) {
-	select {
-	case <-t.done:
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		return t.result, true
-	default:
-		return tasks.TaskResult{}, false
-	}
-}
-func (t *afkTestTicket) Wait(ctx context.Context) (tasks.TaskResult, error) {
-	select {
-	case <-t.done:
-		t.mu.Lock()
-		defer t.mu.Unlock()
-		return t.result, nil
-	case <-ctx.Done():
-		return tasks.TaskResult{}, ctx.Err()
-	}
-}
-
-type afkTestTaskClient struct {
-	async bool
-}
-
-func (c *afkTestTaskClient) Submit(ctx context.Context, spec tasks.WorkSpec) (tasks.Ticket, error) {
-	ticket := &afkTestTicket{id: spec.ID, done: make(chan struct{})}
-	run := func() {
-		result := tasks.TaskResult{TaskID: spec.ID, Outcome: tasks.OutcomeCompleted}
-		if spec.Handler != nil {
-			if err := spec.Handler(ctx); err != nil {
-				result.Outcome = tasks.OutcomeFailed
-				result.Failure.Message = err.Error()
-			}
-		}
-		if spec.OnComplete != nil {
-			spec.OnComplete(result)
-		}
-		ticket.mu.Lock()
-		ticket.result = result
-		ticket.mu.Unlock()
-		close(ticket.done)
-	}
-	if c.async {
-		go run()
-	} else {
-		run()
-	}
-	return ticket, nil
-}
-
-func (*afkTestTaskClient) Cancel(tasks.TaskID, tasks.Cause) (tasks.CancelReceipt, error) {
-	return tasks.CancelReceipt{}, nil
-}
-func (*afkTestTaskClient) CancelScope(tasks.ScopeIdentity, tasks.Cause) int { return 0 }
-func (*afkTestTaskClient) Snapshot(tasks.TaskID) (tasks.TaskSnapshot, bool) {
-	return tasks.TaskSnapshot{}, false
 }
 
 func (r *blockingAFKRepository) SetAFK(ctx context.Context, userID int64, isAFK bool, reason string) error {
@@ -245,7 +163,6 @@ func TestAFKPlugin(t *testing.T) {
 
 	repo := NewSQLiteRepository(db)
 	p := New(repo, ownerID, func() core.TelegramServicer { return svc })
-	p.SetTaskClient(&afkTestTaskClient{})
 	p.SetWelcomeDeleteDelay(10 * time.Millisecond)
 	if p.Name() != "afk" {
 		t.Errorf("expected name afk, got %s", p.Name())
@@ -536,7 +453,6 @@ func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
 	}
 	ownerID := int64(1001)
 	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
-	p.SetTaskClient(&afkTestTaskClient{})
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -597,7 +513,6 @@ func TestAFKPlugin_WelcomeAfterOutgoingGroupMessage(t *testing.T) {
 	svc := &mockService{}
 	ownerID := int64(1001)
 	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
-	p.SetTaskClient(&afkTestTaskClient{})
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -636,7 +551,6 @@ func TestAFKPlugin_WelcomeInSavedMessagesWhenPrivatePeerCannotResolve(t *testing
 
 	svc := &mockService{}
 	p := New(NewSQLiteRepository(db), 1001, func() core.TelegramServicer { return svc })
-	p.SetTaskClient(&afkTestTaskClient{})
 	if err := p.enableAFK(context.Background(), "sleeping"); err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +569,6 @@ func TestAFKPlugin_WelcomeInSavedMessagesWhenPrivatePeerCannotResolve(t *testing
 func TestAFKPlugin_DefaultWelcomeRemainsVisible(t *testing.T) {
 	svc := &mockService{deleteCh: make(chan int, 1)}
 	p := New(nil, 1001, func() core.TelegramServicer { return svc })
-	p.SetTaskClient(&afkTestTaskClient{})
 	scope := plugin.NewScope(context.Background(), "plugin:afk")
 	if err := p.InitScope(scope.Context(), scope); err != nil {
 		t.Fatal(err)
@@ -683,10 +596,9 @@ func TestAFKPlugin_DefaultWelcomeRemainsVisible(t *testing.T) {
 	}
 }
 
-func TestAFKPlugin_OutgoingTransitionDoesNotWaitForWelcome(t *testing.T) {
+func TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder(t *testing.T) {
 	svc := &blockingWelcomeService{started: make(chan struct{}), release: make(chan struct{})}
 	p := New(nil, 1001, func() core.TelegramServicer { return svc })
-	p.SetTaskClient(&afkTestTaskClient{async: true})
 	scope := plugin.NewScope(context.Background(), "plugin:afk")
 	if err := p.InitScope(scope.Context(), scope); err != nil {
 		t.Fatal(err)
@@ -708,7 +620,6 @@ func TestAFKPlugin_OutgoingTransitionDoesNotWaitForWelcome(t *testing.T) {
 	entities := tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 111}}}
 	done := make(chan error, 1)
 	go func() { done <- handleMessageEvent(p, context.Background(), entities, msg, false, "") }()
-
 	select {
 	case <-svc.started:
 	case <-time.After(time.Second):
@@ -716,17 +627,16 @@ func TestAFKPlugin_OutgoingTransitionDoesNotWaitForWelcome(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
+		t.Fatalf("AFK update returned before welcome was sent: %v", err)
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("AFK transition remained blocked on asynchronous welcome delivery")
 	}
 	if st := p.state.Load(); st == nil || st.isAFK {
-		t.Fatalf("AFK should be inactive while welcome is still blocked: %+v", st)
+		t.Fatalf("AFK should be inactive while welcome is being sent: %+v", st)
 	}
-
 	close(svc.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAFKPlugin_ConcurrentNoArgCommandsToggleTwice(t *testing.T) {
@@ -960,7 +870,6 @@ func TestAFKPlugin_ConcurrentOutgoingAtomicCAS(t *testing.T) {
 	svc := &mockService{}
 	ownerID := int64(1001)
 	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
-	p.SetTaskClient(&afkTestTaskClient{})
 	p.SetWelcomePrivateOnly(false) // allow private welcome
 	_ = p.Init()
 
@@ -1354,53 +1263,5 @@ func TestAFKWelcomeDeleteRequiresManagedScope(t *testing.T) {
 	case deleted := <-svc.deleteCh:
 		t.Fatalf("unmanaged AFK plugin scheduled deletion for message %d", deleted)
 	case <-time.After(25 * time.Millisecond):
-	}
-}
-
-func TestAFKPlugin_FastGatesUseOnlyPublishedStateAndFacts(t *testing.T) {
-	p := New(nil, 1001, nil)
-	registrations := p.MessageHookRegistrations()
-	if len(registrations) != 2 {
-		t.Fatalf("registrations=%d, want 2", len(registrations))
-	}
-	outgoing := registrations[0].FastGate
-	incoming := registrations[1].FastGate
-	if outgoing == nil || incoming == nil {
-		t.Fatal("AFK registrations must expose fast gates")
-	}
-
-	manualOutgoing := core.MessageHookFacts{
-		ChatID:   2002,
-		Outgoing: true,
-		Origin:   core.ExecutionInteractive,
-	}
-	if outgoing(manualOutgoing) {
-		t.Fatal("inactive AFK admitted outgoing transition")
-	}
-
-	p.state.Store(&afkState{isAFK: true, reason: "busy", since: time.Now().UTC()})
-	if !outgoing(manualOutgoing) {
-		t.Fatal("active AFK rejected manual outgoing transition")
-	}
-
-	automation := manualOutgoing
-	automation.Origin = core.ExecutionAutomation
-	if outgoing(automation) {
-		t.Fatal("automation origin admitted AFK transition")
-	}
-
-	afkCommand := manualOutgoing
-	afkCommand.IsCommand = true
-	afkCommand.CommandName = "AfK"
-	if outgoing(afkCommand) {
-		t.Fatal("AFK command admitted auto-transition")
-	}
-
-	if !incoming(core.MessageHookFacts{ChatID: 2002}) {
-		t.Fatal("active AFK with auto-reply enabled rejected incoming event")
-	}
-	p.SetAutoReply(false)
-	if incoming(core.MessageHookFacts{ChatID: 2002}) {
-		t.Fatal("disabled AFK auto-reply admitted incoming event")
 	}
 }
