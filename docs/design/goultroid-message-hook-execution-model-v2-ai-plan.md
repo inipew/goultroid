@@ -994,7 +994,7 @@ R0 is **CLOSED**.
 
 ### R1 — Introduce explicit ordering domains
 
-Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+Status: **CLOSED — implementation, focused tests, race tests, admission tests, and AFK regression passed**
 
 Phase baseline:
 
@@ -1119,27 +1119,29 @@ A subsequent formatting diff check on those generated Go sources returned no for
 
 CI was not inspected or polled.
 
-#### R1.5 Required execution gate
+#### R1.5 Execution gate result
 
-Before R1 is marked CLOSED, run on the real repository checkout:
+The user executed the R1 gate on the real `test-next` checkout:
 
-```bash
+```text
 go test ./internal/telegram -run '^TestR[01]'
+ok   github.com/inipew/goultroid/internal/telegram  0.121s
+
 go test -race ./internal/telegram -run '^TestR[01]'
+ok   github.com/inipew/goultroid/internal/telegram  1.295s
+
 go test ./internal/admission
+ok   github.com/inipew/goultroid/internal/admission  0.003s
+
+go test ./plugins/afk -run 'TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder'
+ok   github.com/inipew/goultroid/plugins/afk  0.107s
+
 gofmt -w .
 git diff --check
+# clean
 ```
 
-Also keep the existing AFK regression green:
-
-```bash
-go test ./plugins/afk -run 'TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder'
-```
-
-If a failure is caused by R1, fix R1 production/tests before starting R2.
-
-Do not weaken/remove admission ordering to make the tests pass.
+CI was not inspected or polled.
 
 #### R1 gate
 
@@ -1147,33 +1149,250 @@ Implementation: **complete**.
 
 Test synchronization: **complete**.
 
-Local execution/race gate: **pending user checkout verification**.
+Focused execution/race/admission gate: **passed**.
 
-R2 must not start until this execution gate passes.
+R1 is **CLOSED**.
 
 ### R2 — Canonicalize registration execution policy
 
-Status: **PENDING**
+Status: **IMPLEMENTED / EXECUTION VERIFICATION PENDING**
+
+Phase baseline:
+
+- Refreshed branch: `test-next`
+- Phase-start HEAD: `ca73abef574acf241503da0636308490d70a24b7`
+- Phase-start commit: `docs(design): record r1 ordering implementation`
+- Implementation commit: `e02c7aa7e7d7b4b09e2aea42226609b752de3372` — `refactor(telegram): canonicalize message hook execution policy`
+- CI inspected/polled: **no**
 
 Purpose:
 
-Make one self-contained canonical registration model.
+Make canonical single and split message-hook registrations arrive at the dispatcher with one explicit execution contract rather than relying on scattered implicit defaults.
 
-Tasks:
+#### R2.1 Canonical execution policy
 
-- define canonical fast/state-gate handling for both single and split registrations;
-- make execution lane, failure policy, timeout, and ordering semantics explicit data rather than implicit priority magic where practical;
-- validate zero/invalid registrations;
-- preserve plugin scope attachment;
-- add partial-registration rollback test;
-- update manager/architecture fences;
-- keep compatibility adapters only where required by current callers.
+`core.MessageHookRegistration` now carries:
 
-Gate:
+```go
+Execution MessageHookExecutionPolicy
+```
 
-- single and multi registrations obey the same semantic contract;
-- no split registration silently bypasses state-gating capability;
-- failure semantics are testable without inferring them only from priority.
+The execution policy contains:
+
+```go
+FailurePolicy  MessageHookFailurePolicy
+HandlerTimeout time.Duration
+TaskTimeout    time.Duration
+Ordering       MessageHookOrderingPolicy
+```
+
+Canonical defaults preserve the pre-R2 runtime behavior:
+
+| Lane / priority | Failure default | Handler timeout | Task timeout | Ordering default |
+| --- | --- | ---: | ---: | --- |
+| decision, priority <= 10 | fail-closed | 5s | 5s | chat |
+| decision, priority > 10 | fail-open | 5s | 5s | chat |
+| event | fail-open for current production priorities | 5s | 10s | plugin + chat |
+
+Priority is now only the compatibility/default source for failure behavior when `FailurePolicy` is unspecified.
+
+An explicit failure policy wins over priority.
+
+The normalizer rejects:
+
+- invalid lane values;
+- invalid failure-policy values;
+- negative handler/task timeouts;
+- handler timeout greater than task timeout;
+- invalid ordering-policy values.
+
+#### R2.2 Single and split canonical registrations use one normalizer
+
+`internal/plugin/manager.go` now routes both canonical forms through:
+
+```text
+normalizeCanonicalMessageHookRegistration
+```
+
+That normalization:
+
+- attaches the authoritative plugin scope;
+- fills a zero per-registration priority from `MessageHookPriority()`;
+- inherits the plugin-level state gate when a registration does not provide its own;
+- preserves an explicit per-registration state gate override;
+- normalizes/validates execution policy;
+- rejects raw/legacy handler shapes in canonical registrations.
+
+The registrar therefore receives a self-contained canonical registration for both single and split plugins.
+
+#### R2.3 Split state-gate contract repaired
+
+`MessageEventStatePlugin` no longer requires `MessageEventRoutingPlugin`.
+
+It now requires only:
+
+```text
+MessageEventPlugin
+MessageHookInterested(chatID)
+```
+
+This is intentional.
+
+A split plugin can now provide:
+
+```text
+plugin-level dynamic state gate
++
+per-registration structural routing
+```
+
+without inventing a meaningless single `MessageHookRouting()`.
+
+For a split registration:
+
+- explicit `StateGate` wins;
+- otherwise the plugin-level `MessageHookInterested` gate is inherited;
+- if neither exists, the registration remains ungated.
+
+AFK still has no state gate in R2. R3 owns AFK fast-gate migration.
+
+#### R2.4 Split registration validation and rollback
+
+Multi-registration plugins now fail fast if they return zero registrations.
+
+Each canonical registration is validated before reaching the dispatcher.
+
+Partial registration rollback remains reverse-order and is now covered by a regression where:
+
+```text
+registration 1 succeeds
+registration 2 fails
+-> cleanup for registration 1 runs
+-> no partial hook set is accepted as a successful activation
+```
+
+Invalid execution policy is rejected before the invalid registration reaches the registrar.
+
+#### R2.5 Dispatcher consumes explicit policy
+
+`Dispatcher.RegisterMessageHook` normalizes the registration policy once after legacy routing is resolved.
+
+The dispatcher now uses the resulting policy for:
+
+- infrastructure/handler failure semantics;
+- handler context timeout;
+- TaskEngine `ExecutionTimeout`;
+- ordering-domain selection.
+
+R1 ordering remains the default:
+
+```text
+decision:
+    msg-decision:chat:<chatID>
+
+event:
+    msg-event:<plugin-owner>:chat:<chatID>
+```
+
+R2 also makes ordering an explicit policy field so future registrations may deliberately choose another supported domain instead of changing dispatcher-global logic.
+
+Compatibility `Add*MessageHandler` APIs still receive canonical defaults internally.
+
+The old prioritized-handler failure-policy mirror is retained temporarily so existing compatibility/unit-test fixtures are not forced through a mass rewrite in R2. Runtime registered hooks use the normalized `Execution` policy.
+
+#### R2.6 Tests added/updated
+
+Core:
+
+- `TestNormalizeMessageHookExecutionPolicyDefaults`
+- `TestNormalizeMessageHookExecutionPolicyPreservesExplicitFailurePolicy`
+- `TestNormalizeMessageHookExecutionPolicyRejectsInvalidBudgets`
+
+Plugin manager:
+
+- split registration priority normalization;
+- inherited split state gate;
+- explicit per-registration state-gate override;
+- explicit failure-policy preservation independent of priority;
+- single canonical execution-policy normalization;
+- zero split registration rejection;
+- partial split-registration rollback;
+- invalid execution-policy rejection before registrar.
+
+Dispatcher:
+
+- `TestR2ExecutionPolicyControlsTaskAndHandlerBudgets`
+  - proves explicit handler timeout reaches handler context;
+  - proves explicit task timeout reaches TaskEngine WorkSpec;
+  - proves explicit event chat-ordering policy changes only that registration's ordering domain.
+
+- `TestR2ExplicitFailurePolicyOverridesPriority`
+  - priority 10 + explicit fail-open remains fail-open when TaskEngine is unavailable;
+  - dispatcher no longer silently overwrites the explicit failure contract from priority.
+
+Architecture:
+
+- shared registration contract now fences the `Execution` field;
+- execution policy must retain `FailurePolicy`, `HandlerTimeout`, `TaskTimeout`, and `Ordering`;
+- canonical manager paths must pass through one normalization helper;
+- empty split registrations must retain fail-fast validation.
+
+#### R2.7 Formatting state
+
+Before the Go-changing R2 commit, the R2 formatting worktree was processed with:
+
+```bash
+gofmt -w .
+git diff --check
+```
+
+The real repository checkout must still run the normal project gate below before R2 is marked CLOSED.
+
+CI was not inspected or polled.
+
+#### R2.8 Required execution gate
+
+Run on the real `test-next` checkout:
+
+```bash
+go test ./internal/core -run 'TestNormalizeMessageHookExecutionPolicy'
+go test ./internal/plugin -run 'TestManager_(RegistersAndCleansUpSplitMessageHooks|RejectsEmptySplitMessageHooks|RollsBackPartialSplitHookRegistration|RejectsInvalidSplitExecutionPolicy|PrefersCanonicalMessageHook)'
+go test ./internal/telegram -run '^TestR[012]|TestDecisionHandler'
+go test ./internal/architecture -run '^TestP2AHook'
+go test ./internal/core ./internal/plugin ./internal/telegram ./internal/architecture
+go test -race ./internal/plugin -run 'TestManager_(RegistersAndCleansUpSplitMessageHooks|RollsBackPartialSplitHookRegistration|RejectsInvalidSplitExecutionPolicy)'
+go test -race ./internal/telegram -run '^TestR[012]|TestDecisionHandler'
+gofmt -w .
+git diff --check
+```
+
+Keep the previous AFK regression green:
+
+```bash
+go test ./plugins/afk -run 'TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder'
+```
+
+If a failure is attributable to R2, fix R2 code/tests before starting R3.
+
+Do not weaken execution-policy validation or restore implicit dispatcher priority inference merely to make a test pass.
+
+#### R2 gate
+
+Canonical registration model: **implemented**.
+
+Split state-gate inheritance: **implemented**.
+
+Explicit failure/timeout/ordering policy: **implemented**.
+
+Zero-registration validation: **implemented**.
+
+Partial rollback regression: **implemented**.
+
+Architecture fences: **updated**.
+
+Local execution/race gate: **pending user checkout verification**.
+
+R3 must not start until this execution gate passes.
 
 ### R3 — Add pure fast-gate facts
 
