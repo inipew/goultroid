@@ -187,7 +187,7 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return fmt.Errorf("filters: initialize task client: %w", err)
 	}
 	p.tasks = client
-	return nil
+	return p.InitContext(pctx)
 }
 
 func (p *Plugin) InitContext(ctx context.Context) error {
