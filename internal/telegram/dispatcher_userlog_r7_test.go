@@ -19,8 +19,9 @@ import (
 
 type r7BlockingUserLogService struct {
 	core.MockTelegramServicer
-	started chan struct{}
-	release chan struct{}
+	started   chan struct{}
+	release   chan struct{}
+	cancelled chan struct{}
 }
 
 func (s *r7BlockingUserLogService) SendMessage(
@@ -37,6 +38,11 @@ func (s *r7BlockingUserLogService) SendMessage(
 	case <-s.release:
 		return nil, core.NewRateLimitError(30*time.Second, errors.New("FLOOD_WAIT_30"))
 	case <-ctx.Done():
+		select {
+		case <-s.cancelled:
+		default:
+			close(s.cancelled)
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -66,8 +72,9 @@ func TestR7BlockedUserLogDeliveryDoesNotBlockDecisionLane(t *testing.T) {
 	dispatcher.SetSelfID(ownerID)
 
 	transport := &r7BlockingUserLogService{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+		started:   make(chan struct{}),
+		release:   make(chan struct{}),
+		cancelled: make(chan struct{}),
 	}
 	dispatcher.SetService(transport)
 	repo := userlogSvc.NewSQLiteRepository(db)
@@ -83,7 +90,17 @@ func TestR7BlockedUserLogDeliveryDoesNotBlockDecisionLane(t *testing.T) {
 	if err := mgr.Register(p); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = mgr.Disable(context.Background(), "userlog") }()
+	oldScope, ok := mgr.Scope("userlog")
+	if !ok || oldScope == nil {
+		t.Fatal("UserLog scope missing after registration")
+	}
+	oldGeneration := oldScope.Generation()
+	enabled := true
+	defer func() {
+		if enabled {
+			_ = mgr.Disable(context.Background(), "userlog")
+		}
+	}()
 
 	incomingEntities := tg.Entities{Users: map[int64]*tg.User{
 		2002: {ID: 2002, AccessHash: 123, FirstName: "Alice"},
@@ -145,6 +162,30 @@ func TestR7BlockedUserLogDeliveryDoesNotBlockDecisionLane(t *testing.T) {
 	case <-decisionStarted:
 	case <-time.After(time.Second):
 		t.Fatal("blocked UserLog observability RPC held interactive decision lane")
+	}
+
+	disableCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := mgr.Disable(disableCtx, "userlog"); err != nil {
+		t.Fatal(err)
+	}
+	enabled = false
+	select {
+	case <-transport.cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("UserLog disable did not cancel blocked generation-scoped delivery")
+	}
+
+	if err := mgr.Enable(context.Background(), "userlog"); err != nil {
+		t.Fatal(err)
+	}
+	enabled = true
+	newScope, ok := mgr.Scope("userlog")
+	if !ok || newScope == nil {
+		t.Fatal("UserLog scope missing after re-enable")
+	}
+	if newScope.Generation() == 0 || newScope.Generation() == oldGeneration {
+		t.Fatalf("UserLog generation=%d after reload, want new non-zero generation distinct from %d", newScope.Generation(), oldGeneration)
 	}
 
 	close(transport.release)
