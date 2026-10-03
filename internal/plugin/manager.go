@@ -63,6 +63,43 @@ func validateMessageHookAccess(pluginID string, p Plugin, gate *CapabilityGate) 
 	return nil
 }
 
+func canonicalMessageHookStateGate(p Plugin) func(int64) bool {
+	stateful, ok := p.(MessageEventStatePlugin)
+	if !ok {
+		return nil
+	}
+	return stateful.MessageHookInterested
+}
+
+func normalizeCanonicalMessageHookRegistration(
+	pluginID string,
+	registration core.MessageHookRegistration,
+	scope tasks.ScopeIdentity,
+	defaultPriority int,
+	inheritedStateGate func(int64) bool,
+) (core.MessageHookRegistration, error) {
+	if registration.Handler == nil || registration.RawHandler != nil || registration.LegacyRouting {
+		return core.MessageHookRegistration{}, fmt.Errorf("invalid canonical message hook registration for plugin %s", pluginID)
+	}
+	if registration.Priority == 0 {
+		registration.Priority = defaultPriority
+	}
+	registration.Scope = scope
+	if registration.StateGate == nil {
+		registration.StateGate = inheritedStateGate
+	}
+	execution, err := core.NormalizeMessageHookExecutionPolicy(
+		registration.Priority,
+		registration.Routing.Lane,
+		registration.Execution,
+	)
+	if err != nil {
+		return core.MessageHookRegistration{}, fmt.Errorf("invalid message hook execution policy for plugin %s: %w", pluginID, err)
+	}
+	registration.Execution = execution
+	return registration, nil
+}
+
 func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIdentity) (func(), error) {
 	if registrar == nil {
 		return nil, nil
@@ -70,6 +107,10 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 
 	if multi, ok := p.(MessageEventRegistrationsPlugin); ok {
 		registrations := multi.MessageHookRegistrations()
+		if len(registrations) == 0 {
+			return nil, fmt.Errorf("canonical message hook plugin %s returned no registrations", p.Name())
+		}
+		inheritedStateGate := canonicalMessageHookStateGate(p)
 		cleanups := make([]func(), 0, len(registrations))
 		cleanupAll := func() {
 			for i := len(cleanups) - 1; i >= 0; i-- {
@@ -77,12 +118,18 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 			}
 		}
 		for _, registration := range registrations {
-			if registration.Handler == nil || registration.RawHandler != nil || registration.LegacyRouting {
+			normalized, err := normalizeCanonicalMessageHookRegistration(
+				p.Name(),
+				registration,
+				scope,
+				multi.MessageHookPriority(),
+				inheritedStateGate,
+			)
+			if err != nil {
 				cleanupAll()
-				return nil, fmt.Errorf("invalid canonical message hook registration for plugin %s", p.Name())
+				return nil, err
 			}
-			registration.Scope = scope
-			cleanup, err := registrar.RegisterMessageHook(registration)
+			cleanup, err := registrar.RegisterMessageHook(normalized)
 			if err != nil {
 				cleanupAll()
 				return nil, err
@@ -99,14 +146,19 @@ func registerMessageHook(registrar HookRegistrar, p Plugin, scope tasks.ScopeIde
 		if !ok {
 			return nil, fmt.Errorf("canonical message hook plugin %s must declare MessageHookRouting", p.Name())
 		}
-		registration := core.MessageHookRegistration{
-			Scope:    scope,
-			Priority: mhp.MessageHookPriority(),
-			Routing:  routed.MessageHookRouting(),
-			Handler:  mhp.HandleMessageEvent,
-		}
-		if stateful, ok := p.(MessageEventStatePlugin); ok {
-			registration.StateGate = stateful.MessageHookInterested
+		registration, err := normalizeCanonicalMessageHookRegistration(
+			p.Name(),
+			core.MessageHookRegistration{
+				Priority: mhp.MessageHookPriority(),
+				Routing:  routed.MessageHookRouting(),
+				Handler:  mhp.HandleMessageEvent,
+			},
+			scope,
+			mhp.MessageHookPriority(),
+			canonicalMessageHookStateGate(p),
+		)
+		if err != nil {
+			return nil, err
 		}
 		return registrar.RegisterMessageHook(registration)
 	}

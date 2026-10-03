@@ -308,6 +308,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 		if !d.messageHookStateInterested(registered, chatID) {
 			continue
 		}
+		execution := messageHookExecutionPolicy(registered)
 		if registered.scope.IsZero() { // compatibility for local/test handlers
 			if d.safeExecuteRegisteredInterceptor(decisionCtx, registered, e, msg, message) {
 				return true
@@ -316,7 +317,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 		}
 		client := d.taskClient()
 		if client == nil {
-			failClosed := registered.failurePolicy == FailurePolicyFailClosed
+			failClosed := execution.FailurePolicy == FailurePolicyFailClosed
 			d.logger.Warn("decision handler execution unavailable",
 				zap.Uint64("handler_id", registered.id),
 				zap.Bool("fail_closed", failClosed),
@@ -335,8 +336,8 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			QuotaOwner:       tasks.OwnerID(registered.scope.Owner),
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
-			OrderingKey:      messageHookDecisionOrderingKey(chatID),
-			ExecutionTimeout: 5 * time.Second,
+			OrderingKey:      messageHookOrderingKey(registered, chatID),
+			ExecutionTimeout: execution.TaskTimeout,
 			Handler: func(taskCtx context.Context) error {
 				handled.Store(d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message))
 				return nil
@@ -345,7 +346,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 		})
 		if err != nil {
 			d.inFlight.Done()
-			failClosed := registered.failurePolicy == FailurePolicyFailClosed
+			failClosed := execution.FailurePolicy == FailurePolicyFailClosed
 			d.logger.Warn("decision handler admission rejected",
 				zap.Uint64("handler_id", registered.id),
 				zap.Bool("fail_closed", failClosed),
@@ -357,7 +358,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			continue
 		}
 		if _, err := ticket.Wait(decisionCtx); err != nil {
-			failClosed := registered.failurePolicy == FailurePolicyFailClosed
+			failClosed := execution.FailurePolicy == FailurePolicyFailClosed
 			d.logger.Warn("decision handler deadline exceeded",
 				zap.Uint64("handler_id", registered.id),
 				zap.Bool("fail_closed", failClosed),
@@ -406,6 +407,7 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 		if !d.messageHookStateInterested(registered, chatID) {
 			continue
 		}
+		execution := messageHookExecutionPolicy(registered)
 		d.inFlight.Add(1)
 		owner := tasks.OwnerID("telegram:feature")
 		class := tasks.PriorityNormal
@@ -422,8 +424,8 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 			QuotaOwner:       owner,
 			Pool:             "general",
 			Class:            class,
-			OrderingKey:      messageHookEventOrderingKey(registered.scope, chatID),
-			ExecutionTimeout: 10 * time.Second,
+			OrderingKey:      messageHookOrderingKey(registered, chatID),
+			ExecutionTimeout: execution.TaskTimeout,
 			Handler: func(taskCtx context.Context) error {
 				_ = d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message)
 				return nil

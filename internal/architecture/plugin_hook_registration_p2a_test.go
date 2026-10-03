@@ -74,8 +74,14 @@ func TestP2AHookRegistrarUsesSingleRegistrationContract(t *testing.T) {
 	if strings.Contains(body, "registrar.(") {
 		t.Fatal("registerMessageHook still capability-probes the registrar")
 	}
-	if strings.Count(body, "registrar.RegisterMessageHook(registration)") != 3 {
+	if strings.Count(body, "registrar.RegisterMessageHook(") != 3 {
 		t.Fatal("raw, canonical, and split canonical registration must converge on the single registrar contract")
+	}
+	if !strings.Contains(body, "normalizeCanonicalMessageHookRegistration(") {
+		t.Fatal("canonical hook registrations must normalize through one execution-policy path")
+	}
+	if !strings.Contains(body, "len(registrations) == 0") {
+		t.Fatal("split canonical registrations must fail fast when empty")
 	}
 }
 
@@ -93,6 +99,7 @@ func TestP2AMessageHookRegistrationContractIsShared(t *testing.T) {
 		"Priority":      {},
 		"Routing":       {},
 		"StateGate":     {},
+		"Execution":     {},
 		"Handler":       {},
 		"RawHandler":    {},
 		"LegacyRouting": {},
@@ -129,6 +136,35 @@ func TestP2AMessageHookRegistrationContractIsShared(t *testing.T) {
 		}
 	}
 
+	var executionPolicy *ast.StructType
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok || typeSpec.Name.Name != "MessageHookExecutionPolicy" {
+				continue
+			}
+			executionPolicy, _ = typeSpec.Type.(*ast.StructType)
+		}
+	}
+	if executionPolicy == nil {
+		t.Fatal("core.MessageHookExecutionPolicy struct missing")
+	}
+	executionFields := map[string]bool{}
+	for _, field := range executionPolicy.Fields.List {
+		for _, name := range field.Names {
+			executionFields[name.Name] = true
+		}
+	}
+	for _, name := range []string{"FailurePolicy", "HandlerTimeout", "TaskTimeout", "Ordering"} {
+		if !executionFields[name] {
+			t.Errorf("MessageHookExecutionPolicy missing field %s", name)
+		}
+	}
+
 	dispatcherPath := filepath.Join(root, "internal", "telegram", "dispatcher_handlers.go")
 	raw, err := os.ReadFile(dispatcherPath)
 	if err != nil {
@@ -138,6 +174,7 @@ func TestP2AMessageHookRegistrationContractIsShared(t *testing.T) {
 	for _, marker := range []string{
 		"func (d *Dispatcher) RegisterMessageHook(registration core.MessageHookRegistration) (func(), error)",
 		"legacyMessageHookRouting(registration.Priority, registration.Scope)",
+		"core.NormalizeMessageHookExecutionPolicy(",
 	} {
 		if !strings.Contains(dispatcher, marker) {
 			t.Errorf("P2-A shared hook contract missing %q from dispatcher", marker)

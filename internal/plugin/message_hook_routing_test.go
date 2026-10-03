@@ -2,7 +2,9 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
@@ -73,10 +75,23 @@ func (p *splitHookTestPlugin) MessageHookPriority() int { return 50 }
 func (p *splitHookTestPlugin) HandleMessageEvent(context.Context, *core.MessageEnvelope) error {
 	return nil
 }
+func (p *splitHookTestPlugin) MessageHookInterested(chatID int64) bool { return chatID == 42 }
 func (p *splitHookTestPlugin) MessageHookRegistrations() []core.MessageHookRegistration {
 	return []core.MessageHookRegistration{
-		{Priority: 50, Routing: core.MessageHookRouting{Lane: core.MessageHookDecision}, Handler: p.HandleMessageEvent},
-		{Priority: 50, Routing: core.MessageHookRouting{Lane: core.MessageHookEvent}, Handler: p.HandleMessageEvent},
+		{
+			Routing: core.MessageHookRouting{Lane: core.MessageHookDecision},
+			Execution: core.MessageHookExecutionPolicy{
+				FailurePolicy: core.MessageHookFailClosed,
+			},
+			Handler: p.HandleMessageEvent,
+		},
+		{
+			Routing: core.MessageHookRouting{Lane: core.MessageHookEvent},
+			StateGate: func(chatID int64) bool {
+				return chatID == 7
+			},
+			Handler: p.HandleMessageEvent,
+		},
 	}
 }
 
@@ -107,12 +122,126 @@ func TestManager_RegistersAndCleansUpSplitMessageHooks(t *testing.T) {
 		if reg.Scope.Owner != "plugin:split_hook" || reg.Scope.Generation == 0 {
 			t.Fatalf("missing plugin scope: %+v", reg.Scope)
 		}
+		if reg.Priority != 50 {
+			t.Fatalf("normalized split priority=%d, want 50", reg.Priority)
+		}
+		if reg.Execution.HandlerTimeout != 5*time.Second {
+			t.Fatalf("handler timeout=%s, want 5s", reg.Execution.HandlerTimeout)
+		}
+	}
+	decision := registrar.registrations[0]
+	if decision.StateGate == nil || decision.StateGate(7) || !decision.StateGate(42) {
+		t.Fatal("split decision registration did not inherit plugin-level state gate")
+	}
+	if decision.Execution.FailurePolicy != core.MessageHookFailClosed ||
+		decision.Execution.TaskTimeout != 5*time.Second ||
+		decision.Execution.Ordering != core.MessageHookOrderingChat {
+		t.Fatalf("unexpected decision execution policy: %+v", decision.Execution)
+	}
+	event := registrar.registrations[1]
+	if event.StateGate == nil || !event.StateGate(7) || event.StateGate(42) {
+		t.Fatal("explicit split state gate was not preserved")
+	}
+	if event.Execution.FailurePolicy != core.MessageHookFailOpen ||
+		event.Execution.TaskTimeout != 10*time.Second ||
+		event.Execution.Ordering != core.MessageHookOrderingPluginChat {
+		t.Fatalf("unexpected event execution policy: %+v", event.Execution)
 	}
 	if err := mgr.Disable(context.Background(), "split_hook"); err != nil {
 		t.Fatal(err)
 	}
 	if registrar.cleaned != 2 {
 		t.Fatalf("cleaned %d hooks, want 2", registrar.cleaned)
+	}
+}
+
+type emptySplitHookTestPlugin struct {
+	splitHookTestPlugin
+}
+
+func (p *emptySplitHookTestPlugin) MessageHookRegistrations() []core.MessageHookRegistration {
+	return nil
+}
+
+type invalidPolicySplitHookTestPlugin struct {
+	splitHookTestPlugin
+}
+
+func (p *invalidPolicySplitHookTestPlugin) MessageHookRegistrations() []core.MessageHookRegistration {
+	return []core.MessageHookRegistration{{
+		Routing: core.MessageHookRouting{Lane: core.MessageHookDecision},
+		Execution: core.MessageHookExecutionPolicy{
+			TaskTimeout: -time.Second,
+		},
+		Handler: p.HandleMessageEvent,
+	}}
+}
+
+type failingSplitHookRegistrar struct {
+	calls    int
+	cleaned  int
+	failCall int
+}
+
+func (r *failingSplitHookRegistrar) RegisterMessageHook(core.MessageHookRegistration) (func(), error) {
+	r.calls++
+	call := r.calls
+	if call == r.failCall {
+		return nil, errors.New("forced registration failure")
+	}
+	return func() {
+		if call < r.failCall {
+			r.cleaned++
+		}
+	}, nil
+}
+
+func TestManager_RejectsEmptySplitMessageHooks(t *testing.T) {
+	mgr := NewManager(core.NewRouter("."))
+	registrar := &multiRecordingHookRegistrar{}
+	mgr.SetHookRegistrar(registrar)
+	p := &emptySplitHookTestPlugin{
+		splitHookTestPlugin: splitHookTestPlugin{dummyPlugin: dummyPlugin{name: "empty_split"}},
+	}
+
+	if err := mgr.Register(p); err == nil {
+		t.Fatal("expected empty split registration to fail")
+	}
+	if len(registrar.registrations) != 0 {
+		t.Fatalf("empty split reached registrar: %+v", registrar.registrations)
+	}
+}
+
+func TestManager_RollsBackPartialSplitHookRegistration(t *testing.T) {
+	mgr := NewManager(core.NewRouter("."))
+	registrar := &failingSplitHookRegistrar{failCall: 2}
+	mgr.SetHookRegistrar(registrar)
+	p := &splitHookTestPlugin{dummyPlugin: dummyPlugin{name: "partial_split"}}
+
+	if err := mgr.Register(p); err == nil {
+		t.Fatal("expected split registration failure")
+	}
+	if registrar.calls != 2 {
+		t.Fatalf("registrar calls=%d, want 2", registrar.calls)
+	}
+	if registrar.cleaned != 1 {
+		t.Fatalf("rolled back cleanups=%d, want 1", registrar.cleaned)
+	}
+}
+
+func TestManager_RejectsInvalidSplitExecutionPolicy(t *testing.T) {
+	mgr := NewManager(core.NewRouter("."))
+	registrar := &multiRecordingHookRegistrar{}
+	mgr.SetHookRegistrar(registrar)
+	p := &invalidPolicySplitHookTestPlugin{
+		splitHookTestPlugin: splitHookTestPlugin{dummyPlugin: dummyPlugin{name: "invalid_policy_split"}},
+	}
+
+	if err := mgr.Register(p); err == nil {
+		t.Fatal("expected invalid execution policy to fail registration")
+	}
+	if len(registrar.registrations) != 0 {
+		t.Fatalf("invalid execution policy reached registrar: %+v", registrar.registrations)
 	}
 }
 
@@ -148,6 +277,12 @@ func TestManager_PrefersCanonicalMessageHook(t *testing.T) {
 	}
 	if registration.Routing.Lane != core.MessageHookDecision {
 		t.Fatalf("unexpected routing: %+v", registration.Routing)
+	}
+	if registration.Execution.FailurePolicy != core.MessageHookFailOpen ||
+		registration.Execution.HandlerTimeout != 5*time.Second ||
+		registration.Execution.TaskTimeout != 5*time.Second ||
+		registration.Execution.Ordering != core.MessageHookOrderingChat {
+		t.Fatalf("unexpected canonical execution policy: %+v", registration.Execution)
 	}
 }
 

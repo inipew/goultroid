@@ -85,9 +85,12 @@ type MessageEventRegistrationsPlugin interface {
 	MessageHookRegistrations() []core.MessageHookRegistration
 }
 
-// MessageEventStatePlugin adds a fast dynamic feature-state gate to a canonical hook.
+// MessageEventStatePlugin adds a fast dynamic feature-state gate to canonical
+// hooks. It intentionally does not require a single MessageHookRouting method so
+// split-registration plugins can inherit one plugin-level state gate while still
+// declaring distinct routing per registration.
 type MessageEventStatePlugin interface {
-	MessageEventRoutingPlugin
+	MessageEventPlugin
 	MessageHookInterested(chatID int64) bool
 }
 
