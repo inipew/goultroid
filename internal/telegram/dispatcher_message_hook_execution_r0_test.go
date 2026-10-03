@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/plugins/afk"
 	"go.uber.org/zap"
@@ -140,6 +141,7 @@ func TestR3InactiveAFKSkipsDecisionBeforeTaskAdmission(t *testing.T) {
 	dispatcher.SetService(svc)
 	mgr := plugin.NewManager(router)
 	mgr.SetHookRegistrar(dispatcher)
+	mgr.SetTaskClient(tasksClient)
 	afkPlugin := afk.New(nil, ownerID, func() core.TelegramServicer { return svc })
 	if err := mgr.Register(afkPlugin); err != nil {
 		t.Fatalf("register AFK plugin: %v", err)
@@ -260,14 +262,16 @@ func TestR0DecisionOrderingIsChatScopedAcrossUpdates(t *testing.T) {
 	}
 }
 
-type r0BlockingRateLimitedWelcomeService struct {
+type r4BlockingRateLimitedWelcomeService struct {
 	afkTestService
-	welcomeStarted chan struct{}
-	releaseWelcome chan struct{}
-	startOnce      sync.Once
+	welcomeStarted  chan struct{}
+	welcomeCanceled chan struct{}
+	releaseWelcome  chan struct{}
+	startOnce       sync.Once
+	cancelOnce      sync.Once
 }
 
-func (s *r0BlockingRateLimitedWelcomeService) SendMessage(
+func (s *r4BlockingRateLimitedWelcomeService) SendMessage(
 	ctx context.Context,
 	peer tg.InputPeerClass,
 	text string,
@@ -280,11 +284,12 @@ func (s *r0BlockingRateLimitedWelcomeService) SendMessage(
 	case <-s.releaseWelcome:
 		return nil, core.NewRateLimitError(30*time.Second, errors.New("FLOOD_WAIT_30"))
 	case <-ctx.Done():
+		s.cancelOnce.Do(func() { close(s.welcomeCanceled) })
 		return nil, ctx.Err()
 	}
 }
 
-func TestR0AFKCommandStartWaitsForWelcomeRateLimitPath(t *testing.T) {
+func TestR4AFKCommandStartsBeforeWelcomeRateLimitCompletes(t *testing.T) {
 	const ownerID int64 = 1001
 	db, err := database.Open(":memory:")
 	if err != nil {
@@ -294,22 +299,28 @@ func TestR0AFKCommandStartWaitsForWelcomeRateLimitPath(t *testing.T) {
 
 	router := core.NewRouter(".")
 	dispatcher := NewDispatcher(router, core.NewPermissions(ownerID, nil), nil, zap.NewNop())
-	tasksClient := &r0RecordingTaskClient{runWork: true}
-	dispatcher.SetTasks(tasksClient)
+	engine := taskengine.NewEngine(taskengine.DefaultConfig)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Stop(context.Background()) }()
+	dispatcher.SetTasks(engine)
 	dispatcher.SetSelfID(ownerID)
 
-	svc := &r0BlockingRateLimitedWelcomeService{
+	svc := &r4BlockingRateLimitedWelcomeService{
 		afkTestService: afkTestService{
 			botSentIDs: make(map[int]bool),
 			messages:   make(map[int]*tg.Message),
 		},
-		welcomeStarted: make(chan struct{}),
-		releaseWelcome: make(chan struct{}),
+		welcomeStarted:  make(chan struct{}),
+		welcomeCanceled: make(chan struct{}),
+		releaseWelcome:  make(chan struct{}),
 	}
 	dispatcher.SetService(svc)
 
 	mgr := plugin.NewManager(router)
 	mgr.SetHookRegistrar(dispatcher)
+	mgr.SetTaskClient(engine)
 	repo := afk.NewSQLiteRepository(db)
 	afkPlugin := afk.New(repo, ownerID, func() core.TelegramServicer { return svc })
 	if err := mgr.Register(afkPlugin); err != nil {
@@ -324,12 +335,13 @@ func TestR0AFKCommandStartWaitsForWelcomeRateLimitPath(t *testing.T) {
 		_ = mgr.Disable(context.Background(), "afk")
 	}()
 
-	commandStarted := make(chan struct{})
+	commandStarted := make(chan bool, 1)
 	if err := router.Register(core.Command{
-		Name:       "r0probe",
+		Name:       "r4probe",
 		Permission: core.PermissionOwner,
-		Handler: func(*core.Context) error {
-			close(commandStarted)
+		Handler: func(ctx *core.Context) error {
+			state, stateErr := repo.GetAFK(ctx.Ctx, ownerID)
+			commandStarted <- stateErr == nil && state != nil && !state.IsAFK
 			return nil
 		},
 	}); err != nil {
@@ -359,7 +371,6 @@ func TestR0AFKCommandStartWaitsForWelcomeRateLimitPath(t *testing.T) {
 	if err != nil || state == nil || !state.IsAFK {
 		t.Fatalf("AFK activation state=%+v err=%v", state, err)
 	}
-	tasksClient.reset()
 
 	dispatchDone := make(chan error, 1)
 	entities := tg.Entities{Users: map[int64]*tg.User{
@@ -370,7 +381,7 @@ func TestR0AFKCommandStartWaitsForWelcomeRateLimitPath(t *testing.T) {
 			Message: &tg.Message{
 				ID:      402,
 				Out:     true,
-				Message: ".r0probe",
+				Message: ".r4probe",
 				PeerID:  &tg.PeerUser{UserID: 2002},
 				FromID:  &tg.PeerUser{UserID: ownerID},
 			},
@@ -380,39 +391,195 @@ func TestR0AFKCommandStartWaitsForWelcomeRateLimitPath(t *testing.T) {
 	select {
 	case <-svc.welcomeStarted:
 	case <-time.After(time.Second):
-		t.Fatal("AFK welcome did not reach the simulated rate-limit path")
+		t.Fatal("asynchronous AFK welcome did not start")
 	}
 
-	state, err = repo.GetAFK(context.Background(), ownerID)
-	if err != nil || state == nil || state.IsAFK {
-		t.Fatalf("AFK must already be inactive while welcome is blocked: state=%+v err=%v", state, err)
-	}
 	select {
-	case <-commandStarted:
-		t.Fatal("command started before the synchronous AFK welcome path returned")
-	case <-time.After(100 * time.Millisecond):
+	case inactive := <-commandStarted:
+		if !inactive {
+			t.Fatal("command started before AFK inactive state was committed")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("command start remained blocked on welcome/rate-limit effect")
 	}
 
-	close(svc.releaseWelcome)
 	select {
 	case err := <-dispatchDone:
 		if err != nil {
 			t.Fatalf("dispatch probe command: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("dispatcher did not continue after rate-limited welcome returned")
+		t.Fatal("dispatcher did not return while welcome effect was blocked")
 	}
-	select {
-	case <-commandStarted:
-	case <-time.After(time.Second):
-		t.Fatal("probe command did not start after AFK welcome path returned")
+
+	state, err = repo.GetAFK(context.Background(), ownerID)
+	if err != nil || state == nil || state.IsAFK {
+		t.Fatalf("AFK state regressed while welcome was blocked: state=%+v err=%v", state, err)
+	}
+
+	close(svc.releaseWelcome)
+	time.Sleep(25 * time.Millisecond)
+	state, err = repo.GetAFK(context.Background(), ownerID)
+	if err != nil || state == nil || state.IsAFK {
+		t.Fatalf("welcome failure rolled AFK back active: state=%+v err=%v", state, err)
+	}
+}
+
+func TestR4AFKTransitionOrderingIsPluginGlobalAcrossChats(t *testing.T) {
+	const ownerID int64 = 1001
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	repo := afk.NewSQLiteRepository(db)
+	if err := repo.SetAFK(context.Background(), ownerID, true, "ordering"); err != nil {
+		t.Fatal(err)
+	}
+
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, core.NewPermissions(ownerID, nil), nil, zap.NewNop())
+	tasksClient := &r0RecordingTaskClient{}
+	dispatcher.SetTasks(tasksClient)
+	dispatcher.SetSelfID(ownerID)
+
+	svc := &afkTestService{
+		botSentIDs: make(map[int]bool),
+		messages:   make(map[int]*tg.Message),
+	}
+	dispatcher.SetService(svc)
+	mgr := plugin.NewManager(router)
+	mgr.SetHookRegistrar(dispatcher)
+	mgr.SetTaskClient(tasksClient)
+	p := afk.New(repo, ownerID, func() core.TelegramServicer { return svc })
+	if err := mgr.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = mgr.Disable(context.Background(), "afk") }()
+
+	for i, chatID := range []int64{41, 42} {
+		if err := dispatcher.OnNewMessage(context.Background(), tg.Entities{}, &tg.UpdateNewMessage{
+			Message: &tg.Message{
+				ID:      500 + i,
+				Out:     true,
+				Message: "manual",
+				PeerID:  &tg.PeerChat{ChatID: chatID},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	specs := tasksClient.snapshot()
 	if len(specs) != 2 {
-		t.Fatalf("TaskEngine submissions=%d, want AFK decision + command", len(specs))
+		t.Fatalf("AFK decision submissions=%d, want 2", len(specs))
 	}
-	if !strings.HasPrefix(string(specs[0].ID), "decision:") || !strings.HasPrefix(string(specs[1].ID), "cmd:") {
-		t.Fatalf("unexpected submission order: %q then %q", specs[0].ID, specs[1].ID)
+	if specs[0].OrderingKey != "msg-decision:plugin:afk" ||
+		specs[1].OrderingKey != "msg-decision:plugin:afk" {
+		t.Fatalf("AFK owner-global ordering keys=%q, %q", specs[0].OrderingKey, specs[1].OrderingKey)
+	}
+}
+
+
+
+func TestR4AFKDisableCancelsScopedWelcomeEffect(t *testing.T) {
+	const ownerID int64 = 1001
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	repo := afk.NewSQLiteRepository(db)
+	if err := repo.SetAFK(context.Background(), ownerID, true, "reload"); err != nil {
+		t.Fatal(err)
+	}
+
+	router := core.NewRouter(".")
+	dispatcher := NewDispatcher(router, core.NewPermissions(ownerID, nil), nil, zap.NewNop())
+	engine := taskengine.NewEngine(taskengine.DefaultConfig)
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Stop(context.Background()) }()
+	dispatcher.SetTasks(engine)
+	dispatcher.SetSelfID(ownerID)
+
+	svc := &r4BlockingRateLimitedWelcomeService{
+		afkTestService: afkTestService{
+			botSentIDs: make(map[int]bool),
+			messages:   make(map[int]*tg.Message),
+		},
+		welcomeStarted:  make(chan struct{}),
+		welcomeCanceled: make(chan struct{}),
+		releaseWelcome:  make(chan struct{}),
+	}
+	dispatcher.SetService(svc)
+
+	mgr := plugin.NewManager(router)
+	mgr.SetHookRegistrar(dispatcher)
+	mgr.SetTaskClient(engine)
+	p := afk.New(repo, ownerID, func() core.TelegramServicer { return svc })
+	if err := mgr.Register(p); err != nil {
+		t.Fatal(err)
+	}
+	oldScope, ok := mgr.Scope("afk")
+	if !ok || oldScope == nil {
+		t.Fatal("AFK scope missing after registration")
+	}
+	oldGeneration := oldScope.Generation()
+
+	if err := dispatcher.OnNewMessage(context.Background(), tg.Entities{
+		Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 123}},
+	}, &tg.UpdateNewMessage{
+		Message: &tg.Message{
+			ID:      601,
+			Out:     true,
+			Message: "manual return",
+			PeerID:  &tg.PeerUser{UserID: 2002},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-svc.welcomeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("scoped welcome effect did not start")
+	}
+
+	disableCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := mgr.Disable(disableCtx, "afk"); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-svc.welcomeCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("plugin disable did not cancel stale welcome effect")
+	}
+
+	if err := mgr.Enable(context.Background(), "afk"); err != nil {
+		t.Fatal(err)
+	}
+	newScope, ok := mgr.Scope("afk")
+	if !ok || newScope == nil {
+		t.Fatal("AFK scope missing after re-enable")
+	}
+	if newScope.Generation() == 0 || newScope.Generation() == oldGeneration {
+		t.Fatalf(
+			"AFK re-enable generation=%d, want new non-zero generation distinct from %d",
+			newScope.Generation(),
+			oldGeneration,
+		)
+	}
+	defer func() { _ = mgr.Disable(context.Background(), "afk") }()
+
+	select {
+	case <-svc.releaseWelcome:
+	default:
+		close(svc.releaseWelcome)
 	}
 }

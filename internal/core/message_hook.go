@@ -78,6 +78,7 @@ const (
 	MessageHookOrderingDefault MessageHookOrderingPolicy = iota
 	MessageHookOrderingChat
 	MessageHookOrderingPluginChat
+	MessageHookOrderingPlugin
 )
 
 // MessageHookExecutionPolicy is the execution contract carried by every
@@ -150,7 +151,9 @@ func NormalizeMessageHookExecutionPolicy(
 			policy.Ordering = MessageHookOrderingPluginChat
 		}
 	}
-	if policy.Ordering != MessageHookOrderingChat && policy.Ordering != MessageHookOrderingPluginChat {
+	if policy.Ordering != MessageHookOrderingChat &&
+		policy.Ordering != MessageHookOrderingPluginChat &&
+		policy.Ordering != MessageHookOrderingPlugin {
 		return MessageHookExecutionPolicy{}, fmt.Errorf("invalid message hook ordering policy %d", policy.Ordering)
 	}
 

@@ -73,3 +73,18 @@ func TestNormalizeMessageHookExecutionPolicyRejectsInvalidBudgets(t *testing.T) 
 		t.Fatal("expected negative task timeout to fail")
 	}
 }
+
+
+func TestNormalizeMessageHookExecutionPolicyPreservesPluginGlobalOrdering(t *testing.T) {
+	policy, err := NormalizeMessageHookExecutionPolicy(
+		50,
+		MessageHookDecision,
+		MessageHookExecutionPolicy{Ordering: MessageHookOrderingPlugin},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Ordering != MessageHookOrderingPlugin {
+		t.Fatalf("ordering=%v, want plugin-global", policy.Ordering)
+	}
+}

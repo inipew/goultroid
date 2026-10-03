@@ -53,6 +53,7 @@ func newR3AFKFixture(t *testing.T, active bool) *r3AFKFixture {
 
 	mgr := plugin.NewManager(router)
 	mgr.SetHookRegistrar(dispatcher)
+	mgr.SetTaskClient(tasksClient)
 	p := afk.New(repo, ownerID, func() core.TelegramServicer { return svc })
 	if err := p.InitContext(context.Background()); err != nil {
 		t.Fatalf("load AFK state: %v", err)
