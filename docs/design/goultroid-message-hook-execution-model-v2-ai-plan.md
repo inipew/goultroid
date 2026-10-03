@@ -3047,6 +3047,59 @@ before R8 can be marked CLOSED.
 
 CI was not inspected or polled.
 
+#### R8.8a Final-gate repair after local verification
+
+The first authoritative R8 gate run on the user's checkout exposed three issues that the implementation-time source audit had missed.
+
+1. **Production compile assertions still referenced retired adapters.**
+
+   R8 removed `MessageEventPlugin` and `MessageEventStatePlugin` from `internal/plugin/plugin.go`, but these production files still contained compile-time assertions to the deleted types:
+
+   - `plugins/blacklist/blacklist.go`;
+   - `plugins/filters/filters.go`;
+   - `plugins/pmpermit/pmpermit.go`.
+
+   This caused the application build and the affected plugin packages to fail with `undefined: plugin.MessageEventPlugin` / `MessageEventStatePlugin`.
+
+2. **The R4 AFK architecture fence was formatting-sensitive.**
+
+   `TestR4AFKTransitionAndWelcomeEffectBoundaries` searched for the exact source string:
+
+   ```text
+   Ordering: core.MessageHookOrderingPlugin
+   ```
+
+   while the current gofmt form contains field alignment whitespace. The runtime invariant itself was still correct: AFK's outgoing decision registration still uses `MessageHookOrderingPlugin`.
+
+3. **R8 introduced gofmt drift in three tests.**
+
+   Running repository-wide `gofmt -w .` modified:
+
+   - `internal/architecture/message_hook_r8_test.go`;
+   - `internal/plugin/message_hook_routing_test.go`;
+   - `internal/telegram/dispatcher_message_hook_r8_test.go`.
+
+The repair is:
+
+`465a58bc5c14845bb7ba4ae4be33b513b964186a` — `fix(plugin): complete r8 hook adapter retirement`
+
+That repair:
+
+- removes the stale production assertions and now-unused imports;
+- changes the R4 fence to inspect the AFK registration body and require exactly one plugin-global decision ordering policy without depending on source alignment;
+- applies the same gofmt output observed in the user's checkout to the three R8 test files;
+- adds `TestR8ProductionPluginsDoNotReferenceRetiredHookAdapters`, which scans production plugins and rejects any future qualified reference to the retired manager adapter interfaces.
+
+Before the repair commit, the changed test/fence staging tree was processed with:
+
+```bash
+gofmt -w .
+```
+
+and `gofmt -l .` returned no files. The production changes themselves are deletion-only removal of stale assertions/imports from files that the user's repository-wide gofmt run had not modified.
+
+R8 remains **FINAL EXECUTION VERIFICATION PENDING** until the repaired final gate passes.
+
 #### R8.9 Required final execution gate
 
 Run on the real `test-next` checkout:
