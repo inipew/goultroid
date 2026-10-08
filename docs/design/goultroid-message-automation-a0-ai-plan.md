@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5 CLOSED; A6-A/B/C1 ACCEPTANCE CLOSED (2026-10-08); A6-C2 UserLog destination/category hardening IMPLEMENTED (acceptance pending); A6-D and A7 OPEN**. Historical A0–A4 records remain below.
+Status: **A5 CLOSED; A6-A/B/C1/C2 ACCEPTANCE CLOSED (2026-10-08); A6-D final observability/security gate IMPLEMENTED (acceptance pending); A7 OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -1013,3 +1013,79 @@ If any test/build/race failure occurs, repair its concrete source or fixture and
 A6-D is next: verify the combined privacy/redaction, callback/demotion/fail-closed security decisions, UserLog destination lifecycle and event backpressure, and resource settling. A7 will cover resource/SQLite/restart/FloodWait acceptance independently.
 
 **Status: A5 CLOSED; A6-A/B/C1 CLOSED; A6-C2 implementation pushed, acceptance pending; A6-D and A7 OPEN.**
+
+## 24. A6-C2 accepted; A6-D final observability/security acceptance gate (2026-10-08)
+
+### A6-C2 acceptance — CLOSED
+
+The user fast-forwarded from `572de40c` to `28b165c11a8caf5c6cdf29fc5faf9a9ed756c6ef` and supplied passing results for:
+
+- `go test ./internal/services/userlog ./plugins/userlog -run '^TestA6C2' -count=1`: **PASS**.
+- `go test -race ./internal/services/userlog ./plugins/userlog -run '^TestA6C2' -count=1`: **PASS**.
+- `go test ./internal/services/userlog ./plugins/userlog ./internal/telegram ./internal/core ./plugins/pmpermit ./plugins/afk ./plugins/filters ./plugins/blacklist ./internal/app`: **PASS**.
+- `go test -race ./...`: **PASS across the full repository**.
+
+The implementation and regression gate of A6-C2 are CLOSED by user-run test results. The two-key destination write path remains nontransactional across crash boundaries, as explicitly recorded in section 23. Neither multi-instance atomicity nor live Telegram transport was proved. No CI was checked.
+
+### A6-D cross-feature audit findings
+
+The preceding A6-A logging fix prevented raw parser text, panics and message hook execution errors from reaching structured logs. The final audit of `internal/telegram/dispatcher_dispatch.go` identified **uncovered admission and idempotency error sources** still logged via `zap.Error(err)`:
+
+- Legacy command idempotency lookup and command claim failures could retain arbitrary error strings.
+- Interactive command TaskEngine submission errors likewise reached server logs verbatim.
+- Security/feature decision handler TaskEngine `Submit` and `Ticket.Wait` errors were logged raw.
+- Observer/feature event-lane `Submit` errors were logged raw. An observer should not influence security decisions, nor persist the full error string.
+
+The codebase must preserve these differences: security failures are fail-closed, feature failures fail-open, UserLog observability is best effort with a bounded queue and no synchronous RPC in ingress. The fix must not add any second TaskEngine/executor/registry/worker. Existing A5 contextual authority gates and durable restart tests remain part of full A6 acceptance.
+
+### A6-D implemented — corrective commit, acceptance PENDING
+
+Commit `a511aff9e90e46d76de6ae5b3af7d2476e4b83b1`:
+
+- `internal/telegram/dispatcher_dispatch.go`: replace raw error logging on command idempotency, interactive admission, decision submit/wait and observer admission with Go error-type diagnostics. Static missing-TaskEngine errors use `error_code=tasks_unavailable`. This does not change admission return codes, decision policy, security handler order, TaskEngine scopes, RPC behavior or message contents.
+- `internal/telegram/dispatcher_observability_a6d_test.go`: uses the real Dispatcher with deterministic existing TaskEngine fake failures containing a secret marker. Verifies security submit/wait errors remain fail-closed, feature submit/wait errors remain fail-open, and observer submit errors do not execute rejected handlers. The asserted Zap log payload must contain no private marker or raw error field and must retain bounded diagnostic categories.
+- `internal/architecture/observability_a6d_test.go`: inventories concrete semantic acceptance proofs in their **owning packages** for parser/panic privacy, admission failure policy, audit snapshots, safe process/secret metadata, PMPermit EventBus, UserLog delivery health, configuration/restart, bounded queue, lazy worker retirement, EventBus subscription lifecycle, and selected A5 moderation gates. The test parses Go declarations and detects missing/renamed proof functions; **it does not substitute for executing those tests**, which is done by `go test -race ./...`. A second AST gate prohibits `zap.Error`, `zap.Any`, and untrusted `text/error/panic` structured-string keys in the reviewed Dispatcher/UserLog transport log sources.
+- The two added test files were formatted through `gofmt` and their Git blobs match local formatted SHA-1 hashes; production replacements were deliberately limited to existing formatted log expressions. **All A6-D Go and race tests are still pending on an authoritative full checkout.**
+
+### Final A6 acceptance matrix
+
+| Boundary | Required proof |
+| --- | --- |
+| Telegram private command parser | Malformed quote/escape never writes raw PM body into Zap |
+| Security vs feature decision | TaskEngine submit/wait failure retains fail-closed/fail-open policy; no raw error text |
+| Observer event hook | Admission rejection does not leak content or block security decisions |
+| Handler failure and panic | Hook errors/panics never leak raw values; failure policy retained |
+| Audit metadata | Allowlisted scalar metadata, bounded retained ring, snapshot immutability |
+| Process and secret | Arguments, owner text and credential fragments never retained in audit logs |
+| PMPermit EventBus | Owner-supplied reasons, raw Telegram errors and target names sanitized without losing action/status |
+| UserLog delivery | Only configured destination, category isolation, no recursion after restart, health error redaction |
+| UserLog pressure/lifecycle | Single bounded lazy worker, drop-on-full observer queue, cancellation before shutdown, subscriptions detached/rebound, no idle worker retention |
+| A5 group moderation | Fresh actor authorization under mutation lock, group isolation, canonical a2 stale replay and durable restart preserved |
+| Full repository | All named owner tests execute via full `go test -race ./...`, architecture inventory and logger fence pass |
+
+### Required A6-D gate — DO NOT DECLARE A6 CLOSED YET
+
+```bash
+git pull --ff-only
+gofmt -w internal/telegram/dispatcher_dispatch.go \
+  internal/telegram/dispatcher_observability_a6d_test.go \
+  internal/architecture/observability_a6d_test.go
+gofmt -l internal/telegram/dispatcher_dispatch.go \
+  internal/telegram/dispatcher_observability_a6d_test.go \
+  internal/architecture/observability_a6d_test.go
+
+go test ./internal/telegram -run '^TestA6D' -count=1
+go test -race ./internal/telegram -run '^TestA6D' -count=1
+go test ./internal/architecture -run '^TestA6D' -count=1
+go test -race ./internal/architecture -run '^TestA6D' -count=1
+go test ./internal/telegram ./internal/architecture ./internal/services/userlog \
+  ./internal/services/pmpermit ./internal/platform/audit ./internal/platform/process \
+  ./internal/platform/secret ./plugins/userlog ./plugins/afk ./plugins/pmpermit \
+  ./plugins/blacklist ./plugins/filters ./internal/app
+go test -race ./...
+git diff --check
+```
+
+If a test or race failure appears, repair source/test contracts and rerun `gofmt` before committing. Do not check/poll CI unless explicitly requested. Avoid re-auditing all of A0–A5 without evidence of a regression.
+
+**Status: A5 CLOSED; A6-A/B/C1/C2 CLOSED; A6-D implementation pushed, authoritative final acceptance PENDING. Overall A6 NOT CLOSED until green. A7 resource/restart/FloodWait acceptance is next.**
