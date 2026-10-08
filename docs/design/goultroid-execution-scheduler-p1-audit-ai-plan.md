@@ -168,20 +168,20 @@ Commands above are suggested existing baseline runs, **not** sufficient sustaine
 
 ## 8. P1-B first-pass source audit — 8 October 2026
 
-Baseline recheck: \`test-next\` HEAD \`0fe71d18c58050fa7eaf19e6d89ee36015797e9a\`, \`docs(execution): audit scheduler cancellation and sustained R5 R6 gates\`. The audit was performed using immutable GitHub source file reads. Container shell DNS could not resolve github.com, so there was **no runnable Goultroid checkout** and **no \`go test\`, \`go test -race\`, \`gofmt\`, build, or CI evidence**. No Go source was committed.
+Baseline recheck: `test-next` HEAD `0fe71d18c58050fa7eaf19e6d89ee36015797e9a`, `docs(execution): audit scheduler cancellation and sustained R5 R6 gates`. The audit was performed using immutable GitHub source file reads. Container shell DNS could not resolve github.com, so there was **no runnable Goultroid checkout** and **no `go test`, `go test -race`, `gofmt`, build, or CI evidence**. No Go source was committed.
 
 ### C1 — confirmed conditional non-atomic cancellation path (reproducer now specified)
 
 Source linkage:
-- \`internal/scheduler/access.go:27-49\`: scoped cancel authorizes against \`scheduled_jobs\` and delegates to \`Cancel\`.
-- \`internal/scheduler/engine.go:608-637\`: \`Cancel\` first calls \`DeleteScheduledJob\`, then \`Jobs.DisableSchedule\`. On the second operation error, it **returns immediately** before TaskEngine scope cancellation and any \`Jobs.CancelOccurrence\` call for a legacy tracked claim.
-- \`internal/scheduler/repository.go:692-706\`: compatibility delete is committed independently; a subsequent delete of a missing row returns an error.
-- \`internal/jobs/sqlite/store.go:1095-1107\`: \`DisableSchedule\` is an independent update of \`job_schedules.enabled\`; \`rows affected = 0\` is not itself an error.
-- \`internal/jobs/sqlite/store.go:1139-1147\` and \`1171-1178\`: redesigned due queries read **only** \`job_schedules.enabled\` and due times, not presence of the compatibility row.
-- \`internal/jobs/sqlite/store.go:1267-1351\`: materialization revalidates \`enabled\` inside the transaction but cannot reject an enabled orphan *solely* due to deleted compatibility state.
+- `internal/scheduler/access.go:27-49`: scoped cancel authorizes against `scheduled_jobs` and delegates to `Cancel`.
+- `internal/scheduler/engine.go:608-637`: `Cancel` first calls `DeleteScheduledJob`, then `Jobs.DisableSchedule`. On the second operation error, it **returns immediately** before TaskEngine scope cancellation and any `Jobs.CancelOccurrence` call for a legacy tracked claim.
+- `internal/scheduler/repository.go:692-706`: compatibility delete is committed independently; a subsequent delete of a missing row returns an error.
+- `internal/jobs/sqlite/store.go:1095-1107`: `DisableSchedule` is an independent update of `job_schedules.enabled`; `rows affected = 0` is not itself an error.
+- `internal/jobs/sqlite/store.go:1139-1147` and `1171-1178`: redesigned due queries read **only** `job_schedules.enabled` and due times, not presence of the compatibility row.
+- `internal/jobs/sqlite/store.go:1267-1351`: materialization revalidates `enabled` inside the transaction but cannot reject an enabled orphan *solely* due to deleted compatibility state.
 
 Deterministic event order worth testing:
-\`\`\`text
+```text
 S0  scheduled_jobs[#7] exists; job_schedules[scheduler:7] enabled
 S1  CancelScoped authorizes against scheduled_jobs[#7]
 S2  DeleteScheduledJob(#7) succeeds and commits
@@ -191,36 +191,36 @@ S5  In redesigned mode, job_schedules[scheduler:7] is still enabled,
     and due materialization can still submit the occurrence
 S6  Retrying CancelScoped now fails authorization with ErrNotFound;
     retrying direct Cancel fails DeleteScheduledJob first
-\`\`\`
+```
 This is a **source-proven failure sequence**, conditional on the actual disable error and scheduling mode; not a claim of a live production incident. A separate *toy SQLite* exercise using the same delete/enable/due-query ordering showed: zero compatibility rows, one enabled redesigned schedule, one due schedule, and zero rows deleted on retry. That exercise **did not execute Goultroid's actual package code** and cannot replace the required fault-injection integration test.
 
-**Minimal direction to evaluate in a real checkout**: make future scheduling inert **before** removing its compatibility identifier, or use an explicit shared-SQLite atomic cancellation port where available; keep conservative staged semantics for alternate stores. When disable succeeds but later deletion fails, return an actionable error and allow a retry while the row still exists. Ensure a successful Cancel leaves both schedule modes nonexecutable. Revisit attempted partial rollback only with a clear invariant: do not re-enable a schedule automatically if cancellation has already partially committed. Test concurrent materialization, cancellation retry, and process restart. Avoid using broad TaskEngine scope cancellation for \`ActionJob\` targets shared by other schedules.
+**Minimal direction to evaluate in a real checkout**: make future scheduling inert **before** removing its compatibility identifier, or use an explicit shared-SQLite atomic cancellation port where available; keep conservative staged semantics for alternate stores. When disable succeeds but later deletion fails, return an actionable error and allow a retry while the row still exists. Ensure a successful Cancel leaves both schedule modes nonexecutable. Revisit attempted partial rollback only with a clear invariant: do not re-enable a schedule automatically if cancellation has already partially committed. Test concurrent materialization, cancellation retry, and process restart. Avoid using broad TaskEngine scope cancellation for `ActionJob` targets shared by other schedules.
 
 ### C2 — active occurrence cancellation is not the same as schedule disabling
 
-The plugin calls \`CancelScoped\` and displays “Scheduled job #ID canceled successfully” (\`plugins/scheduler/scheduler.go:229-245\`). The exact user-visible contract for already-running work is **not explicit**.
+The plugin calls `CancelScoped` and displays “Scheduled job #ID canceled successfully” (`plugins/scheduler/scheduler.go:229-245`). The exact user-visible contract for already-running work is **not explicit**.
 
-The redesigned timing path materializes Jobs occurrences through \`job_schedules\`. \`ActionJob\` uses a caller-owned Jobs definition directly (\`internal/scheduler/engine.go:516-537\`). The \`Scheduler.Cancel\` method's TaskEngine \`CancelScope\` targets \`scheduler:job:<id>\`, not the shared target Job's scope; its legacy \`trackedClaim\` map is populated only by \`processDueJobs\`, not \`ProcessDueSchedules\`. Consequently, \`ActionJob\` occurrences already materialized under redesigned mode may remain live after a successful stop-future-schedule cancellation. This is **source-confirmed contract behavior**, not automatically a correctness bug until the intended cancellation promise is defined.
+The redesigned timing path materializes Jobs occurrences through `job_schedules`. `ActionJob` uses a caller-owned Jobs definition directly (`internal/scheduler/engine.go:516-537`). The `Scheduler.Cancel` method's TaskEngine `CancelScope` targets `scheduler:job:<id>`, not the shared target Job's scope; its legacy `trackedClaim` map is populated only by `processDueJobs`, not `ProcessDueSchedules`. Consequently, `ActionJob` occurrences already materialized under redesigned mode may remain live after a successful stop-future-schedule cancellation. This is **source-confirmed contract behavior**, not automatically a correctness bug until the intended cancellation promise is defined.
 
-A second, narrower legacy concern: if \`trackedClaim\` exists, \`Scheduler.Cancel\` ignores the error returned from \`Jobs.CancelOccurrence\`; cancellation may report success despite failure of the durable occurrence cancellation. Reproduce with a failing occurrence store and a live \`ActionJob\`; inspect final durable state and whether a target task actually continues.
+A second, narrower legacy concern: if `trackedClaim` exists, `Scheduler.Cancel` ignores the error returned from `Jobs.CancelOccurrence`; cancellation may report success despite failure of the durable occurrence cancellation. Reproduce with a failing occurrence store and a live `ActionJob`; inspect final durable state and whether a target task actually continues.
 
-The Jobs store already implements durable occurrence cancellation with an epoch and outbox, and \`CommitAttemptResult\` checks durable occurrence state before accepting terminal writes (\`internal/jobs/sqlite/store.go:1365-1409\` and \`885-945\`). These protections must not be bypassed. If stop-active semantics are required, locate only occurrences belonging to the scheduled slot (via their \`schedule_id\` or stable occurrence key) and cancel those via the **existing** \`Jobs.CancelOccurrence\` authority. Do **not** cancel every task in the caller-owned \`ActionJob\` definition's scope. A stop-future-only contract is also valid if explicitly documented and reflected in plugin messages.
+The Jobs store already implements durable occurrence cancellation with an epoch and outbox, and `CommitAttemptResult` checks durable occurrence state before accepting terminal writes (`internal/jobs/sqlite/store.go:1365-1409` and `885-945`). These protections must not be bypassed. If stop-active semantics are required, locate only occurrences belonging to the scheduled slot (via their `schedule_id` or stable occurrence key) and cancel those via the **existing** `Jobs.CancelOccurrence` authority. Do **not** cancel every task in the caller-owned `ActionJob` definition's scope. A stop-future-only contract is also valid if explicitly documented and reflected in plugin messages.
 
 ### Refined, mandatory P1-B acceptance matrix
 
 | Case | Required observation |
 | --- | --- |
 | Redesigned wrapper: disable fails after successful legacy delete | No false success; no permanently executable orphan after repair/convergence |
-| Redesigned \`ActionJob\`: same failure | Shared target definition preserved; no new occurrence from canceled schedule after recovery |
+| Redesigned `ActionJob`: same failure | Shared target definition preserved; no new occurrence from canceled schedule after recovery |
 | Retry after one store mutation committed | Retry or explicit recovery path can converge without the now-missing compatibility row |
 | Delete fails after successfully disabling schedule | No new redesigned slots; partial error visible; retry and recovery safe |
 | Cancellation races due materialization | Either materialization wins and is handled under explicit in-flight contract, or disable wins and prevents new occurrence |
-| Active/queued/terminal occurrence for both wrapper and \`ActionJob\` | Defined stop-future vs stop-active behavior, no unrelated shared-target cancellation |
-| Durable \`CancelOccurrence\` errors for tracked legacy \`ActionJob\` | No falsely acknowledged all-done cancellation |
+| Active/queued/terminal occurrence for both wrapper and `ActionJob` | Defined stop-future vs stop-active behavior, no unrelated shared-target cancellation |
+| Durable `CancelOccurrence` errors for tracked legacy `ActionJob` | No falsely acknowledged all-done cancellation |
 | Crash/restart after each boundary | Durable state converges; attempt/lease fencing intact; no second logical slot |
 | Existing scoped authorization | Creator, sudo, wrong-chat, missing job, no cross-chat mutation |
 | Transport side effect uncertainty | Never claim exactly-once remote Telegram send solely from scheduler lease/ID fencing |
 
 ### P1-B decision
 
-**P1-B is NOT CLOSED.** C1 has a concrete source-level failure sequence; C2 has a concrete scope/contract gap and an ignored legacy cancellation error. Before production changes, write focused failpoint tests in a runnable checkout, show them failing for the intended reasons, then apply the smallest code change. Run \`gofmt\`, focused tests, targeted race tests, and compatibility gates **before every Go-changing commit**; never inspect CI without explicit request. Do not start R5/R6 optimization while the P1-B correctness gate is open.
+**P1-B is NOT CLOSED.** C1 has a concrete source-level failure sequence; C2 has a concrete scope/contract gap and an ignored legacy cancellation error. Before production changes, write focused failpoint tests in a runnable checkout, show them failing for the intended reasons, then apply the smallest code change. Run `gofmt`, focused tests, targeted race tests, and compatibility gates **before every Go-changing commit**; never inspect CI without explicit request. Do not start R5/R6 optimization while the P1-B correctness gate is open.
