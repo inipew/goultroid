@@ -138,7 +138,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 				d.logger.Error("dispatcher: legacy command idempotency lookup failed",
 					zap.String("key", legacyKey),
 					zap.String("command", cmdName),
-					zap.Error(legacyErr),
+					zap.String("error_type", fmt.Sprintf("%T", legacyErr)),
 				)
 				return nil
 			}
@@ -155,7 +155,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 			d.logger.Error("dispatcher: command idempotency claim failed",
 				zap.String("key", key),
 				zap.String("command", cmdName),
-				zap.Error(claimErr),
+				zap.String("error_type", fmt.Sprintf("%T", claimErr)),
 			)
 			return nil
 		}
@@ -293,7 +293,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		d.logger.Warn("interactive command admission rejected",
 			zap.String("command", cmdName),
 			zap.Int64("chat_id", chat.ID),
-			zap.Error(err),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
 		)
 		return nil
 	}
@@ -336,7 +336,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			d.logger.Warn("decision handler execution unavailable",
 				zap.Uint64("handler_id", registered.id),
 				zap.Bool("fail_closed", failClosed),
-				zap.Error(ErrTasksNotConfigured),
+				zap.String("error_code", "tasks_unavailable"),
 			)
 			if failClosed {
 				return true
@@ -365,7 +365,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			d.logger.Warn("decision handler admission rejected",
 				zap.Uint64("handler_id", registered.id),
 				zap.Bool("fail_closed", failClosed),
-				zap.Error(err),
+				zap.String("error_type", fmt.Sprintf("%T", err)),
 			)
 			if failClosed {
 				return true
@@ -377,7 +377,7 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			d.logger.Warn("decision handler deadline exceeded",
 				zap.Uint64("handler_id", registered.id),
 				zap.Bool("fail_closed", failClosed),
-				zap.Error(err),
+				zap.String("error_type", fmt.Sprintf("%T", err)),
 			)
 			if failClosed {
 				return true
@@ -413,7 +413,7 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 	}
 	client := d.taskClient()
 	if client == nil {
-		d.logger.Warn("observer execution unavailable", zap.Error(ErrTasksNotConfigured))
+		d.logger.Warn("observer execution unavailable", zap.String("error_code", "tasks_unavailable"))
 		return
 	}
 	chatID := message.ChatID
@@ -448,7 +448,7 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 		})
 		if err != nil {
 			d.inFlight.Done()
-			d.logger.Debug("message hook admission rejected", zap.Uint64("handler_id", registered.id), zap.Error(err))
+			d.logger.Debug("message hook admission rejected", zap.Uint64("handler_id", registered.id), zap.String("error_type", fmt.Sprintf("%T", err)))
 		}
 	}
 }
