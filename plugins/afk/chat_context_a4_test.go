@@ -52,17 +52,29 @@ func TestA4AFKDoesNotReplyToBroadcastOrAnonymousSenders(t *testing.T) {
 	}
 }
 
+// afkA4LookupService verifies that foreign replies never trigger a GetMessage
+// lookup against the current topic, while preserving contextual sends.
+type afkA4LookupService struct {
+	*contextualAFKMock
+	lookups int
+}
+
+func (s *afkA4LookupService) GetMessage(ctx context.Context, peer tg.InputPeerClass, id int) (*tg.Message, error) {
+	s.lookups++
+	return s.contextualAFKMock.GetMessage(ctx, peer, id)
+}
+
 func TestA4AFKForeignPeerReplyDoesNotLookupCurrentTopic(t *testing.T) {
 	db, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	svc := &mockService{messages: map[int]*tg.Message{
+	svc := &afkA4LookupService{contextualAFKMock: &contextualAFKMock{mockService: &mockService{messages: map[int]*tg.Message{
 		100: {ID: 100, Out: true, Message: "owner wrote this"},
-	}}
+	}}}}
 	const ownerID int64 = 1001
-	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
+	p := NewWithService(NewSQLiteRepository(db), ownerID, func() TelegramService { return svc })
 	if err := p.Init(); err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +93,8 @@ func TestA4AFKForeignPeerReplyDoesNotLookupCurrentTopic(t *testing.T) {
 	for i, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			svc.sent = ""
+			svc.sends = nil
+			svc.lookups = 0
 			msg := &tg.Message{
 				ID: 202 + i, PeerID: &tg.PeerChannel{ChannelID: 500}, FromID: &tg.PeerUser{UserID: int64(3000 + i)}, Message: "reply",
 				ReplyTo: &tg.MessageReplyHeader{ReplyToMsgID: 100, ReplyToPeerID: tt.replyTo, ForumTopic: true, ReplyToTopID: 55},
@@ -91,6 +105,19 @@ func TestA4AFKForeignPeerReplyDoesNotLookupCurrentTopic(t *testing.T) {
 			got := strings.Contains(svc.sent, "currently AFK")
 			if got != tt.wantSend {
 				t.Fatalf("AFK replied=%v want=%v text=%q", got, tt.wantSend, svc.sent)
+			}
+			wantCalls := 0
+			if tt.wantSend {
+				wantCalls = 1
+			}
+			if svc.lookups != wantCalls || len(svc.sends) != wantCalls {
+				t.Fatalf("lookups=%d contextual sends=%d want=%d", svc.lookups, len(svc.sends), wantCalls)
+			}
+			if tt.wantSend {
+				send := svc.sends[0]
+				if send.ReplyToID != msg.ID || send.TopicID != 55 {
+					t.Fatalf("wrong forum reply coordinates: %+v", send)
+				}
 			}
 		})
 	}
