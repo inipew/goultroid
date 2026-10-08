@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A0 BASELINE RECORDED** — baseline source inspection only; no runtime test execution claimed.
+Status: **A3 ACCEPTANCE CLOSED (2026-10-08); A4 pending**. Historical A0 baseline remains recorded below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -122,7 +122,7 @@ Corrective source/test commit: `2d1e9cad4146765b0edec3fc8eb6bfc083fae2be`.
 
 ## 8. A3 — PMPermit State Integrity (2026-10-08)
 
-Status: **A3-A and A3-B implemented, tests and A3-C acceptance pending.** Do not mark the whole A3 phase CLOSED.
+Historical checkpoint: **A3-A and A3-B implemented**; superseded by the successful A3-C acceptance recorded in §10.
 
 **GitHub HEAD refreshed before each code phase. CI was not inspected.**
 
@@ -164,7 +164,7 @@ git diff --check
 
 Do not check/poll CI. If any test fails, repair source and affected tests, gofmt all changed Go files, and re-run focused checks before any further commit.
 
-### A3-C follow-up blockers (still OPEN)
+### A3-C follow-up blockers at the earlier checkpoint (see §9 and §10 for resolution)
 
 - Legacy `Approve(userID)` lacks an already-resolved Telegram peer with a valid access hash; it currently has different external RPC consistency semantics from `ApproveWithPeer`. Inventory/migrate concrete callers before narrowing/removing it.
 - Warning ID storage helpers still use `context.Background()` for some repository calls. Migrate their execution to the incoming command/update context or to bounded, lifecycle-aware contexts and test DB failures.
@@ -174,7 +174,7 @@ Do not check/poll CI. If any test fails, repair source and affected tests, gofmt
 
 ## 9. A3-C execution — warning IDs, approval peer and FloodWait isolation
 
-Status: **IMPLEMENTED, full-repository tests and race acceptance PENDING** on 2026-10-08.
+Historical checkpoint: **A3-C implemented, acceptance initially pending** on 2026-10-08. Acceptance subsequently passed (§10).
 
 The user provided passing local results for the previous A3-A/B gate before this work:
 - `go test ./internal/services/pmpermit -run '^TestA3'`
@@ -226,6 +226,29 @@ go test -race ./internal/services/pmpermit ./plugins/pmpermit
 git diff --check
 ```
 
-Do **not** claim A3 CLOSED until these tests run and any failures are repaired and retested. CI has not been checked. New A3-C test files and the replacement status-lock source were individually gofmt-verified via matching Git blob SHA; edited existing full files need a full local gofmt run to verify.
+At the earlier implementation checkpoint, A3 closure required these tests. The user has now reported passing results for the entire gate (§10). CI has not been checked. New A3-C test files and the replacement status-lock source were individually gofmt-verified via matching Git blob SHA; edited existing full files need a full local gofmt run to verify.
 
 Remaining review items: `pmpermit.max_warns` settings default is **3** while the service constructor default is **4**; decide and document the effective default explicitly before a behavioral change. Test actual SQLite high-cardinality and outbox/Telegram effects with production-like deadlines, and continue the subsequent A4 chat/topic context plan after the acceptance gate.
+
+## 10. A3 Acceptance CLOSED — verified user-run gate (2026-10-08)
+
+The user executed the **entire A3-C acceptance matrix** after pulling through `6b8c5400c74980f621725bb7ff63806ae1ad3cb3` and reported all commands successful:
+
+- `gofmt -w internal/services/pmpermit/*.go plugins/pmpermit/*.go`, followed by `gofmt -l` on both paths: no output from `gofmt -l`.
+- `go test ./internal/services/pmpermit -run '^TestA3C' -count=1` — **PASS**.
+- `go test -race ./internal/services/pmpermit -run '^TestA3C' -count=1` — **PASS**.
+- `go test ./plugins/pmpermit -run '^TestA3C' -count=1` — **PASS**.
+- `go test -race ./plugins/pmpermit -run '^TestA3C' -count=1` — **PASS**.
+- `go test ./internal/services/pmpermit ./plugins/pmpermit ./internal/telegram ./internal/plugin` — **PASS across all four packages**.
+- `go test -race ./internal/services/pmpermit ./plugins/pmpermit` — **PASS across both packages**.
+- `git diff --check` — no errors reported.
+
+**Closure scope:** A3-A bounded caches and cooldown synchronization; A3-B DB/cache status integrity and failure containment; A3-C warning-ID context propagation and fail-closed unknown lookup, resolved-peer approval contract, bounded active per-user status locks, and FloodWait isolation regression. The targeted and package-level tests above have been reported passing by the user. **A3 acceptance is CLOSED; there is no remaining A3 code gate blocking A4.**
+
+**Outside this closure / separately tracked:**
+
+- Effective `pmpermit.max_warns` defaults still differ: Settings schema **3**, service constructor **4**. Do not change without explicitly determining production binder precedence and adding coverage; this is a compatibility/configuration decision, not a reason to reopen the passed A3 gate.
+- Production-scale SQLite high-cardinality workload, Telegram transport integration, and resource/heap/goroutine settling remain appropriate for **A7 resource/restart acceptance**; focused A3-C concurrency and FloodWait regression tests are not a production performance benchmark.
+- A4 must verify private/group/supergroup/channel/topic structural routing, sender identity, and fail-closed incomplete-peer behavior before changing code.
+
+**Execution discipline:** Refresh HEAD before each new phase, `gofmt` all changed Go files before committing, update focused tests, and **do not inspect or poll CI unless the user explicitly asks**. CI was not checked as part of A3.
