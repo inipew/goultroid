@@ -45,7 +45,7 @@ func TestA4PrivateSenderRejectsMismatchedOrAnonymousFromID(t *testing.T) {
 	}{
 		{name: "omitted private sender", want: true, wantSender: 2002},
 		{name: "matching private sender", from: &tg.PeerUser{UserID: 2002}, want: true, wantSender: 2002},
-		{name: "mismatched private sender", from: &tg.PeerUser{UserID: 9000}},
+		{name: "mismatched private sender", from: &tg.PeerUser{UserID: 9000}, wantSender: 9000},
 		{name: "explicit anonymous channel sender", from: &tg.PeerChannel{ChannelID: 42}},
 	}
 	for _, tt := range cases {

@@ -697,8 +697,8 @@ func TestAFKPlugin_CompoundCooldown(t *testing.T) {
 			senderID: {ID: senderID, AccessHash: 111},
 		},
 		Channels: map[int64]*tg.Channel{
-			100: {ID: 100, AccessHash: 222},
-			200: {ID: 200, AccessHash: 333},
+			100: {ID: 100, AccessHash: 222, Megagroup: true},
+			200: {ID: 200, AccessHash: 333, Megagroup: true},
 		},
 	}
 

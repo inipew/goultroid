@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
-	"github.com/inipew/goultroid/internal/core"
 	userlogSvc "github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/plugins/userlog"
 	"go.uber.org/zap"
