@@ -445,3 +445,65 @@ go test -race ./plugins/afk ./plugins/pmpermit ./internal/plugin
 go test ./internal/interaction/... ./internal/app ./plugins/settings
 git diff --check
 ```
+
+## 14. A5-A/B acceptance and A5-C0 contextual action fence (2026-10-08)
+
+### A5-A/B acceptance — PASSED
+
+The user fast-forwarded to `5ce4d0c50bbb447a9afd859500659fadf8f1a065`, formatted the AFK and PMPermit fix files, and reported all requested commands passing:
+
+- `go test ./plugins/afk ./plugins/pmpermit ./internal/plugin` — **PASS** (three packages).
+- `go test -race ./plugins/afk ./plugins/pmpermit ./internal/plugin` — **PASS** (three packages).
+- `go test ./internal/interaction/... ./internal/app ./plugins/settings` — **PASS** across all listed interaction packages, app, and Settings.
+- `git diff --check` — no errors were reported.
+
+**A5-A/B owner-only a2 management acceptance is CLOSED.** No CI inspection was requested or performed. This acceptance does **not** close A5-C.
+
+### A5-C0 — Strict fresh group mutation authorization prerequisite
+
+Commit `067ed383f826d250663f4a648548c78a709f583a`.
+
+Audit of `plugins/filters`, `plugins/blacklist`, `internal/core/group_role.go`, `internal/assistant/command/router.go`, and `internal/interaction/native/adapter.go` established:
+
+- Filters/Blacklist Assistant commands already declare contextual Telegram administrator authorization; Blacklist adds `DeleteMessages` for mutations. The Assistant router revalidates the group role **fresh** inside TaskEngine execution.
+- Native a2 callbacks currently revalidate global owner/sudo interaction policy and bound actor/message, **but do not intrinsically fetch contextual Telegram group authority**. A native group admin button is unsafe if implemented as a generic Sudo/Public action without its own fresh group-role guard.
+- The authoritative Assistant role resolver is instantiated inside `internal/assistant/client` at Assistant start, not exposed through the native Plugin Manager driver runtime. Do not invent a second group role RPC resolver or trust cached role state in session bytes.
+
+`internal/interaction/native/group_authorization_a5.go` provides `AuthorizeFreshGroupAction`, a pure fail-closed helper for use immediately before a future group rule write inside the existing TaskEngine callback handler. It:
+- Requires an explicitly administrator-or-creator group policy (optionally including Telegram rights like `DeleteMessages`).
+- Checks actor, chat, message, and target binding against immutable session scope; rejects private/broadcast/unknown chats, inconsistent group peer identity, missing supergroup access hash, and invalid topic ID.
+- Derives `GroupRoleRequest.UserID` and `Peer` from the **bound a2 session/callback target**, never from arbitrary client-supplied user IDs.
+- Calls `GroupRoleResolver.ResolveGroupRoleFresh` and rejects missing/failed lookups, mismatched/unverified principals, revoked administrator role, or rights demotion. Global owner/sudo does not satisfy missing Telegram group authority.
+
+`internal/interaction/native/group_authorization_a5_test.go` adds four deterministic top-level tests for:
+1. Fresh-role-only acceptance and subsequent demotion / removed delete rights.
+2. Cross-chat/session-target, private/channel, incomplete peer, absent actor/message and invalid topic denial.
+3. RPC outage, nil resolver, principal mismatch and unverified role.
+4. A missing authorization policy failing closed.
+
+Both Go files were passed through local `gofmt`; their exact Git blob SHA matches the committed version. The full Goultroid dependencies are unavailable in this execution environment; these new tests have **not** yet been run against the complete repository, and no CI was checked.
+
+### Remaining A5-C work — OPEN, no live mutation callbacks enabled
+
+The authorization helper is an infrastructure prerequisite only. **No new native Filters/Blacklist buttons or moderation mutations have been exposed by this commit.** Before doing so:
+
+- Reuse the existing authoritative Assistant `GroupRoleResolver` via a capability-safe lifecycle-bound provider, or keep the mutation UI disabled when no resolver is available. Do not introduce a duplicate RPC executor or cached authority substitute.
+- Bind group/type and topic facts when the a2 session is created; verify callback actor/chat/message and freshly resolved Telegram role immediately before the DB write.
+- Add scoped read/list → preview → mutation actions with saved rule IDs/keyword and DB revision checks, plus reload/shutdown and cross-group regression tests. Never authorize a write by using only a chat ID read from JSON callback state.
+- Preserve existing userbot text command and Assistant command paths (no backwards-incompatible mandatory native callback requirement).
+- Keep memory/state bounded and unloaded session state inaccessible.
+
+Next focused gate for A5-C0:
+
+```bash
+git pull --ff-only
+gofmt -w internal/interaction/native/group_authorization_a5.go internal/interaction/native/group_authorization_a5_test.go
+gofmt -l internal/interaction/native/group_authorization_a5.go internal/interaction/native/group_authorization_a5_test.go
+go test ./internal/interaction/native -run '^TestA5C' -count=1
+go test -race ./internal/interaction/native -run '^TestA5C' -count=1
+go test ./internal/interaction/... ./internal/plugin ./plugins/filters ./plugins/blacklist ./internal/assistant/command
+go test -race ./internal/interaction/native ./plugins/filters ./plugins/blacklist
+git diff --check
+```
+
+**A5 remains PARTIAL:** A5-A/B accepted, A5-C0 implemented but test gate pending, A5-C UI/permission integration OPEN. Do not declare overall A5 CLOSED until integration and test gates pass.
