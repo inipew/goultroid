@@ -54,14 +54,20 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 	}
 	s.approvedCache.Store(userID, entry)
 
-	if ids := s.getWarnIDs(userID); len(ids) > 0 {
+	ids, idsErr := s.getWarnIDs(ctx, userID)
+	if idsErr != nil {
+		s.logger.Warn("failed to load PM warning IDs for approval cleanup", zap.Int64("user_id", userID), zap.Error(idsErr))
+	}
+	if len(ids) > 0 {
 		if svc := s.getService(); svc != nil {
 			if err := svc.DeleteMessage(ctx, peer, ids); err != nil {
 				s.logger.Warn("failed to delete warning messages on approve", zap.Int64("user_id", userID), zap.Error(err))
 			}
 		}
 	}
-	s.clearWarnIDs(userID)
+	if err := s.clearWarnIDs(ctx, userID); err != nil {
+		s.logger.Warn("failed to clear PM warning IDs after approval", zap.Int64("user_id", userID), zap.Error(err))
+	}
 	s.publishEvent("approve", userID, "", 0, reason, true, "")
 	return nil
 }

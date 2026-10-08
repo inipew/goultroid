@@ -254,13 +254,19 @@ func (s *Service) isApprovedLocked(ctx context.Context, userID int64) (bool, err
 	return true, nil
 }
 
-func (s *Service) addWarnID(userID int64, msgID int) {
+// addWarnID persists the bot-origin marker using the ingress context. If
+// persistence fails, keep the bounded in-memory marker until a later retry.
+func (s *Service) addWarnID(ctx context.Context, userID int64, msgID int) error {
 	if msgID == 0 {
-		return
+		return nil
+	}
+	var persistErr error
+	if s.repo != nil {
+		persistErr = s.repo.AddWarnMsgID(ctx, userID, msgID)
 	}
 	s.warnMu.Lock()
 	if _, tracked := s.warnIDs[userID]; !tracked && len(s.warnIDs) >= maxPMPermitWarnUsers {
-		// DB remains authoritative: evicted users can reload their warning IDs.
+		// The DB is authoritative after eviction; never grow beyond capacity.
 		remaining := maxPMPermitWarnUsers * 3 / 4
 		for oldUser := range s.warnIDs {
 			delete(s.warnIDs, oldUser)
@@ -274,65 +280,77 @@ func (s *Service) addWarnID(userID int64, msgID int) {
 		s.warnIDs[userID] = s.warnIDs[userID][len(s.warnIDs[userID])-20:]
 	}
 	s.warnMu.Unlock()
-	if s.repo != nil {
-		_ = s.repo.AddWarnMsgID(context.Background(), userID, msgID)
+	if persistErr != nil {
+		return fmt.Errorf("persist PM warning message ID: %w", persistErr)
 	}
+	return nil
 }
 
-func (s *Service) getWarnIDs(userID int64) []int {
+// getWarnIDs uses the caller's deadline for the DB fallback and never
+// silently treats a failed read as an empty durable warning list.
+func (s *Service) getWarnIDs(ctx context.Context, userID int64) ([]int, error) {
 	s.warnMu.Lock()
 	ids := append([]int(nil), s.warnIDs[userID]...)
 	s.warnMu.Unlock()
 	if len(ids) == 0 && s.repo != nil {
-		if dbIDs, _ := s.repo.GetWarnMsgIDs(context.Background(), userID); len(dbIDs) > 0 {
-			return dbIDs
+		var err error
+		ids, err = s.repo.GetWarnMsgIDs(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("read PM warning message IDs: %w", err)
 		}
 	}
-	// dedup
-	seen := make(map[int]struct{})
-	var out []int
+	seen := make(map[int]struct{}, len(ids))
+	out := make([]int, 0, len(ids))
 	for _, id := range ids {
 		if _, ok := seen[id]; !ok {
 			seen[id] = struct{}{}
 			out = append(out, id)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func (s *Service) clearWarnIDs(userID int64) {
+// clearWarnIDs commits durable cleanup before evicting the in-memory copy.
+// On SQLite failure callers may retry; no unbounded goroutine is spawned.
+func (s *Service) clearWarnIDs(ctx context.Context, userID int64) error {
+	if s.repo != nil {
+		if err := s.repo.ClearWarnMsgIDs(ctx, userID); err != nil {
+			return fmt.Errorf("clear PM warning message IDs: %w", err)
+		}
+	}
 	s.warnMu.Lock()
 	delete(s.warnIDs, userID)
 	s.warnMu.Unlock()
-	if s.repo != nil {
-		_ = s.repo.ClearWarnMsgIDs(context.Background(), userID)
-	}
+	return nil
 }
 
-// IsWarnID returns true if msgID is a recorded warning message for userID.
-func (s *Service) IsWarnID(userID int64, msgID int) bool {
+// IsWarnID only returns a definitive miss after successful storage lookup.
+// This prevents an outgoing PMPermit warning from being auto-approved if
+// SQLite is unavailable and its in-memory marker was evicted.
+func (s *Service) IsWarnID(ctx context.Context, userID int64, msgID int) (bool, error) {
 	if msgID == 0 {
-		return false
+		return false, nil
 	}
 	s.warnMu.Lock()
-	ids := s.warnIDs[userID]
-	for _, id := range ids {
+	for _, id := range s.warnIDs[userID] {
 		if id == msgID {
 			s.warnMu.Unlock()
-			return true
+			return true, nil
 		}
 	}
 	s.warnMu.Unlock()
 	if s.repo != nil {
-		if dbIDs, _ := s.repo.GetWarnMsgIDs(context.Background(), userID); len(dbIDs) > 0 {
-			for _, id := range dbIDs {
-				if id == msgID {
-					return true
-				}
+		ids, err := s.repo.GetWarnMsgIDs(ctx, userID)
+		if err != nil {
+			return false, fmt.Errorf("check PM warning message ID: %w", err)
+		}
+		for _, id := range ids {
+			if id == msgID {
+				return true, nil
 			}
 		}
 	}
-	return false
+	return false, nil
 }
 
 // IsPMPermitMessage checks if text matches any bot-generated PM permit warning or response.
@@ -400,7 +418,10 @@ func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClas
 		return err
 	}
 	s.approvedCache.Store(userID, approvalCacheEntry{})
-	ids := s.getWarnIDs(userID)
+	ids, idsErr := s.getWarnIDs(ctx, userID)
+	if idsErr != nil {
+		s.logger.Warn("failed to load PM warning IDs for cleanup", zap.Int64("user_id", userID), zap.Error(idsErr))
+	}
 	if len(ids) > 0 {
 		if svc := s.getService(); svc != nil {
 			if err := svc.DeleteMessage(ctx, peer, ids); err != nil {
@@ -408,8 +429,12 @@ func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClas
 			}
 		}
 	}
-	s.clearWarnIDs(userID)
-	_ = s.repo.ResetPMWarn(ctx, userID)
+	if err := s.clearWarnIDs(ctx, userID); err != nil {
+		s.logger.Warn("failed to clear PM warning IDs", zap.Int64("user_id", userID), zap.Error(err))
+	}
+	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
+		s.logger.Warn("failed to reset PM warn count after auto-approval", zap.Int64("user_id", userID), zap.Error(err))
+	}
 	s.publishEvent("auto_approve", userID, "", 0, "outgoing auto-approved", true, "")
 	return nil
 }
@@ -440,7 +465,10 @@ func (s *Service) Approve(ctx context.Context, userID int64, reason string, dura
 		entry.expiresAt = *exp
 	}
 	s.approvedCache.Store(userID, entry)
-	ids := s.getWarnIDs(userID)
+	ids, idsErr := s.getWarnIDs(ctx, userID)
+	if idsErr != nil {
+		s.logger.Warn("failed to load PM warning IDs for cleanup", zap.Int64("user_id", userID), zap.Error(idsErr))
+	}
 	peer := s.resolvePeer(userID)
 	if len(ids) > 0 {
 		if svc := s.getService(); svc != nil {
@@ -449,7 +477,9 @@ func (s *Service) Approve(ctx context.Context, userID int64, reason string, dura
 			}
 		}
 	}
-	s.clearWarnIDs(userID)
+	if err := s.clearWarnIDs(ctx, userID); err != nil {
+		s.logger.Warn("failed to clear PM warning IDs", zap.Int64("user_id", userID), zap.Error(err))
+	}
 	if svc := s.getService(); svc != nil {
 		if err := svc.UnblockUser(ctx, peer); err != nil {
 			s.logger.Warn("failed to unblock user on approve", zap.Int64("user_id", userID), zap.Error(err))
@@ -469,7 +499,9 @@ func (s *Service) Disapprove(ctx context.Context, userID int64) error {
 		return err
 	}
 	s.approvedCache.Delete(userID)
-	s.clearWarnIDs(userID)
+	if err := s.clearWarnIDs(ctx, userID); err != nil {
+		s.logger.Warn("failed to clear PM warning IDs", zap.Int64("user_id", userID), zap.Error(err))
+	}
 	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
 		s.logger.Warn("failed to reset PM warnings after disapproval", zap.Int64("user_id", userID), zap.Error(err))
 	}
@@ -497,7 +529,9 @@ func (s *Service) Unblock(ctx context.Context, peer tg.InputPeerClass, userID in
 		return fmt.Errorf("persist PM unblock: %w", err)
 	}
 	s.approvedCache.Delete(userID)
-	s.clearWarnIDs(userID)
+	if err := s.clearWarnIDs(ctx, userID); err != nil {
+		s.logger.Warn("failed to clear PM warning IDs", zap.Int64("user_id", userID), zap.Error(err))
+	}
 	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
 		s.logger.Warn("failed to reset PM warnings after unblock", zap.Int64("user_id", userID), zap.Error(err))
 	}
@@ -614,7 +648,9 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 		if err != nil {
 			s.logger.Warn("failed to send pm limit reached message", zap.Int64("user_id", senderID), zap.Error(err))
 		} else if msg != nil {
-			s.addWarnID(senderID, msg.ID)
+			if err := s.addWarnID(ctx, senderID, msg.ID); err != nil {
+				s.logger.Warn("PM limit warning ID not persisted", zap.Int64("sender_id", senderID), zap.Error(err))
+			}
 		}
 		return true, nil
 	}
@@ -628,7 +664,9 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 	if err != nil {
 		s.logger.Warn("failed to send pm warning message", zap.Int64("user_id", senderID), zap.Error(err))
 	} else if msg != nil {
-		s.addWarnID(senderID, msg.ID)
+		if err := s.addWarnID(ctx, senderID, msg.ID); err != nil {
+			s.logger.Warn("PM warning ID not persisted", zap.Int64("sender_id", senderID), zap.Error(err))
+		}
 	}
 	s.publishEvent("warn", senderID, "", warnCount, fmt.Sprintf("warning %d/%d", warnCount, maxWarns), true, "")
 	return true, nil

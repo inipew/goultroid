@@ -93,3 +93,26 @@ func TestPMPermitOperations(t *testing.T) {
 		t.Errorf("unexpected stats: pending=%d, approved=%d, blocked=%d", pending, approved, blocked)
 	}
 }
+
+func TestA3CSQLiteCorruptWarningIDsFailClosed(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	repo := NewSQLiteRepository(db)
+	const userID int64 = 9901
+	if _, err := repo.IncrementPMWarn(ctx, userID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE pm_permit_records SET warn_msg_ids = ? WHERE user_id = ?", "{corrupt", userID); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := repo.GetWarnMsgIDs(ctx, userID); err == nil {
+		t.Fatalf("corrupt warning JSON was mistaken for empty history: ids=%v", ids)
+	}
+	if err := repo.AddWarnMsgID(ctx, userID, 42); err == nil {
+		t.Fatal("append must not overwrite a corrupt warning ID history")
+	}
+}

@@ -128,7 +128,7 @@ func (r *SQLiteRepository) GetWarnMsgIDs(ctx context.Context, userID int64) ([]i
 	}
 	var ids []int
 	if err := json.Unmarshal([]byte(raw.String), &ids); err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("corrupt PM warning message IDs for user %d: %w", userID, err)
 	}
 	return ids, nil
 }
@@ -137,13 +137,19 @@ func (r *SQLiteRepository) AddWarnMsgID(ctx context.Context, userID int64, msgID
 	warnDBSync.Lock()
 	defer warnDBSync.Unlock()
 
-	ids, _ := r.GetWarnMsgIDs(ctx, userID)
+	ids, err := r.GetWarnMsgIDs(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("load PM warning IDs before append: %w", err)
+	}
 	ids = append(ids, msgID)
 	if len(ids) > 20 {
 		ids = ids[len(ids)-20:]
 	}
-	b, _ := json.Marshal(ids)
-	_, err := r.db.ExecContext(ctx, "UPDATE pm_permit_records SET warn_msg_ids = ? WHERE user_id = ?", string(b), userID)
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return fmt.Errorf("encode PM warning IDs: %w", err)
+	}
+	_, err = r.db.ExecContext(ctx, "UPDATE pm_permit_records SET warn_msg_ids = ? WHERE user_id = ?", string(b), userID)
 	if err != nil {
 		return fmt.Errorf("failed to add warn msg id: %w", err)
 	}

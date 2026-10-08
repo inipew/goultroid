@@ -472,3 +472,30 @@ func TestPMPermitTogglePersistsAndAppliesLive(t *testing.T) {
 		t.Fatal("persisted pmpermit:enabled remained true")
 	}
 }
+
+// A3-C: a missing DB warning lookup must not auto-approve an outgoing user.
+func TestA3COutgoingUnknownWarningIDFailClosed(t *testing.T) {
+	db := setupTestDB(t)
+	ownerID := int64(1001)
+	svc := pmpermitSvc.NewService(pmpermit.NewSQLiteRepository(db), &mockTelegram{}, ownerID, core.NewPermissions(ownerID, nil), zap.NewNop())
+	p := pmpermit.New(svc)
+
+	// Simulate a DB outage after normal plugin registration. The outbound
+	// message has an otherwise valid user peer and could trigger auto-approval.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	msg := &tg.Message{
+		ID:      901,
+		Out:     true,
+		PeerID:  &tg.PeerUser{UserID: 2002},
+		FromID:  &tg.PeerUser{UserID: ownerID},
+		Message: "manual message",
+	}
+	entities := tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 555}}}
+	err := handleMessageEvent(p, ctx, entities, msg, false, "")
+	if !errors.Is(err, core.ErrInterceptHandled) {
+		t.Fatalf("DB error must suppress uncertain outgoing approval, got %v", err)
+	}
+}

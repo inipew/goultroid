@@ -77,7 +77,12 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if targetID == 0 || targetID == p.svc.OwnerID() || p.svc.IsSudoID(targetID) {
 			return nil
 		}
-		if p.svc.IsWarnID(targetID, message.ID) {
+		isWarning, warnErr := p.svc.IsWarnID(ctx, targetID, message.ID)
+		if warnErr != nil {
+			// Unknown bot-origin state must never auto-approve a private peer.
+			return core.ErrInterceptHandled
+		}
+		if isWarning {
 			return nil
 		}
 		peer, err := message.Peer.InputPeer()

@@ -1,6 +1,7 @@
 package pmpermit
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -22,7 +23,9 @@ func TestA3ApprovalCacheBoundedUnderChurn(t *testing.T) {
 func TestA3WarningIDsBoundedAcrossUsers(t *testing.T) {
 	s := NewService(nil, nil, 1, nil, nil)
 	for id := int64(2); id < 2+2*maxPMPermitWarnUsers; id++ {
-		s.addWarnID(id, 1)
+		if err := s.addWarnID(context.Background(), id, 1); err != nil {
+			t.Fatal(err)
+		}
 	}
 	s.warnMu.Lock()
 	count := len(s.warnIDs)
@@ -30,8 +33,9 @@ func TestA3WarningIDsBoundedAcrossUsers(t *testing.T) {
 	if count > maxPMPermitWarnUsers {
 		t.Fatalf("warning ID cache grew to %d users, max %d", count, maxPMPermitWarnUsers)
 	}
-	if !s.IsWarnID(1+2*maxPMPermitWarnUsers, 1) {
-		t.Fatal("latest tracked warning ID lost")
+	isWarning, err := s.IsWarnID(context.Background(), 1+2*maxPMPermitWarnUsers, 1)
+	if err != nil || !isWarning {
+		t.Fatalf("latest tracked warning ID lost: isWarning=%v err=%v", isWarning, err)
 	}
 }
 
