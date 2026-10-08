@@ -322,6 +322,9 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 	chatID := message.ChatID
 	decisionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	// Pass only the shared decision into TaskEngine workers; preserve their
+	// engine-owned cancellation, timeout, and scope lifecycle.
+	sharedDecision := core.GetMessageDecision(ctx)
 	for _, registered := range handlers {
 		if !d.messageHookStateInterested(registered, chatID) {
 			continue
@@ -356,7 +359,11 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			OrderingKey:      messageHookDecisionOrderingKey(chatID),
 			ExecutionTimeout: 5 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				handled.Store(d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message))
+				hookCtx := taskCtx
+				if sharedDecision != nil {
+					hookCtx = core.WithMessageDecision(taskCtx, sharedDecision)
+				}
+				handled.Store(d.safeExecuteRegisteredInterceptor(hookCtx, registered, e, msg, message))
 				return nil
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
@@ -419,6 +426,7 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 		return
 	}
 	chatID := message.ChatID
+	sharedDecision := core.GetMessageDecision(ctx)
 	for _, registered := range handlers {
 		registered := registered
 		if !d.messageHookStateInterested(registered, chatID) {
@@ -443,7 +451,11 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 			OrderingKey:      messageHookEventOrderingKey(registered.scope, chatID),
 			ExecutionTimeout: 10 * time.Second,
 			Handler: func(taskCtx context.Context) error {
-				_ = d.safeExecuteRegisteredInterceptor(taskCtx, registered, e, msg, message)
+				hookCtx := taskCtx
+				if sharedDecision != nil {
+					hookCtx = core.WithMessageDecision(taskCtx, sharedDecision)
+				}
+				_ = d.safeExecuteRegisteredInterceptor(hookCtx, registered, e, msg, message)
 				return nil
 			},
 			OnComplete: func(tasks.TaskResult) { d.inFlight.Done() },
