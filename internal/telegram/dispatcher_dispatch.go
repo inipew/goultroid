@@ -322,15 +322,36 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 	chatID := message.ChatID
 	decisionCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	// Pass only the shared decision into TaskEngine workers; preserve their
-	// engine-owned cancellation, timeout, and scope lifecycle.
+	deadline, _ := decisionCtx.Deadline()
+	// TaskEngine workers have engine-owned cancellation and lifecycle. Bound
+	// their queueing and execution to this one ingress deadline rather than
+	// granting each handler another full timeout.
 	sharedDecision := core.GetMessageDecision(ctx)
 	for _, registered := range handlers {
 		if !d.messageHookStateInterested(registered, chatID) {
 			continue
 		}
+		// Once the shared budget expires, a security decision that could not
+		// run is a denial. Never submit further tasks on an expired context.
+		if decisionCtx.Err() != nil {
+			if registered.failurePolicy == FailurePolicyFailClosed {
+				return true
+			}
+			continue
+		}
 		if registered.scope.IsZero() { // compatibility for local/test handlers
-			if d.safeExecuteRegisteredInterceptor(decisionCtx, registered, e, msg, message) {
+			handled := d.safeExecuteRegisteredInterceptor(decisionCtx, registered, e, msg, message)
+			if decisionCtx.Err() != nil && registered.failurePolicy == FailurePolicyFailClosed {
+				return true
+			}
+			if handled {
+				return true
+			}
+			continue
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			if registered.failurePolicy == FailurePolicyFailClosed {
 				return true
 			}
 			continue
@@ -357,11 +378,21 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
 			OrderingKey:      messageHookDecisionOrderingKey(message.Peer),
-			ExecutionTimeout: 5 * time.Second,
+			QueueDeadline:    deadline,
+			ExecutionTimeout: remaining,
 			Handler: func(taskCtx context.Context) error {
-				hookCtx := taskCtx
+				// Admission can outlive an ingress cancellation. A queued
+				// handler must not run after the decision was abandoned.
+				if err := decisionCtx.Err(); err != nil {
+					return err
+				}
+				hookCtx, hookCancel := context.WithDeadline(taskCtx, deadline)
+				defer hookCancel()
+				if err := hookCtx.Err(); err != nil {
+					return err
+				}
 				if sharedDecision != nil {
-					hookCtx = core.WithMessageDecision(taskCtx, sharedDecision)
+					hookCtx = core.WithMessageDecision(hookCtx, sharedDecision)
 				}
 				handled.Store(d.safeExecuteRegisteredInterceptor(hookCtx, registered, e, msg, message))
 				return nil
@@ -381,17 +412,22 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 			}
 			continue
 		}
-		if _, err := ticket.Wait(decisionCtx); err != nil {
+		result, waitErr := ticket.Wait(decisionCtx)
+		if waitErr != nil || !result.IsSuccess() {
 			failClosed := registered.failurePolicy == FailurePolicyFailClosed
-			d.logger.Warn("decision handler deadline exceeded",
+			d.logger.Warn("decision handler task did not complete successfully",
 				zap.Uint64("handler_id", registered.id),
 				zap.Bool("fail_closed", failClosed),
-				zap.String("error_type", fmt.Sprintf("%T", err)),
+				zap.String("outcome", string(result.Outcome)),
+				zap.String("error_type", fmt.Sprintf("%T", waitErr)),
 			)
 			if failClosed {
 				return true
 			}
 			continue
+		}
+		if decisionCtx.Err() != nil && registered.failurePolicy == FailurePolicyFailClosed {
+			return true
 		}
 		if handled.Load() {
 			return true
