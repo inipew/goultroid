@@ -407,6 +407,8 @@ Review after implementing the two `FeatureDriver` interfaces found that `interna
 
 The native-fallback fix also requires targeted `go test ./internal/plugin` and `go test -race ./internal/plugin` in the full checkout. No CI inspection.
 
+A5-B test lifecycle fix: `b3b6d5fa66d9a290a3387db59fefe56e50ff1374` ensures the AFK native cleanup is not invoked twice by the test when it checks session detachment. This test-only change was formatted locally before push.
+
 ### A5-C — Contextual group moderation (OPEN)
 
 **Do not present A5-A/B as full A5 completion.** The group moderation UI needs its own narrow acceptance:
