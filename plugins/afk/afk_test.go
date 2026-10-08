@@ -313,26 +313,27 @@ func TestFormatDuration(t *testing.T) {
 func TestAFKPlugin_Cleanup(t *testing.T) {
 	p := New(nil, 100, nil)
 
-	// Add recent and old timestamps
+	oldKey := [2]int64{1, 102}
+	recentKey := [2]int64{1, 101}
 	p.cooldownMu.Lock()
-	p.cooldownMap[[2]int64{1, 101}] = time.Now()
-	p.cooldownMap[[2]int64{1, 102}] = time.Now().Add(-20 * time.Minute)
+	p.cooldownMap[oldKey] = p.cooldownOrder.PushBack(afkCooldownEntry{key: oldKey, sentAt: time.Now().Add(-20 * time.Minute)})
+	p.cooldownMap[recentKey] = p.cooldownOrder.PushBack(afkCooldownEntry{key: recentKey, sentAt: time.Now()})
 	p.cooldownMu.Unlock()
 
 	purged := p.Cleanup(10 * time.Minute)
 	if purged != 1 {
 		t.Errorf("expected 1 record purged, got %d", purged)
 	}
-
 	p.cooldownMu.Lock()
 	defer p.cooldownMu.Unlock()
-	// Verify 101 remains
-	if _, ok := p.cooldownMap[[2]int64{1, 101}]; !ok {
-		t.Errorf("expected 101 to remain in cooldown map")
+	if _, ok := p.cooldownMap[recentKey]; !ok {
+		t.Error("expected recent sender to remain in cooldown map")
 	}
-	// Verify 102 was removed
-	if _, ok := p.cooldownMap[[2]int64{1, 102}]; ok {
-		t.Errorf("expected 102 to be purged from cooldown map")
+	if _, ok := p.cooldownMap[oldKey]; ok {
+		t.Error("expected old sender to be purged from cooldown map")
+	}
+	if p.cooldownOrder.Len() != 1 {
+		t.Errorf("expected one ordered cooldown entry, got %d", p.cooldownOrder.Len())
 	}
 }
 

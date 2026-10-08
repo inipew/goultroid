@@ -1,6 +1,7 @@
 package afk
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"strconv"
@@ -83,7 +84,8 @@ type Plugin struct {
 	autoReply          atomic.Bool
 	transitionMu       sync.Mutex
 	cooldownMu         sync.Mutex
-	cooldownMap        map[[2]int64]time.Time
+	cooldownMap        map[[2]int64]*list.Element
+	cooldownOrder      list.List
 	cooldownDur        time.Duration
 	scope              *plugin.Scope
 	tasks              tasks.Client
@@ -104,7 +106,7 @@ func NewWithService(db Repository, ownerID int64, svcFunc func() TelegramService
 		db:                 db,
 		ownerID:            ownerID,
 		svcFunc:            svcFunc,
-		cooldownMap:        make(map[[2]int64]time.Time),
+		cooldownMap:        make(map[[2]int64]*list.Element),
 		cooldownDur:        60 * time.Second,
 		welcomePrivateOnly: false,
 		welcomeDeleteDelay: defaultWelcomeDeleteDelay,
@@ -233,7 +235,8 @@ func (p *Plugin) SetCooldown(duration time.Duration) {
 	p.cooldownMu.Lock()
 	p.cooldownDur = duration
 	if duration == 0 {
-		p.cooldownMap = make(map[[2]int64]time.Time)
+		p.cooldownMap = make(map[[2]int64]*list.Element)
+		p.cooldownOrder.Init()
 	}
 	p.cooldownMu.Unlock()
 }
@@ -620,47 +623,6 @@ func (p *Plugin) deleteWelcomeAfterInScope(scope *plugin.Scope, svc TelegramServ
 	}
 }
 
-func (p *Plugin) isCooldownActive(chatID, senderID int64) bool {
-	p.cooldownMu.Lock()
-	defer p.cooldownMu.Unlock()
-	last, ok := p.cooldownMap[[2]int64{chatID, senderID}]
-	if !ok {
-		return false
-	}
-	dur := p.cooldownDur
-	if dur <= 0 {
-		return false
-	}
-	return time.Since(last) < dur
-}
-func (p *Plugin) checkAndSetCooldown(chatID, senderID int64) bool {
-	p.cooldownMu.Lock()
-	defer p.cooldownMu.Unlock()
-	key := [2]int64{chatID, senderID}
-	now := time.Now()
-	dur := p.cooldownDur
-	if dur <= 0 {
-		return true
-	}
-	if last, ok := p.cooldownMap[key]; ok && now.Sub(last) < dur {
-		return false
-	}
-	p.cooldownMap[key] = now
-	if len(p.cooldownMap) > 1000 {
-		cutoff := now.Add(-2 * dur)
-		for k, v := range p.cooldownMap {
-			if v.Before(cutoff) {
-				delete(p.cooldownMap, k)
-			}
-		}
-	}
-	return true
-}
-func (p *Plugin) rollbackCooldown(chatID, senderID int64) {
-	p.cooldownMu.Lock()
-	delete(p.cooldownMap, [2]int64{chatID, senderID})
-	p.cooldownMu.Unlock()
-}
 func (p *Plugin) resolveEnvelopePeer(ctx context.Context, message *core.MessageEnvelope) tg.InputPeerClass {
 	if message == nil {
 		return nil
@@ -735,20 +697,4 @@ func formatDuration(d time.Duration) string {
 		parts = append(parts, fmt.Sprintf("%ds", secs))
 	}
 	return strings.Join(parts, " ")
-}
-func (p *Plugin) Cleanup(maxAge time.Duration) int {
-	if maxAge <= 0 {
-		maxAge = 10 * time.Minute
-	}
-	p.cooldownMu.Lock()
-	defer p.cooldownMu.Unlock()
-	now := time.Now()
-	purged := 0
-	for k, v := range p.cooldownMap {
-		if now.Sub(v) > maxAge {
-			delete(p.cooldownMap, k)
-			purged++
-		}
-	}
-	return purged
 }
