@@ -42,13 +42,19 @@ func (r *SQLiteRepository) SetAFK(ctx context.Context, userID int64, isAFK bool,
 	if err != nil {
 		return fmt.Errorf("failed to deactivate afk status: %w", err)
 	}
-	if rows, _ := res.RowsAffected(); rows == 0 {
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("check deactivated afk rows: %w", err)
+	}
+	if rows == 0 {
 		insertQuery := `
 		INSERT INTO afk_status (user_id, is_afk, reason, since)
 		VALUES (?, 0, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET is_afk = 0
 		`
-		_, _ = r.db.ExecContext(ctx, insertQuery, userID, reason, now)
+		if _, err := r.db.ExecContext(ctx, insertQuery, userID, reason, now); err != nil {
+			return fmt.Errorf("persist missing inactive afk row: %w", err)
+		}
 	}
 	return nil
 }
