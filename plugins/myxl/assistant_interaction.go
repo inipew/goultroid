@@ -84,6 +84,9 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 
 	nativePolicy := feature.OwnerPolicy(execution.SurfaceUserbot)
 	interactions = append(interactions,
+		feature.Interaction{ID: nativeNotificationsScreen, Kind: feature.InteractionScreen, Description: "Native MyXL notifications", Surfaces: execution.SurfaceUserbot, Policy: nativePolicy},
+		feature.Interaction{ID: nativeNotificationsRefreshAction, Kind: feature.InteractionAction, Description: "Refresh MyXL notifications", Surfaces: execution.SurfaceUserbot, Policy: nativePolicy},
+		feature.Interaction{ID: nativeNotificationsReadAction, Kind: feature.InteractionAction, Description: "Mark MyXL notifications read", Surfaces: execution.SurfaceUserbot, Policy: nativePolicy},
 		feature.Interaction{
 			ID:          nativeQuotaScreen,
 			Kind:        feature.InteractionScreen,
@@ -488,6 +491,34 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		screen, err := p.menuMgr.BuildQuotaDetailScreen(ctx.Context(), false)
 		if err != nil {
 			return ctx.Answer("Gagal memuat rincian. Silakan coba lagi.", true)
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "notifications":
+		screen, err := p.menuMgr.BuildNotificationsScreen(ctx.Context())
+		if err != nil {
+			return ctx.Answer("Gagal memuat notifikasi MyXL. Silakan coba lagi.", true)
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "notifications_read":
+		acc, err := p.repo.GetActive(ctx.Context())
+		if err != nil || acc == nil {
+			return ctx.Answer("Akun MyXL aktif tidak tersedia.", true)
+		}
+		items, err := p.client.GetNotifications(ctx.Context(), acc)
+		if err != nil {
+			return ctx.Answer("Gagal memuat notifikasi MyXL.", true)
+		}
+		read, failed := p.client.ReadAllNotifications(ctx.Context(), acc, items)
+		if failed > 0 {
+			_ = ctx.Answer(fmt.Sprintf("%d dibaca, %d gagal. Silakan coba lagi.", read, failed), true)
+		} else {
+			_ = ctx.Answer(fmt.Sprintf("%d notifikasi ditandai dibaca.", read), false)
+		}
+		screen, err := p.menuMgr.BuildNotificationsScreen(ctx.Context())
+		if err != nil {
+			return ctx.Answer("Gagal memuat ulang notifikasi MyXL.", true)
 		}
 		return p.assistantTransition(ctx, state, screen)
 

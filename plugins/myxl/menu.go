@@ -142,12 +142,34 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 		newMenuButton("📊 Rincian Kuota", "myxl:detail"),
 		newMenuButton("🔄 Muat Ulang", "myxl:refresh"),
 	)
-	screen.AddRow(newMenuButton("👥 Kelola Akun", "myxl:accounts"))
+	screen.AddRow(
+		newMenuButton("👥 Kelola Akun", "myxl:accounts"),
+		newMenuButton("🔔 Notifikasi", "myxl:notifications"),
+	)
 	screen.AddRow(
 		newMenuButton("🔍 Cari / Pilih Paket", "myxl:store"),
 		newMenuButton("⭐ Paket Favorit", "myxl:saved"),
 	)
 	screen.AddRow(newMenuButton("❌ Tutup Menu", "assistant:close"))
+	return screen, nil
+}
+
+func (m *MenuManager) BuildNotificationsScreen(ctx context.Context) (*ui.Screen, error) {
+	acc, err := m.plugin.repo.GetActive(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read active account: %w", err)
+	}
+	if acc == nil {
+		return nil, fmt.Errorf("no active account")
+	}
+	items, err := m.plugin.client.GetNotifications(ctx, acc)
+	if err != nil {
+		return nil, err
+	}
+	text := FormatNotificationsLimited(items, 3800)
+	screen := ui.NewScreen("myxl:notifications", "", text)
+	screen.AddRow(newMenuButton("📖 Tandai Semua Dibaca", "myxl:notifications_read"))
+	screen.AddRow(newMenuButton("🔄 Muat Ulang", "myxl:notifications"), newMenuButton("🔙 Kembali", "myxl:home"))
 	return screen, nil
 }
 func (m *MenuManager) BuildQuotaDetailScreen(ctx context.Context, mask bool) (*ui.Screen, error) {

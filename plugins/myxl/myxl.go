@@ -172,7 +172,7 @@ func (p *Plugin) Commands() []core.Command {
 			Name:        "myxl",
 			Aliases:     []string{"xlcli"},
 			Description: "MyXL account manager and interactive menu",
-			Usage:       ".myxl [login|otp|refresh|accounts|use|alias|status|del|kuota|family|paket|saved|buy]",
+			Usage:       ".myxl [login|otp|refresh|accounts|use|alias|status|del|kuota|notif|family|paket|saved|buy]",
 			Category:    "Utility",
 			Permission:  core.PermissionOwner,
 			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
@@ -250,6 +250,7 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 				"• <code>.myxl status</code> - Status akun aktif\n" +
 				"• <code>.myxl del &lt;nomor/alias&gt;</code> - Hapus akun\n" +
 				"• <code>.myxl kuota</code> - Cek kuota dan pulsa\n" +
+				"• <code>.myxl notif</code> - Notifikasi akun aktif\n" +
 				"• <code>.myxl family &lt;family_code&gt;</code> - Cari paket family\n" +
 				"• <code>.myxl paket &lt;option_code&gt;</code> - Detail paket\n" +
 				"• <code>.myxl saved [list|add|del|buy]</code> - Kelola favorit\n" +
@@ -281,6 +282,8 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 		return p.handleDeleteAccount(ctx, args)
 	case "kuota", "quota", "balance":
 		return p.handleShowQuota(ctx, args)
+	case "notif", "notifications":
+		return p.handleNotifications(ctx)
 	case "family", "cari", "search":
 		return p.handleSearchFamily(ctx, args)
 	case "paket", "package", "detail":

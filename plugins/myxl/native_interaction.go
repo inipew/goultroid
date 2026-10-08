@@ -24,10 +24,13 @@ const (
 	nativeQuotaRefreshTTL    = 10 * time.Minute
 	nativeQuotaRefreshExec   = 30 * time.Second
 
-	nativePurchaseScreen        = "native_purchase_confirm"
-	nativePurchaseConfirmAction = "native_purchase_confirm"
-	nativePurchaseCancelAction  = "native_purchase_cancel"
-	nativePurchaseConfirmExec   = 55 * time.Second
+	nativePurchaseScreen             = "native_purchase_confirm"
+	nativePurchaseConfirmAction      = "native_purchase_confirm"
+	nativePurchaseCancelAction       = "native_purchase_cancel"
+	nativePurchaseConfirmExec        = 55 * time.Second
+	nativeNotificationsScreen        = "native_notifications"
+	nativeNotificationsRefreshAction = "native_notif_refresh"
+	nativeNotificationsReadAction    = "native_notif_read"
 )
 
 type nativeRuntimeState struct {
@@ -46,7 +49,7 @@ func (p *Plugin) BindNative(rt nativeinteraction.DriverRuntime) (func(), error) 
 		return nil, fmt.Errorf("myxl: native feature scope unavailable")
 	}
 
-	registrations := make([]interface{ Close() }, 0, 3)
+	registrations := make([]interface{ Close() }, 0, 5)
 	registerPrepared := func(actionID string, timeout time.Duration, handler orchestration.Handler) error {
 		registration, err := rt.Interactions.RegisterPreparedAction(
 			rt.Scope,
@@ -77,6 +80,20 @@ func (p *Plugin) BindNative(rt nativeinteraction.DriverRuntime) (func(), error) 
 			registrations[i].Close()
 		}
 		return nil, fmt.Errorf("myxl: register native purchase confirm: %w", err)
+	}
+	for _, entry := range []struct {
+		id      string
+		handler orchestration.Handler
+	}{
+		{nativeNotificationsRefreshAction, p.handleNativeNotificationsRefresh},
+		{nativeNotificationsReadAction, p.handleNativeNotificationsRead},
+	} {
+		if err := registerPrepared(entry.id, 55*time.Second, entry.handler); err != nil {
+			for i := len(registrations) - 1; i >= 0; i-- {
+				registrations[i].Close()
+			}
+			return nil, fmt.Errorf("myxl: register native notifications: %w", err)
+		}
 	}
 	cancelRegistration, err := rt.Interactions.RegisterAction(
 		rt.Scope,
@@ -309,6 +326,67 @@ func nativeQuotaView(text string) presentation.View {
 			presentation.ActionButton("🔄 Perbarui Kuota", nativeQuotaRefreshAction),
 		}},
 	}
+}
+
+func nativeNotificationsView(text string) presentation.View {
+	return presentation.View{Text: text, Rows: []presentation.Row{{
+		presentation.ActionButton("📖 Tandai Semua Dibaca", nativeNotificationsReadAction),
+		presentation.ActionButton("🔄 Muat Ulang", nativeNotificationsRefreshAction),
+	}}}
+}
+
+func (p *Plugin) openNativeNotifications(cmd *core.Context, msisdn, content string) (bool, error) {
+	rt := p.currentNativeRuntime()
+	if rt.Interactions == nil || rt.Scope.IsZero() {
+		return false, nil
+	}
+	if cmd == nil || msisdn == "" {
+		return true, nativeinteraction.ErrInvalidInvocation
+	}
+	_, err := rt.Interactions.Begin(cmd, nativeinteraction.BeginRequest{
+		FeatureID: p.Name(), ScreenID: nativeNotificationsScreen,
+		State: []byte(msisdn), TTL: 10 * time.Minute, View: nativeNotificationsView(content),
+	})
+	return true, err
+}
+
+func (p *Plugin) handleNativeNotificationsRefresh(ctx *orchestration.Context) error {
+	return p.nativeNotificationsTransition(ctx, false)
+}
+
+func (p *Plugin) handleNativeNotificationsRead(ctx *orchestration.Context) error {
+	return p.nativeNotificationsTransition(ctx, true)
+}
+
+func (p *Plugin) nativeNotificationsTransition(ctx *orchestration.Context, markRead bool) error {
+	msisdn := strings.TrimSpace(string(ctx.State()))
+	if msisdn == "" {
+		return ctx.Answer("Sesi notifikasi tidak valid.", true)
+	}
+	queryCtx, cancel := context.WithTimeout(ctx.Context(), 50*time.Second)
+	defer cancel()
+	acc, err := p.repo.GetByMSISDN(queryCtx, msisdn)
+	if err != nil || acc == nil {
+		return ctx.Answer("Akun MyXL tidak tersedia.", true)
+	}
+	items, err := p.client.GetNotifications(queryCtx, acc)
+	if err != nil {
+		return ctx.Answer("Gagal memuat notifikasi MyXL.", true)
+	}
+	if markRead {
+		read, failed := p.client.ReadAllNotifications(queryCtx, acc, items)
+		if failed > 0 {
+			_ = ctx.Answer(fmt.Sprintf("%d dibaca, %d gagal.", read, failed), true)
+		} else {
+			_ = ctx.Answer(fmt.Sprintf("%d notifikasi ditandai dibaca.", read), false)
+		}
+		items, err = p.client.GetNotifications(queryCtx, acc)
+		if err != nil {
+			return ctx.Answer("Gagal memuat ulang notifikasi MyXL.", true)
+		}
+	}
+	content := FormatNotificationsLimited(items, 3800)
+	return ctx.Transition([]byte(msisdn), 10*time.Minute, nativeNotificationsView(content))
 }
 
 func nativePurchaseConfirmationView(intent purchaseIntentState, quote purchaseCheckoutPreview) presentation.View {
