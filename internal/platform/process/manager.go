@@ -105,8 +105,8 @@ func (m *Manager) Execute(ctx context.Context, owner, binary string, args ...str
 				Action: "process.execute.denied",
 				Target: binary,
 				Details: map[string]any{
-					"owner": owner,
-					"args":  args,
+					"owner_present": owner != "",
+					"arg_count":     len(args),
 				},
 			})
 		}
@@ -125,8 +125,8 @@ func (m *Manager) Execute(ctx context.Context, owner, binary string, args ...str
 			Action: "process.execute",
 			Target: binary,
 			Details: map[string]any{
-				"owner": owner,
-				"args":  args,
+				"owner_present": owner != "",
+				"arg_count":     len(args),
 			},
 		})
 	}

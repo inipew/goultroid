@@ -150,6 +150,29 @@ func (s *Service) publishEvent(action string, userID int64, targetName string, w
 	if eb == nil || !eb.HasSubscribersAtPriority(core.EventTypePMPermit, core.PriorityNormal) {
 		return
 	}
+	// Reasons may be owner-supplied prose and MTProto errors may contain
+	// private message content or credentials. Emit only categorical labels;
+	// detailed failures remain in the returned error, not the EventBus.
+	switch action {
+	case "warn":
+		reason = "warning"
+	case "approve":
+		reason = "approved"
+	case "auto_approve":
+		reason = "auto_approved"
+	case "disapprove":
+		reason = "approval_revoked"
+	case "block":
+		reason = "blocked"
+	case "unblock":
+		reason = "unblocked"
+	default:
+		reason = "state_changed"
+	}
+	if errStr != "" {
+		errStr = "operation_failed"
+	}
+	targetName = ""
 	eb.Publish(&core.PMPermitEvent{
 		At:         time.Now(),
 		Action:     action,

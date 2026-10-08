@@ -93,7 +93,7 @@ func (m *Manager) Set(key, val string) {
 			Action: "secret.write",
 			Target: cleanKey,
 			Details: map[string]any{
-				"redacted": Redact(val),
+				"secret_present": val != "",
 			},
 		})
 	}
