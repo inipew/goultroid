@@ -143,7 +143,7 @@ func (s *Service) SetEventBus(eb *core.EventBus) {
 	s.mu.Unlock()
 }
 
-func (s *Service) publishEvent(action string, userID int64, targetName string, warnCount int, reason string, success bool, errStr string) {
+func (s *Service) publishEvent(action string, userID int64, _ string, warnCount int, _ string, success bool, errStr string) {
 	s.mu.RLock()
 	eb := s.eventBus
 	s.mu.RUnlock()
@@ -153,33 +153,31 @@ func (s *Service) publishEvent(action string, userID int64, targetName string, w
 	// Reasons may be owner-supplied prose and MTProto errors may contain
 	// private message content or credentials. Emit only categorical labels;
 	// detailed failures remain in the returned error, not the EventBus.
+	safeReason := "state_changed"
 	switch action {
 	case "warn":
-		reason = "warning"
+		safeReason = "warning"
 	case "approve":
-		reason = "approved"
+		safeReason = "approved"
 	case "auto_approve":
-		reason = "auto_approved"
+		safeReason = "auto_approved"
 	case "disapprove":
-		reason = "approval_revoked"
+		safeReason = "approval_revoked"
 	case "block":
-		reason = "blocked"
+		safeReason = "blocked"
 	case "unblock":
-		reason = "unblocked"
-	default:
-		reason = "state_changed"
+		safeReason = "unblocked"
 	}
 	if errStr != "" {
 		errStr = "operation_failed"
 	}
-	targetName = ""
 	eb.Publish(&core.PMPermitEvent{
 		At:         time.Now(),
 		Action:     action,
 		UserID:     userID,
-		TargetName: targetName,
+		TargetName: "",
 		WarnCount:  warnCount,
-		Reason:     reason,
+		Reason:     safeReason,
 		Success:    success,
 		Error:      errStr,
 	})
