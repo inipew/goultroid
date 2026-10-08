@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5 CLOSED; A6-A/B ACCEPTANCE CLOSED (2026-10-08); A6-C UserLog lifecycle/privacy IMPLEMENTED (acceptance pending); A6-D and A7 OPEN**. Historical A0–A4 records remain below.
+Status: **A5 CLOSED; A6-A/B/C1 ACCEPTANCE CLOSED (2026-10-08); A6-C2 UserLog destination/category hardening IMPLEMENTED (acceptance pending); A6-D and A7 OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -952,3 +952,64 @@ If the new lifecycle test fails, re-check that the worker uses `p.ctx` rather th
 - A7 remains pending for resource/soak/restart/FloodWait acceptance. All external Telegram network I/O retains its shared RPC executor semantics.
 
 **Status: A5 CLOSED; A6-A/B CLOSED; A6-C1 implemented and pending user test gate; A6-C2/D and A7 OPEN.**
+
+## 23. A6-C1 accepted; A6-C2 UserLog destination and category acceptance (2026-10-08)
+
+### A6-C1 accepted — CLOSED
+
+The user pulled `test-next` to `572de40c2969e6350ea433f9546fab306732aeee` and supplied the A6-C1 test output:
+
+- `go test ./internal/services/userlog ./plugins/userlog -run '^TestA6' -count=1`: **PASS**.
+- `go test -race ./internal/services/userlog ./plugins/userlog -run '^TestA6' -count=1`: **PASS**.
+- `go test ./internal/services/userlog ./plugins/userlog ./internal/telegram ./internal/core ./plugins/afk ./plugins/pmpermit ./plugins/blacklist ./plugins/filters ./internal/app`: **PASS**.
+- `go test -race ./...`: **PASS for every repository package**.
+
+This closes A6-C1. A6-B and earlier phases remain CLOSED. No CI was inspected.
+
+### A6-C2 audit — destination integrity and category UX
+
+Existing architecture remains: three independently configured log categories (PMs, mentions, admin actions), an owner-configured Telegram destination, message observer routing, single lazy worker, bounded queue, and generation-scoped EventBus subscriptions. The previous tests already covered EventBus unsubscribe/rebind and destination recursion with an in-memory service. Review exposed:
+
+1. `internal/services/userlog/service.go:ClearDestination` discarded errors from **both** SQLite writes and always cleared the in-memory destination. After a failed clear, a subsequent process restart could restore the persisted old destination and resume forwarding owner-visible private messages even though `.log clear` reported success.
+2. `IsLogDestinationRef` deliberately consults only `cachedDest` (correct for the hot observer path). However `InitScope` did not load the stored destination into cache. The first post-restart mention in the destination group could therefore pass the recursion guard before any previous send or dashboard access hydrated it.
+3. `SetDestination` accepted invalid kinds or zero/negative IDs; corrupt structured config could also be hydrated as a configured destination. The `.log tags <unknown>` command implicitly interpreted any unrecognized action as `off`, silently disabling a category.
+
+### A6-C2 implementation — pushed; authoritative acceptance PENDING
+
+Commit `54915f82f2d60ff11b8293d6ddb127074ce2af61`:
+
+- `internal/services/userlog/service.go`: clear the legacy key **first**, then the structured destination; return SQLite errors instead of reporting false success. Update the cache only when **both** writes succeed. If the second write fails, the old structured record remains authoritative after restart. Reject destination kinds outside chat/channel or IDs not greater than zero. Ignore invalid structured data during loading and fall back to prior legacy compatibility parsing.
+- `plugins/userlog/userlog.go`: `InitScope` preloads the destination through the existing SQLite-backed service before activating message hooks/subscriptions. The hot message ingress keeps cache-only `IsLogDestinationRef`, adding no per-message I/O or background goroutines. Fail activation if the persisted destination cannot be loaded; do not forward messages with unknown recursion scope. Owner `.log` now accepts explicit `on|enable|true` or `off|disable|false`, rejecting typos instead of silently disabling a category.
+- `internal/services/userlog/destination_categories_a6_test.go`: simulated failure on either clear write; verify cache and persisted structured destination agree across service restart, subsequent successful clear does not resurrect a target, invalid destination rejection, three category toggles, and channel switch with preserved access hash.
+- `plugins/userlog/destination_a6_test.go`: construct a new service with an initially cold cache; activate/restart the plugin twice and verify that a mention in the configured destination never starts a UserLog worker or sends back to the destination. A failing configuration read blocks activation without starting workers.
+
+This phase **does not add** another queue, callback protocol, RPC executor, or worker. The dual-key SQLite writes are not a single transaction; the changed clear ordering prevents false success and ensures the previous *structured* destination survives a partial second-write failure, but crash atomicity across both keys is not claimed. Newly queued delivery during destination changes requires a separate review if strict cross-destination snapshot isolation is desired.
+
+**Execution note:** GitHub-backed source modifications were pushed without running the complete Goultroid checkout in this execution environment. The authoritative Go build, full-file `gofmt` and race test gate for this commit are not yet verified; do not mark A6-C2 CLOSED. CI was not checked.
+
+### Required A6-C2 acceptance gate
+
+```bash
+git pull --ff-only
+gofmt -w internal/services/userlog/service.go \
+  internal/services/userlog/destination_categories_a6_test.go \
+  plugins/userlog/userlog.go plugins/userlog/destination_a6_test.go
+gofmt -l internal/services/userlog/service.go \
+  internal/services/userlog/destination_categories_a6_test.go \
+  plugins/userlog/userlog.go plugins/userlog/destination_a6_test.go
+
+go test ./internal/services/userlog ./plugins/userlog -run '^TestA6C2' -count=1
+go test -race ./internal/services/userlog ./plugins/userlog -run '^TestA6C2' -count=1
+go test ./internal/services/userlog ./plugins/userlog ./internal/telegram ./internal/core \
+  ./plugins/pmpermit ./plugins/afk ./plugins/filters ./plugins/blacklist ./internal/app
+go test -race ./...
+git diff --check
+```
+
+If any test/build/race failure occurs, repair its concrete source or fixture and run `gofmt` again before committing. Do not check/poll CI without explicit user instruction.
+
+### Remaining acceptance
+
+A6-D is next: verify the combined privacy/redaction, callback/demotion/fail-closed security decisions, UserLog destination lifecycle and event backpressure, and resource settling. A7 will cover resource/SQLite/restart/FloodWait acceptance independently.
+
+**Status: A5 CLOSED; A6-A/B/C1 CLOSED; A6-C2 implementation pushed, acceptance pending; A6-D and A7 OPEN.**
