@@ -46,6 +46,9 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 
 func (p *Plugin) NativeFeatureID() string { return p.Name() }
 
+// PMPermit's text dashboard and commands remain available without a2.
+func (*Plugin) NativeOptional() bool { return true }
+
 func (p *Plugin) BindNative(rt nativeinteraction.DriverRuntime) (func(), error) {
 	if p == nil || p.svc == nil || rt.Interactions == nil || rt.Catalog == nil || rt.Scope.IsZero() {
 		return nil, nativeinteraction.ErrUnavailable

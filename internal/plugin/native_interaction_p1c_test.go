@@ -122,3 +122,28 @@ func TestP1CNativeDriverRebindsPerPluginGeneration(t *testing.T) {
 		t.Fatalf("cleanup count after shutdown = %d, want 2", p.cleanups)
 	}
 }
+
+type p1cOptionalNativeDriverPlugin struct {
+	p1cNativeDriverPlugin
+}
+
+func (*p1cOptionalNativeDriverPlugin) NativeOptional() bool { return true }
+
+func TestA5NativeDriverStandaloneFallbackDoesNotRelaxStrictDrivers(t *testing.T) {
+	ctx := context.Background()
+	strict := NewManager(core.NewRouter("."))
+	if err := strict.RegisterWithContext(ctx, &p1cNativeDriverPlugin{}); err == nil {
+		t.Fatal("strict native driver registered without an a2 adapter")
+	}
+	optionalManager := NewManager(core.NewRouter("."))
+	fallback := &p1cOptionalNativeDriverPlugin{}
+	if err := optionalManager.RegisterWithContext(ctx, fallback); err != nil {
+		t.Fatalf("optional native driver rejected its text-only standalone path: %v", err)
+	}
+	if fallback.binds != 0 {
+		t.Fatal("optional driver unexpectedly bound a native action without adapter")
+	}
+	if err := optionalManager.Disable(ctx, fallback.Name()); err != nil {
+		t.Fatalf("optional driver cleanup failed: %v", err)
+	}
+}

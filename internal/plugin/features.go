@@ -321,22 +321,28 @@ func (m *Manager) registerFeatureContract(ctx context.Context, name string, p Pl
 		m.mu.RLock()
 		nativeRuntime := m.nativeInteractions
 		m.mu.RUnlock()
-		if nativeRuntime == nil {
-			rollbackFeature()
-			return nil, fmt.Errorf("feature %s declares native interactions but native adapter is unavailable", name)
-		}
 		if driverID := strings.ToLower(strings.TrimSpace(driver.NativeFeatureID())); driverID != name {
 			rollbackFeature()
 			return nil, fmt.Errorf("feature %s native driver id %q does not match feature id", name, driver.NativeFeatureID())
 		}
-		nativeCleanup, err = driver.BindNative(nativeinteraction.DriverRuntime{
-			Interactions: nativeRuntime,
-			Catalog:      registry,
-			Scope:        scope,
-		})
-		if err != nil {
-			rollbackFeature()
-			return nil, fmt.Errorf("feature %s native interaction binding: %w", name, err)
+		if nativeRuntime == nil {
+			optional, ok := driver.(nativeinteraction.OptionalFeatureDriver)
+			if !ok || !optional.NativeOptional() {
+				rollbackFeature()
+				return nil, fmt.Errorf("feature %s declares native interactions but native adapter is unavailable", name)
+			}
+			// The feature has no bound native actions in this standalone
+			// process. Its existing text commands remain fully operational.
+		} else {
+			nativeCleanup, err = driver.BindNative(nativeinteraction.DriverRuntime{
+				Interactions: nativeRuntime,
+				Catalog:      registry,
+				Scope:        scope,
+			})
+			if err != nil {
+				rollbackFeature()
+				return nil, fmt.Errorf("feature %s native interaction binding: %w", name, err)
+			}
 		}
 	}
 

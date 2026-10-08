@@ -21,3 +21,11 @@ type FeatureDriver interface {
 	NativeFeatureID() string
 	BindNative(DriverRuntime) (func(), error)
 }
+
+// OptionalFeatureDriver permits a feature with an existing text-only command
+// path to start without the native a2 transport. Strict native drivers still
+// require a bound adapter. Optional drivers must provide their own safe fallback.
+type OptionalFeatureDriver interface {
+	FeatureDriver
+	NativeOptional() bool
+}

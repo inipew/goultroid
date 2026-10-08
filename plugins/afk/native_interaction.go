@@ -46,6 +46,9 @@ func (p *Plugin) FeatureSpec() feature.Spec {
 
 func (p *Plugin) NativeFeatureID() string { return p.Name() }
 
+// AFK retains native-free text commands; a2 is an optional UI enhancement.
+func (*Plugin) NativeOptional() bool { return true }
+
 func (p *Plugin) BindNative(rt nativeinteraction.DriverRuntime) (func(), error) {
 	if p == nil || rt.Interactions == nil || rt.Catalog == nil || rt.Scope.IsZero() {
 		return nil, nativeinteraction.ErrUnavailable
