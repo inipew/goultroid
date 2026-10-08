@@ -660,3 +660,50 @@ git diff --check
 ```
 
 If a new restart test fails, fix the exact feature contract or fixture before changing inventory again. Do not poll or check CI unless explicitly requested. A5-C2-B Filters management remains OPEN; overall A5 is **not CLOSED**.
+
+## 18. A5-C2-A full race accepted; A5-C2-B Filters native manager (2026-10-08)
+
+### A5-C2-A full-repository race and semantic restart acceptance — CLOSED
+
+The user fast-forwarded `test-next` from `4aeacf88` to `14a9b06ac10ff9c4a0ed4ac4923b4c5bc65ec6e1`, formatted the four touched Go proof files, and ran:
+
+- `go test ./internal/architecture -run '^TestDurableFeatureInventory$' -count=1`: **PASS**.
+- `go test ./plugins/afk ./plugins/pmpermit ./plugins/blacklist -run '^TestD4.*SurvivesDurableRestart$' -count=1`: **PASS**, all three packages.
+- `go test -race ./...`: **PASS across the repository** (packages without tests correctly show `[no test files]`).
+- `git diff --check`: no reported error.
+
+This closes the earlier durability inventory blocker. The A5-A/B, A5-C0, A5-C1 and A5-C2-A acceptance gates are CLOSED. No CI was inspected.
+
+### A5-C2-B — Filters contextual management, implementation pushed, acceptance PENDING
+
+Commit `1918e6fc584c784a287708a6261421d5202ebd90`:
+
+- `plugins/filters/native_interaction.go` declares a native userbot-only, group-scoped, Sudo-policy a2 manager with a 10-minute TTL, five rules per page, at most nine action slots, and plugin-generation cleanup. A live Assistant-managed `GroupRoleResolver` is required; without it the existing text command continues unchanged.
+- `.filters` on userbot opens the menu only in a verified group/supergroup. Assistant routing, `.filter`, `.stop`, and `.filterinfo` retain their existing semantics. Users can list, page, preview truncated escaped response text/media type, confirm deletion, go back, refresh, or close.
+- The session contains only canonical chat/topic coordinates, a content-based SHA-256 digest and up to nine bounded choices; **no rule cache, callback registry, worker, or RPC executor** is created.
+- Every non-mutating callback revalidates the current Telegram group administrator role. Confirmed removal is serialized by the existing per-chat rule lock, reads the current database rules, verifies the snapshot includes **the full response content and media metadata** (not only keyword), revalidates the Telegram role **fresh under that lock immediately before commit**, then calls the existing `savedresponse.Service.CommitDelete` path so media cleanup ownership is preserved.
+- Stale revisions are owned by canonical a2. Changes to the rule set, including a replacement of the response under an unchanged keyword, cause snapshot conflict instead of deleting an unintended rule. Same-keyword rules in different groups are isolated by the bound chat.
+- `plugins/filters/native_interaction_a5_test.go`: deterministic pagination and bounded-state, keyword-content replacement, two groups with identical keyword, demotion, canceled DB operation, private/channel scope denial, a2 callback provenance, cross-group spoof and replay tests.
+- `plugins/filters/durable_restart_test.go`: real SQLite session persistence across plugin generations followed by confirmation of a pre-restart callback, persisted deletion, and stale replay rejection.
+- Updated `internal/architecture/durable_feature_inventory_test.go` to declare Filters' durability version 1 and point to the owning restart proof in the same change. No skipped inventory gate.
+
+Three new Go files were locally passed through `gofmt` before commit, and the staged GitHub blobs match their exact locally formatted SHA-1 hashes. The two existing-file modifications were limited to the Filters native field/command dispatch and the inventory entries. **The user's authoritative Go build, unit tests, and race suite for this new commit have not been run or observed yet. Do not declare A5-C2-B or A5 CLOSED on the basis of staging alone.** CI was not inspected.
+
+**Known limitation:** the snapshot/lock validation protects same-process writers that share the existing per-chat lock; it is not a cross-process SQLite compare-and-swap and cannot prove multi-instance or ABA safety. That requires a dedicated transactional revision design rather than an ad hoc second cache.
+
+### Required acceptance gate for A5-C2-B
+
+```bash
+git pull --ff-only
+gofmt -w plugins/filters/filters.go plugins/filters/native_interaction.go plugins/filters/native_interaction_a5_test.go plugins/filters/durable_restart_test.go internal/architecture/durable_feature_inventory_test.go
+gofmt -l plugins/filters/filters.go plugins/filters/native_interaction.go plugins/filters/native_interaction_a5_test.go plugins/filters/durable_restart_test.go internal/architecture/durable_feature_inventory_test.go
+go test ./plugins/filters -run '^TestA5C2' -count=1
+go test -race ./plugins/filters -run '^TestA5C2' -count=1
+go test ./plugins/filters -run '^TestD4FiltersConfirmedRemovalSurvivesDurableRestart$' -count=1
+go test ./internal/architecture -run '^TestDurableFeatureInventory$' -count=1
+go test ./plugins/filters ./plugins/blacklist ./internal/plugin ./internal/interaction/native ./internal/assistant/... ./internal/app
+go test -race ./...
+git diff --check
+```
+
+If a failure is reported, repair the precise contract or test fixture and format every touched Go file before committing. Do not check/poll CI unless explicitly requested. **A5-C2-B acceptance pending; A5 final contextual moderation UX gate remains OPEN.**
