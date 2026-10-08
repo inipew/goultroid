@@ -53,6 +53,7 @@ type Plugin struct {
 	chatRevision  map[int64]uint64
 	chatBlacklist map[int64]*compiledBlacklistSet
 	ruleLocks     [ruleLockStripes]sync.RWMutex
+	native        nativeBlacklistRuntimeState
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer) *Plugin {
@@ -216,6 +217,12 @@ func (p *Plugin) handleUnblacklist(ctx *core.Context) error {
 	return ctx.Success(fmt.Sprintf("Removed <code>%s</code> from chat blacklist.", html.EscapeString(word)))
 }
 func (p *Plugin) handleListBlacklists(ctx *core.Context) error {
+	if opened, err := p.openNativeBlacklist(ctx); opened {
+		if err != nil {
+			return ctx.Fail(err, "Cannot open the group blacklist manager.")
+		}
+		return nil
+	}
 	chatID := p.getChatID(ctx)
 	words, err := p.db.ListBlacklists(ctx.Ctx, chatID)
 	if err != nil {
