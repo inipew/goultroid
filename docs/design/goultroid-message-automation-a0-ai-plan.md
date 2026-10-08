@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5 and A6 CLOSED (user-run full race acceptance, 2026-10-08); A7-A SQLite PM cardinality/FloodWait test IMPLEMENTED (acceptance pending); A7-B/C/D OPEN**. Historical A0–A4 records remain below.
+Status: **A5 and A6 CLOSED (user-run full race acceptance, 2026-10-08); A7-A SQLite PM cardinality/FloodWait and A7-B AFK TaskEngine lifecycle IMPLEMENTED (both acceptance pending); A7-C/D OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -1139,3 +1139,51 @@ git diff --check
 If `TestA7` fails, preserve fail-closed security and inspect the actual SQLite or transport test semantics before modifying code. Format any updated Go files before commit. Do not inspect/poll CI unless requested.
 
 **Status: A5 and A6 CLOSED; A7-A implemented with acceptance pending; A7-B/C/D OPEN.**
+
+## 26. A7-B — AFK and shared TaskEngine lifecycle acceptance (2026-10-08)
+
+### Refreshed baseline and current scope
+
+Refreshed actual `test-next` HEAD before coding: `4dff7f455a13a7224d1b87a0c6806a60d7bc768c` — `docs(design): close A6 and introduce staged A7 resource/restart acceptance`. A5/A6 acceptance is CLOSED as recorded above. **A7-A was implemented but the author has not received the user's A7-A acceptance output; do not silently mark it CLOSED.** The user explicitly asked to implement A7-B next, so avoid re-auditing A0–A6 or polling CI.
+
+A7-B acceptance intent: **real managed AFK plugin + canonical dispatcher + shared TaskEngine**, concurrent outgoing auto-unAFK, durable SQLite state before welcome effect, blocked context-aware Telegram/FloodWait send, cancellation on plugin disable, re-enable with a distinct plugin generation, no stale task canceling fresh generation, and no duplicate welcome. Fault-inject persistence failures, reject TaskEngine admission, and verify absence of unmanaged synchronous fallback. The test uses bounded fake transport, not live Telegram/network.
+
+### A7-B concrete audit and correctness fix
+
+While inspecting `plugins/afk/sqlite.go`, `plugins/afk/welcome_effect.go` and existing A2B managed acceptance, identified a production failure-integrity issue: `SQLiteRepository.SetAFK(false)` performs a conditional UPDATE and, when no row was updated, runs a fallback INSERT. The fallback result was previously ignored (`_, _ = ExecContext`), and `RowsAffected()` errors were also discarded. Thus a missing-row fallback could report successful persistence even if SQLite rejected the INSERT.
+
+Commit `8da6971bdc9aa11e5b1bc068912e592ebc32083a`:
+
+- **`plugins/afk/sqlite.go`**: propagate `RowsAffected()` errors; check and propagate the fallback INSERT error with context. The normal active-row CAS update, timestamp preservation, AFK transitions and task submission behavior are unchanged. No new retries, caches, workers or executor.
+- **`plugins/afk/resource_a7b_test.go`** adds three tests:
+  1. `TestA7BAFKManagedConcurrentAutoUnAFKAndGenerationIsolatedWelcome`: real SQLite, TaskEngine, canonical Telegram dispatcher and plugin manager with fail-closed capability gate; 32 concurrent owner-outgoing messages during AFK. Assert durable AFK-off before the single welcome begins, block a fake Telegram send like FloodWait, verify no synchronous delivery, disable AFK and observe cancellation of the old scoped in-flight send, verify zero old scope goroutines, then re-enable, re-arm AFK and verify exactly one fresh-generation welcome can complete. Samples `runtime.NumGoroutine` at baseline and after engine stop as diagnostics, not portable absolute thresholds.
+  2. `TestA7BAFKSQLiteFailureKeepsActiveStateAndTaskRejectionHasNoFallback`: use a real SQLite trigger to reject the active-to-inactive UPDATE. Verify persisted and in-memory AFK remain on and no welcome is submitted. Remove trigger, inject TaskEngine admission rejection via the existing test-only `tasks.Client`, then verify durable AFK-off remains committed, no inline fallback sends, and restart loads inactive state.
+  3. `TestA7BAFKSQLiteInactiveFallbackPropagatesWriteFailure`: use a trigger to reject the missing-row fallback INSERT; require the repository return an error and leave the DB without a fictitious durable AFK row. This test would have failed against the previous ignored-error implementation.
+
+The test reuses the **existing** `a2bBlockedWelcomeService` and `afkEffectTestClient` fakes already owned by AFK tests. It does not create a second task executor, managed callback protocol, AFK state store, or hot-path goroutine. Both changed Go files were formatted using local `gofmt -w` before commit; `gofmt -l` returned empty and git blob SHA-1 hashes exactly match the uploaded source. No CI was checked.
+
+**Validation limitation:** the full Goultroid module is not available in the authoring container. The user has not yet run the authoritative new A7-B tests or repository race suite at commit `8da6971b`. A7-B is **implemented, acceptance pending**, not CLOSED. The fake Telegram transport simulates a cancellable blocked send, not actual MTProto FloodWait timing or external RPC retries; those remain owned by the canonical RPCExecutor and the A7-D limitation matrix.
+
+### Required A7-B acceptance gate
+
+```bash
+git pull --ff-only
+gofmt -w plugins/afk/sqlite.go plugins/afk/resource_a7b_test.go
+gofmt -l plugins/afk/sqlite.go plugins/afk/resource_a7b_test.go
+go test ./plugins/afk -run '^TestA7B' -count=1 -v
+go test -race ./plugins/afk -run '^TestA7B' -count=1 -v
+go test ./plugins/afk ./internal/taskengine ./internal/plugin ./internal/telegram \
+  ./plugins/pmpermit ./internal/services/pmpermit ./internal/architecture
+go test -race ./...
+git diff --check
+```
+
+If failure occurs, inspect the actual failing TestA7B stage and correct the test/production invariant. In particular, keep scope shutdown deterministic, avoid brittle exact time/RSS thresholds, and preserve the durable transition before effect admission. Always refresh HEAD before any correction phase, run `gofmt` before every commit that changes Go, adjust tests and do not check CI unless explicitly requested.
+
+### Remaining A7
+
+- **A7-A:** SQLite PMPermit saturation/FloodWait acceptance remains pending until user-supplied test output is recorded.
+- **A7-C:** mixed ingress (security/AFK/moderation/observer) and a2 callback pressure, bounded state, concurrent load/unload, heap/goroutine peak and settled samples.
+- **A7-D:** final resource and restart matrix (including race, environment, timing/heap conditions and shared executor boundary), only then mark A7 CLOSED.
+
+**Status: A5/A6 CLOSED; A7-A implemented/acceptance pending; A7-B implemented/acceptance pending; A7-C/D OPEN.**
