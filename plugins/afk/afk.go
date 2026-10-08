@@ -269,6 +269,15 @@ func (p *Plugin) loadState(ctx context.Context) error {
 	return nil
 }
 
+func (p *Plugin) afkDecisionInterested(_ int64) bool {
+	state := p.state.Load()
+	return state != nil && state.isAFK
+}
+
+func (p *Plugin) afkEventInterested(chatID int64) bool {
+	return p.afkDecisionInterested(chatID) && p.AutoReplyEnabled()
+}
+
 func (p *Plugin) MessageHookPriority() int { return 50 }
 func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 	return []core.MessageHookRegistration{
@@ -278,7 +287,8 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 				Lane:      core.MessageHookDecision,
 				Interests: []core.MessageHookInterest{{Directions: core.MessageDirectionOutgoing, Peers: core.MessagePeerStable}},
 			},
-			Handler: p.HandleMessageEvent,
+			StateGate: p.afkDecisionInterested,
+			Handler:   p.HandleMessageEvent,
 		},
 		{
 			Priority: p.MessageHookPriority(),
@@ -290,7 +300,8 @@ func (p *Plugin) MessageHookRegistrations() []core.MessageHookRegistration {
 					{Directions: core.MessageDirectionIncoming, Peers: core.MessagePeerGroup | core.MessagePeerChannel, RequireReply: true},
 				},
 			},
-			Handler: p.HandleMessageEvent,
+			StateGate: p.afkEventInterested,
+			Handler:   p.HandleMessageEvent,
 		},
 	}
 }
