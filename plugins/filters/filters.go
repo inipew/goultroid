@@ -124,6 +124,7 @@ type Plugin struct {
 	cooldownMu   sync.Mutex
 	lastReply    map[string]time.Time
 	ruleLocks    [ruleLockStripes]sync.RWMutex
+	native       nativeFiltersRuntimeState
 }
 
 func New(db Repository, svcFunc func() core.TelegramServicer, responses ...*savedresponse.Service) *Plugin {
@@ -546,6 +547,12 @@ func (p *Plugin) handleStop(ctx *core.Context) error {
 }
 
 func (p *Plugin) handleList(ctx *core.Context) error {
+	if opened, err := p.openNativeFilters(ctx); opened {
+		if err != nil {
+			return ctx.Fail(err, "Cannot open the group filters manager.")
+		}
+		return nil
+	}
 	if p.db == nil {
 		return errors.New("filters: database is unavailable")
 	}
