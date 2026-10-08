@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A4 ACCEPTANCE CLOSED (2026-10-08); A5 pending**. Historical A0–A3 records remain below.
+Status: **A5 ACCEPTANCE CLOSED (2026-10-08); A6-A logging privacy hardening IMPLEMENTED, acceptance pending; A6-B/C and A7 OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -764,3 +764,63 @@ Review the resulting test output rather than assuming green. If anything fails, 
 Final A5 behavior matrix (not all exercised in live Telegram): owner-only AFK/PMPermit enable/disable and fallback; Blacklist/Filters admin-only per-group listing and confirmed removal; chat/topic-aware callback bindings; revocation/demotion and DeleteMessages rights; same-keyword rules in separate groups; stale-token rejection and durable restoration across plugin generations; SQLite failure/replacement/media-cleanup paths; adapter unavailable and plugin unload/reload; no parallel workers/executors/state registries.
 
 **Status: A5-A/B CLOSED; A5-C0 CLOSED; A5-C1 CLOSED; A5-C2-A/B CLOSED; final corrective security gate PENDING. Overall A5 NOT CLOSED until the above gate is green.** A6 observability is next, followed by A7 resource/restart/FloodWait acceptance.
+
+## 20. Final A5 acceptance CLOSED and A6-A logging privacy hardening (2026-10-08)
+
+### A5 final security acceptance — CLOSED
+
+The user fast-forwarded `test-next` to `bdd5ffd2f68ca6f999bfdcd088034d4e0db63375` and ran:
+
+- `gofmt -w plugins/blacklist/native_interaction.go plugins/blacklist/native_interaction_a5_test.go plugins/blacklist/native_authorization_a5_test.go`: completed without an error.
+- `go test ./plugins/blacklist -run '^TestA5(Final|C2)' -count=1`: **PASS**.
+- `go test -race ./plugins/blacklist -run '^TestA5(Final|C2)' -count=1`: **PASS**.
+- `go test -race ./...`: **PASS across all repository packages**.
+- `git diff --check`: no errors reported.
+
+**A5-A/B, A5-C0, A5-C1, A5-C2-A/B, and the final Blacklist mutation-time contextual authorization gate are CLOSED by user-run tests. The A5 acceptance scope is code-level, fake Telegram transport, SQLite and Go race validation—not a claim of live Telegram operational or multi-instance distributed atomicity.** CI was not checked.
+
+### A6 audit — verified source boundaries
+
+- `internal/telegram/dispatcher_dispatch.go` previously logged the entire Telegram `msg.Message` as `text` alongside parser errors. Badly quoted commands and malformed escapes could disclose private messages and tokens into persistent structured logs.
+- `internal/telegram/dispatcher_handlers.go` previously logged arbitrary hook panic values and raw plugin errors. `internal/telegram/dispatcher_dispatch.go` likewise logged the raw state-gate panic. Errors and panic values may embed content from a private PM or a sensitive command. Security hooks must preserve existing fail-closed behavior; feature/observer hooks must preserve fail-open behavior.
+- AFK already emits mostly structured error categories and actor/chat IDs; UserLog intentionally delivers private PM/mention text to a configured Telegram log destination, separate from structured server logs. Do not silently remove the documented UserLog feature or start forwarding PM text into application logs.
+- `internal/services/pmpermit/service.go` publishes `PMPermitEvent` with reason/error text to EventBus when subscribers exist. `internal/platform/audit/audit.go` allows arbitrary `AuditEvent.Details` values to be logged and retains map references in its bounded ring. These require caller inventory, disclosure policy and regression tests before deciding whether to redact or snapshot.
+- Message hook decision execution already has the shared TaskEngine admission/failure policy; A6 should not add its own logging worker/queue or make security decisions wait for observability.
+
+### A6-A — no raw PM/command/hook payload in dispatcher logs
+
+Implemented in `0494d88e0516c158a3fc17ab603e79ffcbe9b645`:
+
+- `internal/telegram/dispatcher_dispatch.go`: parser diagnostics now emit only a bounded category (`unclosed_quote`, `trailing_escape`, or `invalid_syntax`) without the message text or raw error string. State-gate panic logs only the static Go panic type.
+- `internal/telegram/dispatcher_handlers.go`: hook panic logs the Go type, not its value; hook error logs only the static error type, canceled/deadline flags and existing fail-closed flag, never the arbitrary `err.Error()` message.
+- `internal/telegram/dispatcher_privacy_a6_test.go`: observable Zap log assertions for two malformed private commands, a security vs observer hook error and panic under both failure policies, and a panicking state gate. Tests require no private marker in message/fields and preserve the admission decision semantics.
+- The newly added regression test was formatted using local `gofmt`; its Git blob SHA matches the formatted source. Production changes were confined to small import/logging branches and their replacement expressions were checked with local Go formatting snippets. **Complete-repo package/race tests for the new A6-A code are NOT yet verified.**
+
+Required A6-A acceptance:
+
+```bash
+git pull --ff-only
+gofmt -w internal/telegram/dispatcher_dispatch.go \
+  internal/telegram/dispatcher_handlers.go \
+  internal/telegram/dispatcher_privacy_a6_test.go
+gofmt -l internal/telegram/dispatcher_dispatch.go \
+  internal/telegram/dispatcher_handlers.go \
+  internal/telegram/dispatcher_privacy_a6_test.go
+
+go test ./internal/telegram -run '^TestA6' -count=1
+go test -race ./internal/telegram -run '^TestA6' -count=1
+go test ./internal/telegram ./internal/core ./plugins/afk ./plugins/pmpermit \
+  ./plugins/blacklist ./plugins/filters ./plugins/userlog ./internal/app
+go test -race ./...
+git diff --check
+```
+
+If any test fails, correct the actual root cause and update the relevant test before commit. Never inspect, poll or trigger CI without explicit user instruction.
+
+### Remaining A6 execution plan
+
+- **A6-B — Audit and PMPermit event disclosure contract.** Inventory actual subscriber/caller paths. Use a bounded, typed allowlist for structured audit metadata if privacy issues are demonstrated; protect the audit ring from caller mutation and accidental retention of mutable secret values. Preserve valid owner-visible audit signals. Do not allow untrusted Telegram text, arbitrary error values or tokens to become structured log fields.
+- **A6-C — UserLog and automation observability acceptance.** Verify configured destination and category toggles, self-recursion suppression, no callback/command leakage, event-vs-decision isolation during slow Telegram I/O, capacity/backpressure behavior, and plugin unload/reload cancellation with the existing TaskEngine. Preserve intentional message-content forwarding in UserLog while minimizing unrelated server-side logging.
+- **A6-D — Final acceptance matrix.** Cover PMPermit fail-closed state and warning logging under DB/RPC failure, AFK transition/welcome failure, Blacklist/Filters stale/demotion, Assistant/a2 callback errors, high-cardinality message pressure and zero/low idle overhead. Require focused tests and race. Then proceed to **A7 — resource/restart/FloodWait acceptance**.
+
+**Status:** A5 CLOSED; A6-A implemented with test gate pending; A6-B/C/D and A7 OPEN. Do not claim full A6 security or resource closure yet.
