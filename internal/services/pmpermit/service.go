@@ -66,7 +66,7 @@ type Service struct {
 	maxWarns      int
 	warnCooldown  time.Duration
 	mu            sync.RWMutex
-	approvedCache sync.Map
+	approvedCache boundedApprovalCache
 	warnIDs       map[int64][]int
 	warnMu        sync.Mutex
 
@@ -249,6 +249,16 @@ func (s *Service) addWarnID(userID int64, msgID int) {
 		return
 	}
 	s.warnMu.Lock()
+	if _, tracked := s.warnIDs[userID]; !tracked && len(s.warnIDs) >= maxPMPermitWarnUsers {
+		// DB remains authoritative: evicted users can reload their warning IDs.
+		remaining := maxPMPermitWarnUsers * 3 / 4
+		for oldUser := range s.warnIDs {
+			delete(s.warnIDs, oldUser)
+			if len(s.warnIDs) <= remaining {
+				break
+			}
+		}
+	}
 	s.warnIDs[userID] = append(s.warnIDs[userID], msgID)
 	if len(s.warnIDs[userID]) > 20 {
 		s.warnIDs[userID] = s.warnIDs[userID][len(s.warnIDs[userID])-20:]
@@ -533,21 +543,11 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 		return true, nil
 	}
 
-	// 5. Rate-limiting check to prevent warning reply storms and FloodWait
-	if s.warnCooldown > 0 {
-		s.warnTimeMu.Lock()
-		lastTime := s.lastWarnTime[senderID]
-		now := time.Now()
-		inCooldown := !lastTime.IsZero() && now.Sub(lastTime) < s.warnCooldown
-		if !inCooldown {
-			s.lastWarnTime[senderID] = now
-		}
-		s.warnTimeMu.Unlock()
-
-		if inCooldown {
-			// Silently drop burst messages during cooldown
-			return true, nil
-		}
+	// 5. Atomically enforce the live cooldown with strictly bounded sender state.
+	// When capacity is exhausted by active senders, suppress a new warning
+	// instead of admitting an unbounded reply storm.
+	if s.warnInCooldown(senderID) {
+		return true, nil
 	}
 
 	// 6. Warning counter increment
