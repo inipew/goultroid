@@ -558,3 +558,61 @@ Implementation must use canonical a2 generation-scoped actions and the live role
 First safe slice: a paged, bounded Blacklist list/preview/confirm-remove UI. Adding rules remains on the existing text command until an input-bound workflow is tested. Follow with Filters read/list management separately. Test demotion, wrong group, DB changes between preview/confirmation, missing BOT_TOKEN, plugin unload/reload, invalid peer metadata and DB failures. Do not create a new rule registry or executor.
 
 **Status:** A5-A/B CLOSED; A5-C0 CLOSED; A5-C1 wiring implemented with acceptance pending; A5-C2 OPEN. A5 overall **NOT CLOSED**.
+
+## 16. A5-C1 accepted; A5-C2 Blacklist a2 scoped manager (2026-10-08)
+
+### A5-C1 — authoritative acceptance CLOSED
+
+The user fast-forwarded `test-next` from `d6b8a322...` to `dec5b71d...` and executed the prescribed formatter, package tests, and race checks. Results:
+
+- `go test ./internal/interaction/native -run '^TestA5C' -count=1`: **PASS**.
+- `go test -race ./internal/interaction/native -run '^TestA5C' -count=1`: **PASS**.
+- `go test ./internal/assistant/... ./internal/interaction/... ./internal/app ./internal/plugin ./plugins/filters ./plugins/blacklist`: **PASS** across all listed packages.
+- `go test -race ./internal/assistant/client ./internal/interaction/native ./internal/plugin`: **PASS**.
+- `gofmt -w` on modified files and `git diff --check`: completed without errors.
+
+The user subsequently ran `gofmt -w .` and force-pushed with lease. The new authoritative branch baseline when A5-C2 began was **`187be451aeae7a07a22fae168af7365fd45bd82e`**, not the previous docs-only `dec5b71d...`. This history rewrite also included unrelated formatted/changed files; A5-C2 was built strictly on the new HEAD so these edits were preserved.
+
+### A5-C2-A — scoped Blacklist native a2 UX IMPLEMENTED, acceptance PENDING
+
+Commits:
+- `fb538c011a74ef1719083860dba75a45775f5ed9` — group-bound Blacklist manager, database snapshot confirmation, test fixtures.
+- `566375c602aea1396557c68f59cdb35e0f0677fc` — integrated canonical a2 callback regression test (demotion and wrong-chat protection).
+
+Scope:
+
+- `.blacklists` on the **native userbot surface** opens a canonical a2 manager only when the existing native adapter has an active authoritative Assistant group role provider. Otherwise it retains its historical text result. Assistant commands keep their existing managed group routing and do not enter the userbot a2 presentation.
+- The group menu has fixed action slot registrations (9), page size 5, a maximum of 9 per-screen choices, a 10-minute TTL, and generation-scoped cleanup through `BindNative`. It adds no new session registry, worker, cache, RPC executor or callback protocol.
+- Creation checks that the chat is a verified group/supergroup and queries the existing authoritative Telegram role resolver freshly. Callbacks use the A5-C0 `AuthorizeFreshGroupAction` boundary with the **bound actor, original chat, message ID and peer**, not a user-supplied chat ID.
+- Read/preview actions require a verified Telegram administrator role; the confirmed **remove** action additionally requires `DeleteMessages` rights and a fresh lookup in the actual execution handler.
+- The user selects a persisted rule, sees a separate confirmation screen, and can cancel/refresh or page. Actual deletion uses the existing per-chat rule lock and compares a canonical SHA-256 digest of the current persisted rule list against the preview snapshot; mismatches fail closed with a refresh hint.
+- The a2 runtime owns session revision and stale-token rejection; the persisted database remains the authoritative rule store, with no retained duplicate rule cache in the menu.
+- Existing `.blacklist` and `.unblacklist` commands and Assistant moderation are unchanged.
+
+Regression coverage:
+
+1. Paginated menu is bounded and preserves chat/topic coordinates in a2 state.
+2. Same keyword in two different chats cannot be deleted from the wrong repository scope.
+3. Rules altered since preview cause a conflict rather than stale deletion.
+4. Canceled SQLite context prevents mutation without deleting a rule.
+5. Private, broadcast channel and unknown chat scopes are rejected; absent a2 runtime preserves text fallback.
+6. Integrated a2 flow tests callback token handling, demotion before confirmation, wrong-chat callback coordinates, and authorized deletion.
+
+**Limitations / open risks:** Digest checks are content-based, not a cross-process SQLite compare-and-swap version; a remove/re-add ABA cycle with the identical rule set may not be detected. The existing rule lock protects one-process concurrency only. Do not claim distributed or multi-instance atomicity. Filters menu/add editing remains separate A5-C2-B work. No new a2 group mutation test has yet run in the authoritative user's Go checkout; CI was not checked.
+
+### Required A5-C2-A local gate
+
+```bash
+git pull --ff-only
+gofmt -w plugins/blacklist/blacklist.go plugins/blacklist/native_interaction.go plugins/blacklist/native_interaction_a5_test.go plugins/blacklist/native_interaction_flow_a5_test.go
+gofmt -l plugins/blacklist/blacklist.go plugins/blacklist/native_interaction.go plugins/blacklist/native_interaction_a5_test.go plugins/blacklist/native_interaction_flow_a5_test.go
+go test ./plugins/blacklist -run '^TestA5C2' -count=1
+go test -race ./plugins/blacklist -run '^TestA5C2' -count=1
+go test ./plugins/blacklist ./plugins/filters ./internal/plugin ./internal/interaction/native ./internal/assistant/... ./internal/app
+go test -race ./plugins/blacklist ./internal/interaction/native ./internal/plugin
+git diff --check
+```
+
+If any test fails, fix that precise code or fixture and run `gofmt` before committing. **Do not inspect/poll CI unless explicitly requested.**
+
+**A5 overall status:** A5-A/B CLOSED; A5-C0 CLOSED; A5-C1 CLOSED; A5-C2-A implemented/acceptance pending; A5-C2-B Filters manager and final contextual group UX gate OPEN. **Do not mark A5 CLOSED.**
