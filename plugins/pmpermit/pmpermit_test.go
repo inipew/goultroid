@@ -23,9 +23,10 @@ func handleMessageEvent(p *pmpermit.Plugin, ctx context.Context, e tg.Entities, 
 
 type mockTelegram struct {
 	core.MockTelegramServicer
-	sentText   string
-	edited     string
-	botSentIDs map[int]bool
+	sentText      string
+	edited        string
+	botSentIDs    map[int]bool
+	botSentPeerID int64
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -43,6 +44,11 @@ func (m *mockTelegram) IsBotSent(msgID int) bool {
 		return true
 	}
 	return false
+}
+
+func (m *mockTelegram) IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool {
+	p, ok := peer.(*tg.PeerUser)
+	return ok && p != nil && p.UserID == m.botSentPeerID && m.botSentIDs[msgID]
 }
 
 type noOpDelayedActions struct{}
@@ -293,8 +299,9 @@ func TestPMPermitPlugin_HandleIncomingMessage_UnresolvedSenderIsSafelyIntercepte
 func TestPMPermitPlugin_DisapproveAndWarningDoNotAutoApprove(t *testing.T) {
 	db := setupTestDB(t)
 	mockTG := &mockTelegram{
+		botSentPeerID: 7777,
 		botSentIDs: map[int]bool{
-			99: true, // ID 99 was sent by bot automation (scheduler/broadcast/downloader)
+			99: true, // ID 99 was sent by bot automation to user 7777
 		},
 	}
 	perms := core.NewPermissions(12345, nil)

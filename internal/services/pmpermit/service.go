@@ -207,6 +207,20 @@ func (s *Service) IsBotSent(msgID int) bool {
 	}
 	return false
 }
+// IsBotSentForPeer forwards peer-aware origin classification without falling
+// back to globally ambiguous message IDs. Older Telegram transports remain
+// supported, but cannot claim an origin without the peer-aware capability.
+func (s *Service) IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool {
+	if svc := s.getService(); svc != nil {
+		if tracker, ok := svc.(interface {
+			IsBotSentForPeer(tg.PeerClass, int, int64) bool
+		}); ok {
+			return tracker.IsBotSentForPeer(peer, msgID, selfID)
+		}
+	}
+	return false
+}
+
 func (s *Service) OwnerID() int64 { return s.ownerID }
 func (s *Service) IsSudoID(userID int64) bool {
 	if s.perms != nil && s.perms.IsSudo(userID) {

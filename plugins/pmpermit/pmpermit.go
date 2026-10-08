@@ -68,7 +68,8 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		if message.IsCommand || message.CommandName != "" {
 			return nil
 		}
-		if p.svc.IsPMPermitMessage(message.Text) || p.svc.IsBotSent(message.ID) {
+		if p.svc.IsPMPermitMessage(message.Text) ||
+			core.IsAutomatedOutgoingMessage(ctx, message, p.svc, p.svc.OwnerID()) {
 			return nil
 		}
 		if !message.IsPrivate() {

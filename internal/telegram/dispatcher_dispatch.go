@@ -80,9 +80,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 				if tracker.IsBotSentForPeer(msg.PeerID, msg.ID, d.getSelfID()) {
 					origin = core.ExecutionAutomation
 				}
-			} else if svc.IsBotSent(msg.ID) {
-				origin = core.ExecutionAutomation
 			}
+			// No ID-only fallback: Telegram message IDs overlap across peers.
 		}
 	}
 	decision := core.NewMessageDecision(origin)

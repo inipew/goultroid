@@ -486,10 +486,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	}
 
 	if message.Outgoing {
-		if svc.IsBotSent(message.ID) {
-			return nil
-		}
-		if decision := core.GetMessageDecision(ctx); decision != nil && decision.Origin() == core.ExecutionAutomation {
+		if core.IsAutomatedOutgoingMessage(ctx, message, svc, ownerID) {
 			return nil
 		}
 		if message.IsCommand && strings.EqualFold(message.CommandName, "afk") {

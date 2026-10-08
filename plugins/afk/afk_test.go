@@ -434,11 +434,17 @@ func TestAFKPlugin_NewCommands(t *testing.T) {
 
 type botSentMockService struct {
 	mockService
-	botSentIDs map[int]bool
+	botSentIDs    map[int]bool
+	botSentPeerID int64
 }
 
 func (m *botSentMockService) IsBotSent(msgID int) bool {
 	return m.botSentIDs != nil && m.botSentIDs[msgID]
+}
+
+func (m *botSentMockService) IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool {
+	p, ok := peer.(*tg.PeerUser)
+	return ok && p != nil && p.UserID == m.botSentPeerID && m.botSentIDs[msgID]
 }
 
 func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
@@ -449,8 +455,9 @@ func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
 	defer db.Close()
 
 	svc := &botSentMockService{
+		botSentPeerID: 2002,
 		botSentIDs: map[int]bool{
-			999: true, // message ID 999 was sent by Scheduler/Broadcast
+			999: true, // message ID 999 was sent by Scheduler/Broadcast to user 2002
 		},
 	}
 	ownerID := int64(1001)
