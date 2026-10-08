@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5/A6 CLOSED; A7-A/B CLOSED by user-run full race acceptance (2026-10-08); A7-C mixed ingress/resource tests IMPLEMENTED (acceptance pending); A7-D OPEN**. Historical A0–A4 records remain below.
+Status: **A5/A6 CLOSED; A7-A/B CLOSED by user-run full race acceptance (2026-10-08); A7-C1/C2 test implementations PUSHED (acceptance pending); A7-D OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -1256,3 +1256,56 @@ On failure: check the first failing assertion, task scope admission, ordering an
 - **A7-D:** final executable acceptance inventory should refer to real proof tests across A7-A/B/C, A5 durable restart/moderation and A6 observability; include full race suite; record OS/architecture/Go runtime and measured baseline/peak/settled goroutine/heap for repeatable loads. Only claim source-level + fake-transport acceptance, not real network FloodWait timings or production RSS without a host/production sample.
 
 **Status: A5/A6 CLOSED; A7-A/B CLOSED; A7-C1 implemented/acceptance pending; A7-C2/D OPEN.**
+
+## 28. A7-C2 — Four-feature durable callback pressure and managed scoped reload (2026-10-08)
+
+### Refreshed HEAD and A7-C1 precondition
+
+The actual `test-next` baseline before implementing C2 was `24c47ee5280398265f5cc30981cd3aae963788a6` — `docs(design): accept A7-A/B race and stage mixed ingress resource gates`. The preceding `3616b59bb6432ef7c000cbbd0e1bd2976003fac3` contains the A7-C1 mixed security/observer/callback and UserLog pressure tests. **There has been no subsequent user-provided A7-C1 focused/race test output in this session. A7-C1 acceptance remains PENDING**, independent of the request to proceed directly to C2.
+
+### A7-C2 scope and code-level design
+
+Existing tests in A5 verify AFK/PMPermit/Blacklist/Filters individual native a2 callbacks, contextual authorization, SQLite durability and restart; A7-A/B verify PMPermit SQLite/FloodWait simulation and managed AFK TaskEngine lifecycle. A7-C1 separately exercises the real dispatcher/shared TaskEngine lanes and UserLog observer pressure.
+
+The remaining gap is **multi-feature a2 catalog/runtime state competing for one shared bounded SQLite durable store, with one feature being disabled/reloaded while siblings remain live**. Repeating each plugin's full Telegram callback driver or creating a new test-only a2 executor would mask rather than prove this ownership boundary.
+
+Commit `dd81adabd0157d0dd74cea230aad9df2dd47b506` adds two **test-only** files:
+
+1. `internal/app/resource_a7c2_test.go` — `TestA7C2FourFeatureDurableRestartAndScopedCallbackPressure`: constructs the *real* AFK, PMPermit, Blacklist and Filters `FeatureSpec` declarations, registers all four in **one** canonical feature registry and **one** canonical a2 runtime with a real SQLite interaction session store. Creates eight actor/chat-bound sessions for each feature (32 total). Exercises 1,024 successful same-feature callback resolutions, tests fail-closed rejection of a 33rd live session, persists the session state across full runtime recreation and feature generation change, and rejects cross-feature callback token forgery. Canceling the restored Blacklist scope removes **only** its eight sessions, leaving AFK/PMPermit/Filters callback tokens valid. Records Go OS/arch/version and baseline/peak/GC-settled `HeapAlloc` and goroutine samples as *diagnostics*, not brittle hard thresholds.
+2. `internal/app/resource_a7c2_manager_test.go` — `TestA7C2ManagerReloadOneFeatureKeepsSiblingDurableCallbacks`: uses the **actual Plugin Manager** and the genuine four feature declarations through small metadata-only plugin fixtures. Registers one session per feature, disables Blacklist and confirms the old token cannot execute, keeps all sibling tokens valid, re-enables Blacklist under a new owner generation and verifies the old token is not resurrected. After a manager shutdown/recreation and SQLite durable restoration, checks that only the freshly re-enabled Blacklist session and the three sibling sessions survive (four total). This exercises production Plugin Manager generation bookkeeping and shared a2 session ownership; **the metadata-only test fixture is not equivalent to running all four production plugin message-hook effect paths simultaneously**.
+
+Neither test adds production workers, registries, callback protocols, retry engines, or any changes to the hot path. Each Go test file was processed by local `gofmt -w` before commit. `gofmt -l` was empty and **the exact local formatted Git blob hashes match the pushed blobs** (`782dccec...` and `a2c7780e...`).
+
+**Validation limitation:** the assistant environment does not contain a checkout of the complete Go module; these new tests have **not** been compiled or run with the project dependencies, and no Go race result has been observed for C2. Do not declare A7-C2 or overall A7 CLOSED yet. CI has not been inspected.
+
+### A7-C2 acceptance commands
+
+```bash
+git pull --ff-only
+gofmt -w internal/app/resource_a7c2_test.go \
+  internal/app/resource_a7c2_manager_test.go
+gofmt -l internal/app/resource_a7c2_test.go \
+  internal/app/resource_a7c2_manager_test.go
+
+go test ./internal/app -run '^TestA7C2' -count=1 -v
+go test -race ./internal/app -run '^TestA7C2' -count=1 -v
+
+# A7-C1 is a separate gate that was not yet confirmed by user test output.
+go test ./internal/telegram ./plugins/userlog -run '^TestA7C' -count=1 -v
+go test -race ./internal/telegram ./plugins/userlog -run '^TestA7C' -count=1 -v
+
+go test ./internal/app ./internal/interaction ./internal/plugin \
+  ./internal/telegram ./internal/taskengine ./plugins/afk \
+  ./plugins/pmpermit ./plugins/blacklist ./plugins/filters ./plugins/userlog \
+  ./internal/architecture
+go test -race ./...
+git diff --check
+```
+
+On a failure, fix the actual contract, adapt invalid test setup assumptions without bypassing ownership semantics, format all modified Go files before every commit, and avoid CI lookup. Do not introduce a second executor to make the tests pass.
+
+### Next phase — A7-D
+
+After both C1 and C2 focused/race gates pass, build the final executable acceptance inventory referencing **owning package** A7-A/B/C tests and A5/A6 gates. Record repeated baseline/peak/settled goroutine/heap measurements and the exact Go/host environment; separate source-level fake-transport guarantees from unverified production RSS and real MTProto FloodWait timing. Do not assert real network/FloodWait soak or absolute resource budgets from local unit tests.
+
+**Status: A5/A6 CLOSED; A7-A/B CLOSED; A7-C1 and A7-C2 implementations pushed, authoritative C1/C2 acceptance PENDING; A7-D OPEN.**
