@@ -224,3 +224,29 @@ The Jobs store already implements durable occurrence cancellation with an epoch 
 ### P1-B decision
 
 **P1-B is NOT CLOSED.** C1 has a concrete source-level failure sequence; C2 has a concrete scope/contract gap and an ignored legacy cancellation error. Before production changes, write focused failpoint tests in a runnable checkout, show them failing for the intended reasons, then apply the smallest code change. Run `gofmt`, focused tests, targeted race tests, and compatibility gates **before every Go-changing commit**; never inspect CI without explicit request. Do not start R5/R6 optimization while the P1-B correctness gate is open.
+
+## 9. P1-B continuation — cancellation reorder patch prepared, validation blocked (9 October 2026)
+
+Refreshed `test-next` HEAD: `d41629df4f2c608eb9313bf876b7ff8c454b76c0` — `docs(execution): fix P1-B audit markdown formatting`.
+
+**C1 status: SOURCE-CONFIRMED; MINIMAL PATCH PREPARED LOCALLY; NOT APPLIED TO REPOSITORY.** The working shell has Go 1.23.2 but no Goultroid checkout or cached Go modules, and `git ls-remote` cannot resolve `github.com`. The GitHub connector allows reviewing source and updating documentation, not executing package tests. Obeying the mandatory no-unvalidated-Go-push rule, do **not** commit production Go without a runnable checkout and focused verification. CI was not queried.
+
+Candidate change (not yet shipped): in `internal/scheduler/engine.go:608+`, move `jobsMgr.DisableSchedule(ctx, redesignedScheduleID(jobID))` **before** `db.DeleteScheduledJob(ctx, jobID)`. Retain early errors without rollback/re-enabling. This makes a failed durable disable leave the compatibility row available for scoped retry, and a failed compatibility delete leave future redesigned slots disabled; an ambiguous delete commit remains safe with respect to future redesigned materialization. This is a *minimal staged fallback*, not an atomic cross-store cancellation transaction.
+
+Prepared regression test file: `internal/scheduler/runtime_execution_p1b_cancel_test.go`. The two candidate tests reuse the repository's existing `executionLifecycle*` fixtures:
+
+- `TestP1BCancelDisableFailurePreservesRetryableRow`: inject failure at `DisableSchedule`, ensure the compatibility row has not been deleted, the error is returned, then retry through `CancelScoped` with the same requester/chat and verify the schedule becomes disabled and the row is removed.
+- `TestP1BCancelDeleteFailureLeavesDisabledSchedule`: inject compatibility deletion failure after disable, verify the durable schedule stays disabled, then retry deletion without re-enabling.
+
+The **candidate patch was assembled locally**, the new Go test was run through `gofmt`, and its patch structure was checked using `git apply --check` against an isolated hand-built context fixture. These checks do **not** establish Go compilation, a real checkout application, repository tests, race safety or successful behavior. The candidate is supplied as an artifact in the originating conversation; it is not committed as Go source.
+
+### P1-B next executable gate
+
+1. Refresh actual `test-next` HEAD and reconcile `engine.go`/test fixture drift.
+2. Apply candidate changes on a real checkout. Run the two regression tests **before** the production reorder and verify that they fail on the old behavior for the expected reason.
+3. Apply the reorder. Run `gofmt` on all changed Go files, `gofmt -l`, `git diff --check`, targeted `go test ./internal/scheduler -run '^TestP1BCancel' -count=1`, and package race tests. Also run existing schedule lifecycle and registration tests.
+4. Extend the tests with a *real SQLite* integration fixture covering `mode='redesigned'`, enabled `job_schedules`, compatibility deletion failure and restart. Include concurrent due materialization and `ActionJob` shared-definition preservation.
+5. Resolve C2/C3 separately. Do **not** claim an in-flight ActionJob is cancelled merely because its future schedule is disabled; avoid cancellation of the shared target definition's entire scope. Determine whether `CancelScoped` explicitly means stop future slots only or also cancel already materialized occurrences. If active cancellation is promised, use Jobs' existing occurrence ownership and writer fences.
+6. Only commit validated Go changes. Keep CI unchecked unless requested. Record exact commands, pass/fail outcomes, SHA and known limitations here.
+
+**P1-B remains OPEN.** The staged C1 reorder is a candidate fix, not demonstrated production acceptance. No R5/R6 optimization started.
