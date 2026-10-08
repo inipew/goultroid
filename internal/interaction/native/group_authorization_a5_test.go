@@ -33,11 +33,11 @@ func (r *a5GroupRoles) ResolveGroupRoleFresh(_ context.Context, request core.Gro
 
 func a5GroupMutationCase(user, chat int64) (interaction.Session, presentationtelegram.MessageTarget, GroupActionScope) {
 	return interaction.Session{
-			Binding: interaction.Binding{ActorID: user, ChatID: chat, MessageID: 80},
-		}, presentationtelegram.MessageTarget{
-			Peer:   &tg.InputPeerChannel{ChannelID: chat, AccessHash: 771},
-			ChatID: chat, MessageID: 80,
-		}, GroupActionScope{ChatID: chat, Kind: core.ChatKindSupergroup, TopicID: 55}
+		Binding: interaction.Binding{ActorID: user, ChatID: chat, MessageID: 80},
+	}, presentationtelegram.MessageTarget{
+		Peer:   &tg.InputPeerChannel{ChannelID: chat, AccessHash: 771},
+		ChatID: chat, MessageID: 80,
+	}, GroupActionScope{ChatID: chat, Kind: core.ChatKindSupergroup, TopicID: 55}
 }
 
 func TestA5CGroupActionAuthorizationFreshRoleAndDemotion(t *testing.T) {

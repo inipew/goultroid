@@ -507,3 +507,54 @@ git diff --check
 ```
 
 **A5 remains PARTIAL:** A5-A/B accepted, A5-C0 implemented but test gate pending, A5-C UI/permission integration OPEN. Do not declare overall A5 CLOSED until integration and test gates pass.
+
+## 15. A5-C0 user-run acceptance and A5-C1 native role provider (2026-10-08)
+
+### A5-C0 acceptance — CLOSED
+
+The user fast-forwarded `test-next` to `d6b8a3224c1f53936d5525ff05d6b222786c58ba` and reported these gates passing:
+
+- `go test ./internal/interaction/native -run '^TestA5C' -count=1`: **PASS**
+- `go test -race ./internal/interaction/native -run '^TestA5C' -count=1`: **PASS**
+- `go test ./internal/interaction/... ./internal/plugin ./plugins/filters ./plugins/blacklist ./internal/assistant/command`: **PASS**
+- `go test -race ./internal/interaction/native ./plugins/filters ./plugins/blacklist`: **PASS**
+- `gofmt -w internal/interaction/native/group_authorization_a5*.go` and `git diff --check`: no errors reported.
+
+**A5-C0's fail-closed contextual authorization fence is accepted.** No CI was inspected.
+
+### A5-C1 — Lifecycle-bound authoritative group role provider (implemented; test gate pending)
+
+Commit `0289cc2d08ba0071145f2eb328a2e3287ccf396d`.
+
+The only current production authoritative `GroupRoleResolver` is constructed in `internal/assistant/client` from the managed bot Telegram API, with its existing bounded cache and shared RPC execution path. The userbot/native adapter cannot safely synthesize a Telegram group role from local owner/sudo identity.
+
+- `AssistantClient` now exposes its **currently running** role resolver via `GroupRoleResolver()`; it is cleared when the Assistant run stops. The resolver is not exposed during startup/shutdown.
+- `AssistantApp` forwards the provider rather than returning an unavailable type assertion through the Assistant wrapper.
+- Native a2 `Adapter.SetGroupRoleProvider` and `Adapter.GroupRoleResolver` install/read a synchronized dynamic provider. There is **no second resolver, RPC executor, worker, cache, or callback stack**.
+- The application composition root attaches a closure borrowing the live Assistant resolver. With BOT_TOKEN missing, Assistant unavailable/stopped, or role lookup failing, the provider returns nil or the mutation-time role guard fails closed.
+- New test `internal/interaction/native/group_role_provider_a5_test.go` requires nil-default, live provider, shutdown/detach, and nil-adapter behavior. `internal/assistant/role_bridge_a5_test.go` requires a stopped Assistant to expose no role authority.
+
+**Important scope:** this commit wires the prerequisite role provider only. It does **not** expose a new Filters/Blacklist mutation callback. Existing text commands retain the original behavior. Do not declare A5-C1 complete as a full moderation UI or A5 CLOSED.
+
+### Required acceptance for A5-C1
+
+```bash
+git pull --ff-only
+gofmt -w internal/interaction/native/adapter.go internal/interaction/native/group_role_provider_a5_test.go internal/assistant/client/client.go internal/assistant/app.go internal/assistant/role_bridge_a5_test.go internal/app/app.go
+gofmt -l internal/interaction/native/adapter.go internal/interaction/native/group_role_provider_a5_test.go internal/assistant/client/client.go internal/assistant/app.go internal/assistant/role_bridge_a5_test.go internal/app/app.go
+go test ./internal/interaction/native -run '^TestA5C' -count=1
+go test -race ./internal/interaction/native -run '^TestA5C' -count=1
+go test ./internal/assistant/... ./internal/interaction/... ./internal/app ./internal/plugin ./plugins/filters ./plugins/blacklist
+go test -race ./internal/assistant/client ./internal/interaction/native ./internal/plugin
+git diff --check
+```
+
+The complete repository was not available for Go package execution here; **full Go tests/race after this commit are not claimed**. No CI was checked.
+
+### A5-C2 — Scoped Blacklist/Filters management actions (OPEN)
+
+Implementation must use canonical a2 generation-scoped actions and the live role provider above. Enter only from a verified manager group; bind the actor/chat/message and retain topic identity, never trust a client-provided chat ID. A mutating callback must fetch the fresh Telegram role *inside the TaskEngine execution handler* and compare the affected rule identity against a current DB snapshot under the per-chat rule lock before deletion. Confirmations and refreshed screens must use a2 session revisions so old buttons cannot commit.
+
+First safe slice: a paged, bounded Blacklist list/preview/confirm-remove UI. Adding rules remains on the existing text command until an input-bound workflow is tested. Follow with Filters read/list management separately. Test demotion, wrong group, DB changes between preview/confirmation, missing BOT_TOKEN, plugin unload/reload, invalid peer metadata and DB failures. Do not create a new rule registry or executor.
+
+**Status:** A5-A/B CLOSED; A5-C0 CLOSED; A5-C1 wiring implemented with acceptance pending; A5-C2 OPEN. A5 overall **NOT CLOSED**.

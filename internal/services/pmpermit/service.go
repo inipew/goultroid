@@ -70,8 +70,8 @@ type Service struct {
 	warnIDs       map[int64][]int
 	warnMu        sync.Mutex
 
-	lastWarnTime map[int64]time.Time
-	warnTimeMu   sync.Mutex
+	lastWarnTime   map[int64]time.Time
+	warnTimeMu     sync.Mutex
 	statusMu       sync.Mutex
 	statusUsers    map[int64]*pmUserStatusLock
 	statusOverflow int

@@ -90,10 +90,10 @@ func NewApp(appID int, appHash string, botToken string, logger *zap.Logger) *Ass
 	}
 	return &AssistantApp{client: client.NewAssistantClient(appID, appHash, botToken, logger), logger: logger}
 }
-func (a *AssistantApp) Start(ctx context.Context) error     { return a.client.Start(ctx) }
-func (a *AssistantApp) Quiesce(ctx context.Context) error   { return a.client.Quiesce(ctx) }
-func (a *AssistantApp) Stop(ctx context.Context) error      { return a.client.Stop(ctx) }
-func (a *AssistantApp) IsRunning() bool                     { return a.client.IsRunning() }
+func (a *AssistantApp) Start(ctx context.Context) error   { return a.client.Start(ctx) }
+func (a *AssistantApp) Quiesce(ctx context.Context) error { return a.client.Quiesce(ctx) }
+func (a *AssistantApp) Stop(ctx context.Context) error    { return a.client.Stop(ctx) }
+func (a *AssistantApp) IsRunning() bool                   { return a.client.IsRunning() }
 
 // GroupRoleResolver exposes the existing bot-side, managed-RPC-backed
 // Telegram role verifier to native a2 moderation. It is nil unless the
