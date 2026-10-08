@@ -171,3 +171,61 @@ Do not check/poll CI. If any test fails, repair source and affected tests, gofmt
 - Add focused concurrency/failure checks for real SQLite and high-cardinality PM ingress, plus cancellation/FloodWait behavior under per-user lock stripes; a blocked Telegram RPC must not stall unrelated security decisions.
 - Validate that PMPermit applies **only to private user chats**, not groups, channels, forum topics, or Assistant PM relay.
 - Default setting consistency (`pmpermit.max_warns` and service constructor) remains to be reconciled without changing behavior unexpectedly.
+
+## 9. A3-C execution — warning IDs, approval peer and FloodWait isolation
+
+Status: **IMPLEMENTED, full-repository tests and race acceptance PENDING** on 2026-10-08.
+
+The user provided passing local results for the previous A3-A/B gate before this work:
+- `go test ./internal/services/pmpermit -run '^TestA3'`
+- `go test -race ./internal/services/pmpermit -run '^TestA3'`
+- `go test ./internal/services/pmpermit ./plugins/pmpermit ./internal/telegram ./internal/plugin`
+- `go test -race ./internal/services/pmpermit ./plugins/pmpermit`
+
+### A3-C1 — Warning-ID failure containment
+
+Commit `8054b057d5820de3d1665683c3947fc45afecc4d`.
+
+- The warning-ID helpers now accept the existing ingress/command `context.Context` instead of using `context.Background()` for repository I/O. Persist/lookup/clear failures are returned, not silently interpreted as empty history.
+- A failed DB append retains the bounded memory marker. A failed durable clear leaves the cached marker intact for retry.
+- Outgoing PMPermit must not auto-approve on an unknown warning-origin marker when SQLite lookup fails; the plugin returns the canonical intercept-handled signal.
+- SQLite corrupt warning-ID JSON now returns an error. Appending to corrupt/unreadable history is refused rather than overwriting it.
+- New A3-C tests cover persistence failure, cached fallback, canceled contexts, eviction reload, corrupt SQLite JSON and outgoing fail-closed behavior.
+
+### A3-C2 — Legacy approval semantics
+
+Commit `0fb8f74db9f189b505549359a1316ffd995c80d2`.
+
+- `Approve(userID)` is a storage-only operation, available only when no Telegram service or provider is configured. Managed Telegram use without a resolved access-hash-bearing peer returns `ErrResolvedApprovalPeer` and does **not** publish approval.
+- Production PMPermit commands already use `ApproveWithPeer`. Tests requiring Telegram side effects were migrated to `ApproveWithPeer` and valid peer credentials.
+- Additional regression cases cover preexisting blocks, unavailable dynamic Telegram providers, and storage-only operation.
+
+### A3-C3 — Independent per-user lock and bounded high-cardinality admission
+
+Commit `f04ee0e28e3979644d0c8a8fb78e870855db1f27`.
+
+- Replaced 128 always-hashed status lock stripes with lazily registered per-user locks, reference-counted and evicted when idle. Up to 4,096 active distinct users are handled without unrelated-user stripe contention.
+- At this bound, a fixed 128-stripe overflow fallback is used for unmatched users. While overflow is active, new unmatched users remain routed to overflow; this fences against a single user concurrently entering both keyed and overflow lanes. The limit stays bounded; no goroutine, engine or executor was introduced.
+- New tests cover users that collided on the old 128-stripe hash, same-user serialization, 4,096-user capacity/idle settling, and a blocked mock Telegram warning not delaying another unrelated private sender.
+- A standalone isolated `go test -race` harness for this lock subsystem passed all three lock tests. This **does not** validate full-repository package or Telegram integration tests.
+
+### Mandatory next acceptance gate
+
+Refresh `test-next` HEAD before any fix. Run `gofmt` for all changed Go files, including test files, **before committing**. Do not check/poll CI unless explicitly requested.
+
+```bash
+git pull --ff-only
+gofmt -w internal/services/pmpermit/*.go plugins/pmpermit/*.go
+gofmt -l internal/services/pmpermit/*.go plugins/pmpermit/*.go
+go test ./internal/services/pmpermit -run '^TestA3C' -count=1
+go test -race ./internal/services/pmpermit -run '^TestA3C' -count=1
+go test ./plugins/pmpermit -run '^TestA3C' -count=1
+go test -race ./plugins/pmpermit -run '^TestA3C' -count=1
+go test ./internal/services/pmpermit ./plugins/pmpermit ./internal/telegram ./internal/plugin
+go test -race ./internal/services/pmpermit ./plugins/pmpermit
+git diff --check
+```
+
+Do **not** claim A3 CLOSED until these tests run and any failures are repaired and retested. CI has not been checked. New A3-C test files and the replacement status-lock source were individually gofmt-verified via matching Git blob SHA; edited existing full files need a full local gofmt run to verify.
+
+Remaining review items: `pmpermit.max_warns` settings default is **3** while the service constructor default is **4**; decide and document the effective default explicitly before a behavioral change. Test actual SQLite high-cardinality and outbox/Telegram effects with production-like deadlines, and continue the subsequent A4 chat/topic context plan after the acceptance gate.
