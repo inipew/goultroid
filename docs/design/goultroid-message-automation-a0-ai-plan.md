@@ -306,3 +306,31 @@ git diff --check
 **Verification caveat:** Full Goultroid checkout / dependencies were unavailable in the execution container; source was inspected and GitHub commits were verified, but authoritative focused tests, package-level tests, race checks, and full-file `gofmt` are **not claimed**. The tests above must be executed and any failures repaired with correctly formatted Go source/tests before marking the phase closed. Do **not** poll or inspect CI unless explicitly asked.
 
 **Next after acceptance:** A5 user-facing management UX and contextual moderation, keeping a2 as the sole interaction protocol.
+
+### A4 user-run regression and correction (2026-10-08)
+
+The user ran the A4 focused, package and race test commands against `cf8450ca20858788c3763e694650135c3e8597ca` and reported **three blockers**:
+
+1. `internal/telegram/TestA4PrivateSenderRejectsMismatchedOrAnonymousFromID`: the assertion expected sender ID zero, but canonical normalization intentionally preserves the explicitly supplied `FromID=9000`; dispatcher `privateMessageSenderConsistent` rejects the mismatch separately.
+2. `plugins/userlog/chat_context_a4_test.go`: unused `internal/core` import caused compilation failure.
+3. `plugins/afk/TestAFKPlugin_CompoundCooldown`: Group 100/200 fixtures used `PeerChannel` without `Megagroup=true`, so A4 correctly treated them as broadcast channels and suppressed AFK replies.
+
+Corrective **test-only** commit: `36c9b4c40957377c6fb45e9108bf4a7e4710a49f`. It fixes the expected explicit sender ID, removes the unused import, and marks the two test groups as megagroups. Runtime guards, status transitions, TaskEngine, and RPC behavior are unchanged.
+
+**A4 remains acceptance PENDING.** New patch snippets were checked with local `gofmt` tooling; the user previously applied full-file `gofmt` to the repository before the test-only edits, but a fresh full-file formatting and Go test run for this new commit have **not** yet been observed. Do not claim the acceptance tests pass or that CI is green; CI was not checked.
+
+Next check in the user's full checkout:
+```bash
+git pull --ff-only
+gofmt -w internal/telegram/context_integrity_a4_test.go plugins/userlog/chat_context_a4_test.go plugins/afk/afk_test.go
+gofmt -l internal/telegram/context_integrity_a4_test.go plugins/userlog/chat_context_a4_test.go plugins/afk/afk_test.go
+go test ./internal/telegram -run '^TestA4' -count=1
+go test ./plugins/afk -run 'TestA4|TestAFKPlugin_CompoundCooldown' -count=1
+go test ./plugins/userlog -run '^TestA4' -count=1
+go test ./plugins/pmpermit -run '^TestA4' -count=1
+go test ./internal/telegram ./internal/core ./internal/plugin ./plugins/afk ./plugins/userlog ./plugins/pmpermit ./plugins/filters ./plugins/blacklist
+go test -race ./internal/telegram ./plugins/afk ./plugins/userlog ./plugins/pmpermit
+git diff --check
+```
+
+If any gate fails, fix production or test according to the actual contract, format changed Go files before committing, and do not advance to A5 until the A4 gate is met.
