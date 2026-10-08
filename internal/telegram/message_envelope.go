@@ -27,6 +27,9 @@ func NormalizeMessageEnvelope(e tg.Entities, msg *tg.Message, isCommand bool, co
 
 	switch peer := msg.PeerID.(type) {
 	case *tg.PeerUser:
+		if peer == nil {
+			break
+		}
 		envelope.ChatID = peer.UserID
 		envelope.Chat = core.Chat{ID: peer.UserID, Type: "private"}
 		envelope.Peer = core.PeerRef{Kind: core.PeerKindUser, ID: peer.UserID}
@@ -37,6 +40,9 @@ func NormalizeMessageEnvelope(e tg.Entities, msg *tg.Message, isCommand bool, co
 			envelope.Chat.AccessHash = user.AccessHash
 		}
 	case *tg.PeerChat:
+		if peer == nil {
+			break
+		}
 		envelope.ChatID = peer.ChatID
 		envelope.Chat = core.Chat{ID: peer.ChatID, Type: "group"}
 		envelope.Peer = core.PeerRef{Kind: core.PeerKindChat, ID: peer.ChatID}
@@ -44,6 +50,9 @@ func NormalizeMessageEnvelope(e tg.Entities, msg *tg.Message, isCommand bool, co
 			envelope.Chat.Title = chat.Title
 		}
 	case *tg.PeerChannel:
+		if peer == nil {
+			break
+		}
 		envelope.ChatID = peer.ChannelID
 		envelope.Chat = core.Chat{ID: peer.ChannelID, Type: "channel"}
 		envelope.Peer = core.PeerRef{Kind: core.PeerKindChannel, ID: peer.ChannelID}
@@ -61,6 +70,14 @@ func NormalizeMessageEnvelope(e tg.Entities, msg *tg.Message, isCommand bool, co
 	if msg.ReplyTo != nil {
 		if header, ok := msg.ReplyTo.(*tg.MessageReplyHeader); ok && header != nil {
 			envelope.ReplyToID = header.ReplyToMsgID
+			if header.ReplyToPeerID != nil {
+				// Preserve the actual reply target, including a cross-chat
+				// discussion reply. Do not assume a reply ID belongs to the
+				// current group or forum topic.
+				if replyPeer, err := core.PeerRefFromPeer(header.ReplyToPeerID, 0); err == nil {
+					envelope.ReplyPeer = replyPeer
+				}
+			}
 			if header.ForumTopic || header.ReplyToTopID != 0 {
 				if header.ReplyToTopID != 0 {
 					envelope.TopicID = header.ReplyToTopID
@@ -109,7 +126,10 @@ func NormalizeMessageEnvelope(e tg.Entities, msg *tg.Message, isCommand bool, co
 				}
 			}
 		}
-		if senderID == 0 {
+		if senderID == 0 && msg.FromID == nil {
+			// Telegram may omit FromID in ordinary private dialogs.
+			// An explicit non-user FromID must never be rewritten into a
+			// trusted private-user sender.
 			if peer, ok := msg.PeerID.(*tg.PeerUser); ok && peer != nil {
 				senderID = peer.UserID
 				envelope.SenderPeer = core.PeerRef{Kind: core.PeerKindUser, ID: peer.UserID}

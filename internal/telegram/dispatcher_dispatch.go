@@ -36,6 +36,12 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	}
 
+	if !privateMessageSenderConsistent(msg) {
+		// An incoming private message with explicit mismatched or non-user
+		// FromID cannot be trusted as an owner/sudo command or PM automation.
+		d.logger.Warn("dispatcher: inconsistent incoming private sender; update dropped")
+		return nil
+	}
 	chatID := extractChatIDFromPeer(msg.PeerID)
 	commandIdentity, hasCommandIdentity := telegramMessageIdentity(msg.PeerID, msg.ID)
 	parsed, isCmd, err := d.router.Parse(msg.Message)
@@ -456,7 +462,9 @@ func (d *Dispatcher) resolveDispatchChat(e tg.Entities, msg *tg.Message) *core.C
 		}
 	case *tg.PeerChannel:
 		chat.ID = p.ChannelID
-		chat.Type = "supergroup"
+		// Without channel metadata, fail closed as broadcast rather than
+		// inventing group membership. Canonical hooks use the same default.
+		chat.Type = "channel"
 		if ch, ok := e.Channels[p.ChannelID]; ok {
 			chat.Title = ch.Title
 			chat.Username = ch.Username
@@ -570,8 +578,33 @@ func invocationSenderID(msg *tg.Message, selfID int64) int64 {
 	if from, ok := msg.FromID.(*tg.PeerUser); ok && from != nil {
 		return from.UserID
 	}
-	if peer, ok := msg.PeerID.(*tg.PeerUser); ok && peer != nil {
-		return peer.UserID
+	if msg.FromID == nil {
+		if peer, ok := msg.PeerID.(*tg.PeerUser); ok && peer != nil {
+			return peer.UserID
+		}
 	}
 	return 0
+}
+
+// privateMessageSenderConsistent guards authorization before hook dispatch.
+// Only Telegram's omitted private FromID may fall back to the dialog peer.
+func privateMessageSenderConsistent(msg *tg.Message) bool {
+	if msg == nil {
+		return false
+	}
+	if msg.Out {
+		return true
+	}
+	peer, isPrivate := msg.PeerID.(*tg.PeerUser)
+	if !isPrivate {
+		return true
+	}
+	if peer == nil || peer.UserID == 0 {
+		return false
+	}
+	if msg.FromID == nil {
+		return true
+	}
+	from, isUser := msg.FromID.(*tg.PeerUser)
+	return isUser && from != nil && from.UserID == peer.UserID
 }
