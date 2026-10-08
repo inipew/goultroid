@@ -616,3 +616,47 @@ git diff --check
 If any test fails, fix that precise code or fixture and run `gofmt` before committing. **Do not inspect/poll CI unless explicitly requested.**
 
 **A5 overall status:** A5-A/B CLOSED; A5-C0 CLOSED; A5-C1 CLOSED; A5-C2-A implemented/acceptance pending; A5-C2-B Filters manager and final contextual group UX gate OPEN. **Do not mark A5 CLOSED.**
+
+## 17. A5-C2-A focused acceptance and durable inventory repair (2026-10-08)
+
+### A5-C2-A focused and package acceptance — PASSED
+
+The user fast-forwarded `test-next` from `187be451` to `4aeacf884903b58a7445ea8a216b732b588b973d`, then reported:
+
+- `gofmt -w plugins/blacklist/*.go`, `gofmt -l plugins/blacklist/*.go`, and `git diff --check`: no errors or outstanding format output.
+- `go test ./plugins/blacklist -run '^TestA5C2' -count=1`: **PASS**.
+- `go test -race ./plugins/blacklist -run '^TestA5C2' -count=1`: **PASS**.
+- `go test ./plugins/blacklist ./plugins/filters ./internal/plugin ./internal/interaction/native ./internal/assistant/... ./internal/app`: **PASS**, all listed packages.
+- `go test -race ./plugins/blacklist ./internal/interaction/native ./internal/plugin`: **PASS**.
+
+**A5-C2-A's focused acceptance is CLOSED.** The subsequently executed repository-wide `go test -race ./...` ran through the application and plugin packages but failed **only** `internal/architecture/TestDurableFeatureInventory`. The failure is a deliberate durability-inventory gate, not a reported race or a failure of Blacklist's focused tests.
+
+### Durable inventory blocker and repair — implementation pushed, rerun PENDING
+
+The architecture guard at `internal/architecture/durable_feature_inventory_test.go` lists every nonempty `DurabilityVersion` declaration and requires a corresponding owner-maintained semantic restart test. A5 previously added durable a2 specifications to AFK, PMPermit, and Blacklist without updating that acceptance contract.
+
+Commit `969e8e1414ba1846b3b6e3b2f0fee9e94201db50` corrects this **without weakening or removing the guard**:
+
+1. `plugins/afk/durable_restart_test.go`: owner opens the real AFK a2 dashboard, captures the enable callback, preserves session in SQLite, restores across plugin generation, executes the old callback, verifies AFK activation, and rejects replay as stale.
+2. `plugins/pmpermit/durable_restart_test.go`: same real dashboard/durable restore lifecycle, requiring the old toggle callback to mutate the owner PMPermit service and its replay to be stale.
+3. `plugins/blacklist/durable_restart_test.go`: create a group rule, open the real group-bound menu, select it to reach the confirmation revision, preserve/restore the SQLite session, then execute the old confirmation callback against freshly verified group role and check persisted deletion plus stale replay.
+4. Update the inventory's expected declaration map and per-feature proof paths; additionally require every expected declaration to have a proof entry.
+
+All three new Go test files were formatted through `gofmt` locally **before the commit**; their Git blob SHA-1 hashes match byte-for-byte with the formatted files. This repair has **not yet been verified by the user's checkout**, and the repository-wide race suite must not be called green yet. CI was not inspected.
+
+Next gate:
+
+```bash
+git pull --ff-only
+gofmt -w internal/architecture/durable_feature_inventory_test.go plugins/afk/durable_restart_test.go plugins/pmpermit/durable_restart_test.go plugins/blacklist/durable_restart_test.go
+gofmt -l internal/architecture/durable_feature_inventory_test.go plugins/afk/durable_restart_test.go plugins/pmpermit/durable_restart_test.go plugins/blacklist/durable_restart_test.go
+go test ./internal/architecture -run '^TestDurableFeatureInventory$' -count=1
+go test ./plugins/afk -run '^TestD4AFKOwnerCallbackSurvivesDurableRestart$' -count=1
+go test ./plugins/pmpermit -run '^TestD4PMPermitOwnerToggleSurvivesDurableRestart$' -count=1
+go test ./plugins/blacklist -run '^TestD4BlacklistConfirmedRemovalSurvivesDurableRestart$' -count=1
+go test -race ./internal/architecture ./plugins/afk ./plugins/pmpermit ./plugins/blacklist
+go test -race ./...
+git diff --check
+```
+
+If a new restart test fails, fix the exact feature contract or fixture before changing inventory again. Do not poll or check CI unless explicitly requested. A5-C2-B Filters management remains OPEN; overall A5 is **not CLOSED**.
