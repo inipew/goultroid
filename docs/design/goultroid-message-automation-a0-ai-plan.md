@@ -349,3 +349,60 @@ The user fast-forwarded `test-next` from `cf8450ca...` through the A4 test-only 
 **Not included in this closure:** repository-wide `go test ./...` or `go test -race ./...`, live Telegram multi-chat testing, or CI inspection. Do not present those as verified. The A7 resource/restart acceptance still owns high-cardinality production-like workloads and settling metrics.
 
 **Next phase: A5 — owner-bound a2 management UX and contextual group moderation.** Before modifying code, refresh HEAD and inspect canonical a2 interaction/authority/presentation contracts and existing management surfaces, then implement only concrete missing routes without inventing a second callback stack. Always `gofmt` changed Go source/tests before commit, update focused regressions, keep idle and retained state bounded, and do not inspect/poll CI unless explicitly requested.
+
+## 13. A5 — Owner a2 Management and Contextual Moderation (2026-10-08)
+
+**Status: A5-A/B IMPLEMENTED; A5-C contextual group moderation and full acceptance PENDING. Do not mark A5 CLOSED.**
+
+Refreshed initial `test-next` HEAD `2e2a31f6b7855ddb15c52ac9ef7ef895f4ad6e8b` before A5. Existing `internal/app/app.go` wires native a2 adapter to Plugin Manager, which already manages native feature bindings and cleanup per plugin generation. The new surfaces reuse that mechanism; no new callback protocol, session map, timer, worker, registry, TaskEngine or RPC executor was introduced.
+
+### A5-A — PMPermit owner-bound native a2 dashboard
+
+Commit: `ec250b5cdf8e02e419d542a7c0479c9ea9795bc8`.
+
+- Added `plugins/pmpermit/native_interaction.go` implementing `FeatureSpec`, `NativeFeatureID`, and `BindNative` with owner-only userbot policy and `DurabilityVersion=1`.
+- `.pmpermit` or `.pmpermit menu` opens a shared a2 dashboard when adapter is bound. Legacy text dashboard remains when a2 is unavailable; `.pmpermit status` remains explicit text output.
+- Owner-only, session-bound actions: enable/disable, refresh status/counts, and terminate. Callback tokens and revisions belong solely to canonical a2; bindings are unregistered on plugin lifecycle cleanup.
+- Factored command and callback writes through `setEnabledForActor`, keeping Settings persistence + live binder as the single managed mutation path and retaining direct service fallback only for standalone/tests.
+- Added `plugins/pmpermit/native_interaction_a5_test.go`: owner a2 callback token provenance, mutation, stale-token rejection, scope-owned session, and non-owner mutation rejection.
+
+### A5-B — AFK owner-bound native a2 menu
+
+Commit: `e6ce8c10dca0acc4d6c3d8ceb72108e6de51df4c`.
+
+- Added `plugins/afk/native_interaction.go` with owner-only a2 session/actions and generation-scoped cleanup.
+- `.afk menu` / `.afk panel` opens controls for enable/disable, refresh, and close. Existing `.afk` with **no arguments still toggles**; `.afk status`, `.afk on|off`, and arbitrary reason commands keep their prior semantics.
+- On activation or deactivation, callbacks use existing AFK persistence and atomic transition functions; the displayed status is read from existing atomic state. User-supplied reason is HTML-escaped and clipped for display.
+- The unavailable-a2 case gives a textual command hint instead of creating a second UI stack.
+- Added `plugins/afk/native_interaction_a5_test.go` covering a2 tokens, owner callback mutation, stale-token rejection, scope cleanup, and unavailable-runtime fallback.
+
+For both drivers, the **new full Go source/test files were processed through local `gofmt`; exact SHA-1 Git blob hashes of the staged versions match the locally formatted copies**. Changed fragments in the existing plugin command files retain standard Go formatting. The complete repository and dependencies are unavailable in this execution container: no claim is made that complete package/race acceptance has passed. CI was not checked.
+
+### Required A5-A/B authoritative acceptance
+
+```bash
+git pull --ff-only
+gofmt -w plugins/pmpermit/pmpermit.go plugins/pmpermit/native_interaction.go plugins/pmpermit/native_interaction_a5_test.go plugins/afk/afk.go plugins/afk/native_interaction.go plugins/afk/native_interaction_a5_test.go
+gofmt -l plugins/pmpermit/pmpermit.go plugins/pmpermit/native_interaction.go plugins/pmpermit/native_interaction_a5_test.go plugins/afk/afk.go plugins/afk/native_interaction.go plugins/afk/native_interaction_a5_test.go
+go test ./plugins/pmpermit -run '^TestA5' -count=1
+go test -race ./plugins/pmpermit -run '^TestA5' -count=1
+go test ./plugins/afk -run '^TestA5' -count=1
+go test -race ./plugins/afk -run '^TestA5' -count=1
+go test ./internal/plugin ./internal/interaction/... ./internal/app ./plugins/afk ./plugins/pmpermit ./plugins/settings
+go test -race ./internal/plugin ./plugins/afk ./plugins/pmpermit
+git diff --check
+```
+
+If a package fails, repair the precise production/test contract before advancing, and run `gofmt` on every changed Go file before committing. Do not poll or inspect CI without an explicit request.
+
+### A5-C — Contextual group moderation (OPEN)
+
+**Do not present A5-A/B as full A5 completion.** The group moderation UI needs its own narrow acceptance:
+
+- Keep Filters and Blacklist commands in **group-only** context and preserve contextual administrator authorization; do not replace the existing `GroupAuthorizationRequirement{Level: Administrator}` by owner-only global policy or by a callback that trusts chat IDs from opaque client state.
+- Before binding any a2 moderation mutation, inventory `plugins/filters`, `plugins/blacklist`, and the existing group authority resolver. Callback authorization must use the session-bound target chat/topic, a fresh contextual authority check immediately before mutation, and immutable rule identity / revision fencing.
+- Disallow private/channel/unknown-class targets and stale generation/token mutations. Separate preview/list from add/remove mutation; keep per-chat caches bounded and no second task engine.
+- Add deterministic regressions for two groups with the same keyword, demotion while the menu is open, forum-topic replies, stale rules, disabled/reloaded plugins, and rollback on DB failure.
+- Do not change default PMPermit max warnings (settings **3**, constructor **4**) without a separate compatibility decision.
+
+A5 will be CLOSED only after the owner management and contextual moderation acceptance gates pass. A6 observability and A7 resource/restart acceptance remain subsequent phases.
