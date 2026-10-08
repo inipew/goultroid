@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5 and A6 CLOSED (user-run full race acceptance, 2026-10-08); A7-A SQLite PM cardinality/FloodWait and A7-B AFK TaskEngine lifecycle IMPLEMENTED (both acceptance pending); A7-C/D OPEN**. Historical A0–A4 records remain below.
+Status: **A5/A6 CLOSED; A7-A/B CLOSED by user-run full race acceptance (2026-10-08); A7-C mixed ingress/resource tests IMPLEMENTED (acceptance pending); A7-D OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -1187,3 +1187,72 @@ If failure occurs, inspect the actual failing TestA7B stage and correct the test
 - **A7-D:** final resource and restart matrix (including race, environment, timing/heap conditions and shared executor boundary), only then mark A7 CLOSED.
 
 **Status: A5/A6 CLOSED; A7-A implemented/acceptance pending; A7-B implemented/acceptance pending; A7-C/D OPEN.**
+
+## 27. A7-A/B accepted; A7-C mixed ingress and resource pressure (2026-10-08)
+
+### Refreshed A7 baseline and user-run gates
+
+Refreshed GitHub `test-next` HEAD before A7-C work: `5d6eb72f5c1daf31a198a6a45a0b849d948b4f55` — `docs(design): stage A7-B AFK lifecycle and persistence failure gate`. This contains the prior `plugins/pmpermit/resource_a7_test.go`, `plugins/afk/resource_a7b_test.go`, and AFK SQLite fallback error fix.
+
+The user fast-forwarded the branch from `79ed2297` to `5d6eb72f` and supplied these successful acceptance results:
+
+- `go test ./plugins/afk -run '^TestA7B' -count=1 -v`: **PASS** for the three new AFK tests, including managed concurrent auto-unAFK/generation-isolated welcome, SQLite write failure under active state, TaskEngine rejection without inline fallback, and failing inactive fallback INSERT.
+- `go test -race ./plugins/afk -run '^TestA7B' -count=1 -v`: **PASS** for all three tests.
+- Focused package test run across AFK, TaskEngine, plugin management, Telegram, PMPermit, and architecture: **PASS**.
+- `go test -race ./...`: **PASS across the repository** including PMPermit's A7-A tests, AFK's A7-B tests, and other existing semantic checks.
+
+**A7-A and A7-B implementation/Go-race gates CLOSED** by these user-run results. A7-A's dedicated `-run '^TestA7' -v` timing/cardi­nality diagnostic output was not separately supplied; repository-wide race coverage does run those names as ordinary package tests. The A7-B diagnostic sample `goroutines baseline=2 after-stop=3` is *not* a failed resource invariant: Go runtime scheduling and delayed goroutine settling make one absolute cross-host delta unsuitable as a sole leak detector. A7-D must use repeated, scoped, settled observations if establishing a runtime resource bound.
+
+No CI was checked.
+
+### A7-C1 audit and test implementation
+
+Work is deliberately split into A7-C1 (real dispatcher + TaskEngine decision/event/callback pressure and UserLog queue lifecycle) and A7-C2 (remaining cross-plugin integrated scoped restart/heap settling), rather than claiming all of mixed AFK/PMPermit/Blacklist/Filters and native a2 restart are jointly proven by a few isolated tests.
+
+Commit `3616b59bb6432ef7c000cbbd0e1bd2976003fac3` adds two test-only files:
+
+1. `internal/telegram/dispatcher_resource_a7c_test.go` — `TestA7CMixedObserverBurstIsolatedFromSecurityAndCallbackClaims`:
+   - Instantiates the **actual shared TaskEngine** and Telegram dispatcher, rather than an inlined fake scheduler.
+   - Blocks a UserLog-like observer task in the TaskEngine `general` lane; adds another 96 observer messages with the same chat ordering domain.
+   - While observation is stalled, admits and waits for 64 PMPermit-like **security-decision** tasks on the distinct `interactive` lane, asserting every security handler executes and the backlog cannot turn a valid security decision into an infrastructure fail-closed response.
+   - Routes 128 repetitions of one canonical a2-shaped callback query through the real dispatcher and idempotency manager, requiring the native handler execute once and duplicate ACKs remain available.
+   - Logs Go version, pre-workload/peak/post-stop heap samples and goroutine counts. No nonportable exact RSS/time delta thresholds are asserted.
+
+2. `plugins/userlog/resource_a7c_test.go` — `TestA7CUserLogMixedChatBurstBoundedAndReloadSettles`:
+   - Starts the normal UserLog lifecycle with EventBus subscriptions, a real SQLite destination, and the existing context-blocked Telegram fake.
+   - Submits **1,536** unique sender messages, mixing private messages and group mentions, while the single lazy observer worker is blocked.
+   - Requires pending queue <=256, drop count nonzero, exactly one managed UserLog worker during pressure, no extra Telegram sends of canceled old-generation jobs, and no retained EventBus subscriptions or idle workers after shutdown.
+   - Reinitializes the same plugin under a new scope, verifies two EventBus subscriptions and **zero** idle workers, then shuts down cleanly again.
+   - Logs Go version, baseline/peak/settled `HeapAlloc` and goroutines, plus cumulative enqueued/dropped counts, as **diagnostics**, not hardcoded RSS assertions.
+
+The two Go tests were run through local `gofmt -w` before the commit; `gofmt -l` was empty and both formatted Git blob SHA-1 checks matched the staged GitHub blobs. No application production code, new TaskEngine, observer executor, retry engine, cache, queue, callback scheme or secondary registry was added.
+
+**The tests have NOT run against the authoritative full Goultroid checkout** in this authoring environment. Do not mark A7-C CLOSED until the user supplies acceptance output. The first test models PMPermit-like security decisions rather than running actual PMPermit's SQLite service: the production PMPermit persistence/FloodWait proof remains the separately accepted A7-A. The second tests a real UserLog plugin but does not jointly instantiate AFK, Blacklist and Filters. Native a2 durable-restart/group role proofs remain those accepted in A5.
+
+### Required A7-C1 acceptance
+
+```bash
+git pull --ff-only
+gofmt -w internal/telegram/dispatcher_resource_a7c_test.go \
+  plugins/userlog/resource_a7c_test.go
+gofmt -l internal/telegram/dispatcher_resource_a7c_test.go \
+  plugins/userlog/resource_a7c_test.go
+
+go test ./internal/telegram ./plugins/userlog -run '^TestA7C' -count=1 -v
+go test -race ./internal/telegram ./plugins/userlog -run '^TestA7C' -count=1 -v
+
+go test ./plugins/afk ./plugins/pmpermit ./plugins/blacklist ./plugins/filters \
+  ./plugins/userlog ./internal/telegram ./internal/interaction ./internal/taskengine \
+  ./internal/architecture ./internal/app
+go test -race ./...
+git diff --check
+```
+
+On failure: check the first failing assertion, task scope admission, ordering and shutdown semantics; do not replace the shared TaskEngine or loosen fail-closed invariants to make the test green. Adjust legitimate test fixture assumptions if necessary; gofmt all changed Go files before commit and never poll CI.
+
+### A7-C2 and A7-D follow-up gates
+
+- **A7-C2:** where justified by actual integration gaps, add focused managed multi-plugin reload + a2 stale/durable callback pressure and bounded cache/state acceptance in their **owning packages**. Avoid duplicating previously proven A5 restart semantics; prioritize any evidence of cross-plugin isolation failures.
+- **A7-D:** final executable acceptance inventory should refer to real proof tests across A7-A/B/C, A5 durable restart/moderation and A6 observability; include full race suite; record OS/architecture/Go runtime and measured baseline/peak/settled goroutine/heap for repeatable loads. Only claim source-level + fake-transport acceptance, not real network FloodWait timings or production RSS without a host/production sample.
+
+**Status: A5/A6 CLOSED; A7-A/B CLOSED; A7-C1 implemented/acceptance pending; A7-C2/D OPEN.**
