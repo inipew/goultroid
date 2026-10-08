@@ -151,12 +151,38 @@ func (p *Plugin) sendTemplate(
 	compiled *savedresponse.CompiledTemplate,
 	vars savedresponse.TemplateVars,
 ) (*tg.Message, error) {
+	return p.sendTemplateContext(ctx, svc, peer, response, compiled, vars, core.MessageSendContext{})
+}
+
+// sendTemplateContext preserves the inbound message and its forum topic for AFK
+// auto-replies. Standalone messages (such as welcome effects) keep the legacy
+// transport path. Missing topic support must never send to the wrong topic.
+func (p *Plugin) sendTemplateContext(
+	ctx context.Context,
+	svc TelegramService,
+	peer tg.InputPeerClass,
+	response savedresponse.Response,
+	compiled *savedresponse.CompiledTemplate,
+	vars savedresponse.TemplateVars,
+	send core.MessageSendContext,
+) (*tg.Message, error) {
 	if svc == nil {
 		return nil, fmt.Errorf("afk: telegram service is unavailable")
 	}
 	var sent *tg.Message
 	err := p.deliverTemplate(ctx, response, compiled, vars, func(text string) error {
 		var sendErr error
+		if send.ReplyToID > 0 || send.TopicID > 0 {
+			if contextual, ok := svc.(core.ContextualMessageServicer); ok {
+				sent, sendErr = contextual.SendMessageContext(ctx, peer, text, nil, send)
+				return sendErr
+			}
+			if send.TopicID > 0 {
+				return fmt.Errorf("%w: AFK transport cannot preserve forum topic %d", core.ErrUnavailable, send.TopicID)
+			}
+		}
+		// Compatibility for transports without contextual sending in ordinary
+		// chats; never fall back after an attempted contextual RPC.
 		sent, sendErr = svc.SendMessage(ctx, peer, text)
 		return sendErr
 	})
@@ -558,7 +584,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		return nil
 	}
 	sinceStr := formatDuration(time.Since(st.since))
-	if _, err := p.sendTemplate(ctx, svc, peer, afkAutoReplyResponse, afkAutoReplyTemplate, afkTemplateVars(st.reason, sinceStr)); err != nil {
+	if _, err := p.sendTemplateContext(ctx, svc, peer, afkAutoReplyResponse, afkAutoReplyTemplate, afkTemplateVars(st.reason, sinceStr), core.MessageSendContext{ReplyToID: message.ID, TopicID: message.TopicID}); err != nil {
 		p.rollbackCooldown(chatID, senderID)
 		if logger := p.getLogger(); logger != nil {
 			logger.Warn("failed to send AFK auto-reply", zap.Error(err), zap.Int64("chat_id", chatID), zap.Int64("sender_id", senderID))

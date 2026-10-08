@@ -965,14 +965,14 @@ func TestAFKPlugin_ForumTopicHandling(t *testing.T) {
 	}
 	defer db.Close()
 
-	svc := &mockService{
+	svc := &contextualAFKMock{mockService: &mockService{
 		messages: map[int]*tg.Message{
 			100: {ID: 100, Out: true, Message: "Topic Root Header"},
 			150: {ID: 150, Out: true, Message: "Owner message in topic"},
 		},
-	}
+	}}
 	ownerID := int64(1001)
-	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
+	p := NewWithService(NewSQLiteRepository(db), ownerID, func() TelegramService { return svc })
 	_ = p.Init()
 
 	ctx := context.Background()
