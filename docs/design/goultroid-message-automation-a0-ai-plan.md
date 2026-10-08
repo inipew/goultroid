@@ -352,7 +352,7 @@ The user fast-forwarded `test-next` from `cf8450ca...` through the A4 test-only 
 
 ## 13. A5 — Owner a2 Management and Contextual Moderation (2026-10-08)
 
-**Status: A5-A/B IMPLEMENTED; A5-C contextual group moderation and full acceptance PENDING. Do not mark A5 CLOSED.**
+**Status: A5-A/B IMPLEMENTED, optional-native fallback hardening IMPLEMENTED; A5-C contextual group moderation and full acceptance PENDING. Do not mark A5 CLOSED.**
 
 Refreshed initial `test-next` HEAD `2e2a31f6b7855ddb15c52ac9ef7ef895f4ad6e8b` before A5. Existing `internal/app/app.go` wires native a2 adapter to Plugin Manager, which already manages native feature bindings and cleanup per plugin generation. The new surfaces reuse that mechanism; no new callback protocol, session map, timer, worker, registry, TaskEngine or RPC executor was introduced.
 
@@ -394,6 +394,18 @@ git diff --check
 ```
 
 If a package fails, repair the precise production/test contract before advancing, and run `gofmt` on every changed Go file before committing. Do not poll or inspect CI without an explicit request.
+
+### A5-A/B native-optional startup compatibility
+
+Commit: `afd1abeafc7eb8d6f9837af4a34860c508c70e6b`.
+
+Review after implementing the two `FeatureDriver` interfaces found that `internal/plugin/features.go` intentionally fails registration when a native driver is declared but no a2 adapter is configured. While production `internal/app/app.go` wires the adapter, standalone and test registration of AFK/PMPermit previously had no such requirement.
+
+- Added a narrow opt-in `nativeinteraction.OptionalFeatureDriver` extension. Only features explicitly implementing `NativeOptional() bool` can register without the adapter; strict native drivers still fail without their mandatory transport.
+- AFK and PMPermit opt in because their text commands already have valid native-free fallback paths. No unbound action handlers are registered, no extra runtime is created, and feature lifecycle still owns all a2 registrations when an adapter exists.
+- Added `internal/plugin/TestA5NativeDriverStandaloneFallbackDoesNotRelaxStrictDrivers` to require the optional behavior and preserve the strict default.
+
+The native-fallback fix also requires targeted `go test ./internal/plugin` and `go test -race ./internal/plugin` in the full checkout. No CI inspection.
 
 ### A5-C — Contextual group moderation (OPEN)
 
