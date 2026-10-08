@@ -630,6 +630,13 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 		return true, nil
 	}
 
+	// Authorization must not depend on a Telegram access hash. Approved
+	// senders returned above; unapproved senders without a usable peer must
+	// be intercepted without warning, blocking RPC, or consuming cooldown.
+	if peer == nil {
+		return true, nil
+	}
+
 	// 5. Atomically enforce the live cooldown with strictly bounded sender state.
 	// When capacity is exhausted by active senders, suppress a new warning
 	// instead of admitting an unbounded reply storm.

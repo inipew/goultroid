@@ -113,20 +113,6 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		return nil
 	}
 
-	var peerInput *tg.InputPeerUser
-	if peer, err := message.Peer.InputPeer(); err == nil {
-		if userPeer, ok := peer.(*tg.InputPeerUser); ok && userPeer.UserID == senderID && userPeer.AccessHash != 0 {
-			peerInput = userPeer
-		}
-	}
-	if peerInput == nil && p.resolver != nil {
-		peer, resolvedID, err := p.resolver.ResolveUser(ctx, strconv.FormatInt(senderID, 10))
-		if resolved, ok := peer.(*tg.InputPeerUser); err == nil && ok && resolved != nil &&
-			resolved.UserID == senderID && resolvedID == senderID && resolved.AccessHash != 0 {
-			peerInput = resolved
-		}
-	}
-
 	actor := pmpermit.PMActor{
 		UserID:   senderID,
 		IsBot:    message.Sender.IsBot,
@@ -136,11 +122,36 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	if actor.IsBot || actor.Verified || actor.IsSelf {
 		return nil
 	}
-	if peerInput == nil {
-		// Fail closed: an unapproved private message with incomplete peer data
-		// must not reach commands/automation merely because access hash is absent.
-		return core.ErrInterceptHandled
+
+	// Authorization is based on the verified sender ID, not on access-hash
+	// availability. Resolve peer credentials only when delivery is needed.
+	var peerInput tg.InputPeerClass
+	if peer, err := message.Peer.InputPeer(); err == nil {
+		if userPeer, ok := peer.(*tg.InputPeerUser); ok && userPeer != nil &&
+			userPeer.UserID == senderID && userPeer.AccessHash != 0 {
+			peerInput = userPeer
+		}
 	}
+	if peerInput == nil {
+		// A missing access hash is not grounds to reject an already approved
+		// sender. Errors must fail closed, not be treated as approval.
+		approved, err := p.svc.IsApproved(ctx, senderID)
+		if err != nil {
+			return core.ErrInterceptHandled
+		}
+		if approved {
+			return nil
+		}
+		if p.resolver != nil {
+			peer, resolvedID, err := p.resolver.ResolveUser(ctx, strconv.FormatInt(senderID, 10))
+			if resolved, ok := peer.(*tg.InputPeerUser); err == nil && ok && resolved != nil &&
+				resolved.UserID == senderID && resolvedID == senderID && resolved.AccessHash != 0 {
+				peerInput = resolved
+			}
+		}
+	}
+	// The service rechecks status under its per-user lock before taking any
+	// moderation action, including when peerInput remains nil.
 	handled, err := p.svc.HandleIncomingPM(ctx, peerInput, senderID, actor)
 	if err != nil {
 		return err
