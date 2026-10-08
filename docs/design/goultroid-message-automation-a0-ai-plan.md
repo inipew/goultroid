@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5 ACCEPTANCE CLOSED (2026-10-08); A6-A logging privacy hardening IMPLEMENTED, acceptance pending; A6-B/C and A7 OPEN**. Historical A0–A4 records remain below.
+Status: **A5 CLOSED; A6-A ACCEPTANCE CLOSED (2026-10-08); A6-B audit and PMPermit privacy IMPLEMENTED (acceptance pending); A6-C/D and A7 OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -824,3 +824,68 @@ If any test fails, correct the actual root cause and update the relevant test be
 - **A6-D — Final acceptance matrix.** Cover PMPermit fail-closed state and warning logging under DB/RPC failure, AFK transition/welcome failure, Blacklist/Filters stale/demotion, Assistant/a2 callback errors, high-cardinality message pressure and zero/low idle overhead. Require focused tests and race. Then proceed to **A7 — resource/restart/FloodWait acceptance**.
 
 **Status:** A5 CLOSED; A6-A implemented with test gate pending; A6-B/C/D and A7 OPEN. Do not claim full A6 security or resource closure yet.
+
+## 21. A6-A accepted; A6-B audit and PMPermit event privacy implementation (2026-10-08)
+
+### A6-A logging privacy acceptance — CLOSED
+
+The user fast-forwarded to `604dc87b16f999084e7cba0ee5767e28063a38f3`, ran `gofmt` on the three modified dispatcher files, and supplied successful outputs for:
+
+- `go test ./internal/telegram -run '^TestA6' -count=1`: **PASS**.
+- `go test -race ./internal/telegram -run '^TestA6' -count=1`: **PASS**.
+- `go test ./internal/telegram ./internal/core ./plugins/afk ./plugins/pmpermit ./plugins/blacklist ./plugins/filters ./plugins/userlog ./internal/app`: **PASS**.
+- `go test -race ./...`: **PASS across repository**.
+- `git diff --check`: no reported error.
+
+A6-A is CLOSED by user-run acceptance; no CI was checked.
+
+### A6-B caller audit and scope
+
+The existing `internal/platform/audit` service is wired to the process, secret, storage, plugin manager and capability gate. High-impact production callers reviewed include:
+
+- `internal/platform/process/manager.go`: previously sent raw `args []string` and `owner string` into arbitrary audit metadata for denied **and** allowed binary execution. Command arguments may include passwords, tokens, URLs and PM data.
+- `internal/platform/secret/manager.go`: previously sent `Redact(val)` in audit metadata for secret writes. That helper reveals a short prefix/suffix and is inappropriate for durable or structured audit logs. Secret reads expose only `found`.
+- `internal/plugin/manager.go`: uses action and target metadata for enable/disable without arbitrary `Details`, unaffected by the new scalar policy.
+- `internal/platform/audit/audit.go`: previously retained caller-owned `Details map[string]any` and returned shallow event copies from `Recent`, allowing mutation after record or mutation of ring-held metadata by a caller. It also logged arbitrary nested values with `zap.Any`.
+- `internal/services/pmpermit/service.go`: publishes `PMPermitEvent` into the existing EventBus only when subscribed. Owner-provided reason strings and raw errors from Telegram block/unblock could be copied into downstream observability handlers. The event bus already has its own bounded executor; no parallel observability runtime is needed.
+
+### A6-B implemented — focused acceptance pending
+
+Commit `1e7c37df9953e61cc93a15f7e040b0e5c373551c`:
+
+- Audit `Record` now sanitizes `Details` at its shared boundary, retaining only a strict bounded allowlist of typed scalars: `found bool`, `secret_present bool`, `owner_present bool`, `arg_count int` (nonnegative). Unknown keys, maps, slices, error values, strings and incorrect types are dropped. The sanitized metadata are snapshotted on record; `Recent` makes a fresh map copy on return, so callers cannot mutate the retained ring contents.
+- Process audit now emits `owner_present` and `arg_count` instead of owner content or raw `args`. The actual allowed process execution still receives the unchanged full argument list. Denied and successful attempts remain separately identifiable by their original action strings.
+- Secret write audit now emits `secret_present` rather than a partially unmasked credential; secret lookups and stored values remain unchanged.
+- PMPermit event `Action`, `UserID`, `WarnCount`, `Success` and timestamp remain present. `Reason` becomes a fixed categorical reason derived from action, `Error` becomes `operation_failed` when a failure is reported, and `TargetName` is omitted rather than carrying arbitrary text. Caller-facing returned errors and persistent PM status/reason semantics are unchanged.
+- New tests in `internal/platform/audit/audit_test.go`, `internal/platform/process/manager_test.go`, `internal/platform/secret/manager_test.go`, and `internal/services/pmpermit/privacy_events_a6_test.go` check raw argument/credential payload disclosure, typed allowlist and ring snapshot immutability, and subscribed PMPermit events with secret-bearing reasons and Telegram errors.
+
+**Gate discipline:** these changes were pushed using GitHub file/blob operations in an execution environment without the full Goultroid checkout. Full-file Go formatting and package/race tests for A6-B were **not executed here**; they must be run by the repository owner before declaring CLOSED. Do not claim CI or local tests passing. No CI was inspected.
+
+### Required A6-B gate
+
+```bash
+git pull --ff-only
+gofmt -w internal/platform/audit/audit.go internal/platform/audit/audit_test.go \
+  internal/platform/process/manager.go internal/platform/process/manager_test.go \
+  internal/platform/secret/manager.go internal/platform/secret/manager_test.go \
+  internal/services/pmpermit/service.go internal/services/pmpermit/privacy_events_a6_test.go
+
+go test ./internal/platform/audit ./internal/platform/process ./internal/platform/secret \
+  ./internal/services/pmpermit -run '^TestA6' -count=1
+go test -race ./internal/platform/audit ./internal/platform/process ./internal/platform/secret \
+  ./internal/services/pmpermit -run '^TestA6' -count=1
+go test ./internal/platform/... ./internal/services/pmpermit ./plugins/pmpermit ./internal/app
+go test -race ./...
+git diff --check
+```
+
+Correct test or code failures precisely and re-run `gofmt` before committing. Do not check/poll CI unless explicitly requested.
+
+### A6-B boundaries, known limitations, and next work
+
+- `AuditEvent.Target`, `Action`, and `CorrelationID` remain string fields. They were not universally redacted because known production callers use targets for plugin, binary and secret-key identification; a broader classification policy would require a separate caller-by-caller contract and backward-compatibility tests. These strings must not be used for arbitrary private message payloads.
+- The audit ring's capacity is bounded by its configured size (1000 at current app wiring); event production still logs synchronously using the supplied Zap logger. Do not add a secondary audit worker or expand hot-path memory retention.
+- The original human-readable PMPermit reason persists in PM storage when explicitly requested; only the **broadcast EventBus payload** is sanitized. The intentionally configured UserLog delivery of PM contents is a separate owner-controlled feature.
+- **Next A6-C:** audit actual UserLog destination/privacy/category lifecycle; event/decision ordering; bounded queue/backpressure; and plugin reload/shutdown cancellation under existing TaskEngine. Then A6-D final logging/observability/security acceptance and A7 resource/FloodWait validation.
+
+**Status: A5 CLOSED; A6-A CLOSED; A6-B implemented with test gate pending; A6-C/D and A7 OPEN.**
