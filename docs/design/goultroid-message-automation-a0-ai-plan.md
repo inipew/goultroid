@@ -707,3 +707,60 @@ git diff --check
 ```
 
 If a failure is reported, repair the precise contract or test fixture and format every touched Go file before committing. Do not check/poll CI unless explicitly requested. **A5-C2-B acceptance pending; A5 final contextual moderation UX gate remains OPEN.**
+
+## 19. A5-C2-B accepted and final contextual moderation security gate (2026-10-08)
+
+### User-run A5-C2-B full acceptance — CLOSED
+
+The user fast-forwarded to `68a099bd0cb6302adff508351e35700c4e5d311e` and reported:
+
+- `gofmt -w plugins/filters/*.go internal/architecture/durable_feature_inventory_test.go` and `git diff --check`: no errors.
+- `go test ./plugins/filters -run '^TestA5C2' -count=1`: **PASS**.
+- `go test -race ./plugins/filters -run '^TestA5C2' -count=1`: **PASS**.
+- `go test ./plugins/filters -run '^TestD4FiltersConfirmedRemovalSurvivesDurableRestart$' -count=1`: **PASS**.
+- `go test ./internal/architecture -run '^TestDurableFeatureInventory$' -count=1`: **PASS**.
+- `go test -race ./...`: **PASS across the full repository**, including `internal/architecture`, Filters, Blacklist, AFK and PMPermit.
+
+This **closes A5-C2-B's acceptance**. It does not imply live Telegram service/permissions or multi-instance CAS was tested. CI was not checked.
+
+### Final A5 security audit — Blacklist demotion-to-delete window (corrected; gate PENDING)
+
+Audit of `plugins/blacklist/native_interaction.go` against `plugins/filters/native_interaction.go` identified a concrete inconsistency. Blacklist formerly revalidated the administrator's Telegram `DeleteMessages` right **before** entering the per-chat write critical section; a demotion while waiting for the lock could leave a stale grant at delete time. Filters already checked fresh role **under** the lock.
+
+Correction commit: `2f282de9b40850c67f99a89cd2fa041e2b66b8f4`.
+
+- The Blacklist deletion function now **requires** the canonical a2 `interaction.Session`, callback `presentation.Target`, `GroupActionScope`, and the live Assistant-provided `core.GroupRoleResolver`. No authorization-free mutation overload remains in production.
+- After locking the existing chat rule stripe and verifying the fresh database snapshot/target keyword, the function calls `nativeinteraction.AuthorizeFreshGroupAction` with administrator **and DeleteMessages** requirements **immediately before** marking state unknown and writing SQLite. There is no new resolver, lock, goroutine, callback system, or cache.
+- Non-mutating menu actions still authorize on entry; the confirm action delegates its authorization to the DB write function to avoid a misleading stale preflight grant.
+- Existing snapshot/DB cancellation tests were updated to pass a verified synthetic group callback identity (rather than bypassing contextual authorization). New `plugins/blacklist/native_authorization_a5_test.go` requires a `ResolveGroupRoleFresh` invocation while the actual write lock is held, denial after role demotion or removal of DeleteMessages, no cross-group deletion, rejection when the Assistant provider is absent, and snapshot conflict before any fresh-role RPC.
+- All three Go files were processed through local `gofmt -w` before commit, with `gofmt -l` empty. Exact Git blob SHA-1 hashes match the formatted files. **Package and race tests for this corrective commit have not yet run in an authoritative Goultroid checkout**.
+
+This narrows the demotion race to the final fresh-authority check before the DB mutation, but Telegram permission changes are inherently distributed; no claim of atomicity between a Telegram role RPC and SQLite commit across external processes is made.
+
+### Final A5 acceptance gate — PENDING
+
+```bash
+git pull --ff-only
+
+gofmt -w plugins/blacklist/native_interaction.go \
+  plugins/blacklist/native_interaction_a5_test.go \
+  plugins/blacklist/native_authorization_a5_test.go
+gofmt -l plugins/blacklist/native_interaction.go \
+  plugins/blacklist/native_interaction_a5_test.go \
+  plugins/blacklist/native_authorization_a5_test.go
+
+go test ./plugins/blacklist -run '^TestA5(Final|C2)' -count=1
+go test -race ./plugins/blacklist -run '^TestA5(Final|C2)' -count=1
+
+go test ./plugins/afk ./plugins/pmpermit ./plugins/blacklist \
+  ./plugins/filters ./internal/plugin ./internal/interaction/native \
+  ./internal/architecture ./internal/app
+go test -race ./...
+git diff --check
+```
+
+Review the resulting test output rather than assuming green. If anything fails, repair the exact code/test contract and rerun `gofmt` before committing. Never inspect/poll CI without explicit user instruction.
+
+Final A5 behavior matrix (not all exercised in live Telegram): owner-only AFK/PMPermit enable/disable and fallback; Blacklist/Filters admin-only per-group listing and confirmed removal; chat/topic-aware callback bindings; revocation/demotion and DeleteMessages rights; same-keyword rules in separate groups; stale-token rejection and durable restoration across plugin generations; SQLite failure/replacement/media-cleanup paths; adapter unavailable and plugin unload/reload; no parallel workers/executors/state registries.
+
+**Status: A5-A/B CLOSED; A5-C0 CLOSED; A5-C1 CLOSED; A5-C2-A/B CLOSED; final corrective security gate PENDING. Overall A5 NOT CLOSED until the above gate is green.** A6 observability is next, followed by A7 resource/restart/FloodWait acceptance.
