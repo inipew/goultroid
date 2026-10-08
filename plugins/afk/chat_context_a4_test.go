@@ -95,3 +95,30 @@ func TestA4AFKForeignPeerReplyDoesNotLookupCurrentTopic(t *testing.T) {
 		})
 	}
 }
+
+func TestA4AFKManualBroadcastDeactivatesWithoutWelcome(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	svc := &mockService{}
+	const ownerID int64 = 1001
+	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
+	client := &afkEffectTestClient{inline: true}
+	p.SetTaskClient(client)
+	if err := p.enableAFK(context.Background(), "away"); err != nil {
+		t.Fatal(err)
+	}
+	msg := &tg.Message{ID: 400, PeerID: &tg.PeerChannel{ChannelID: 500}, Out: true, Message: "manual post"}
+	entities := tg.Entities{Channels: map[int64]*tg.Channel{500: {ID: 500, AccessHash: 111}}}
+	if err := handleMessageEvent(p, context.Background(), entities, msg, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if st := p.state.Load(); st == nil || st.isAFK {
+		t.Fatalf("manual owner post must deactivate AFK: %+v", st)
+	}
+	if n := len(client.snapshot()); n != 0 || svc.sent != "" {
+		t.Fatalf("broadcast channel must not receive welcome: effects=%d sent=%q", n, svc.sent)
+	}
+}
