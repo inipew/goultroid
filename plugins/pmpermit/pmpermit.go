@@ -21,6 +21,7 @@ type Plugin struct {
 	svc      *pmpermit.Service
 	resolver core.PeerResolver
 	settings *settings.Service
+	native   nativeRuntimeState
 }
 
 func New(svc *pmpermit.Service) *Plugin                        { return &Plugin{svc: svc} }
@@ -282,15 +283,24 @@ func (p *Plugin) renderList(ctx *core.Context, statusFilter string) error {
 }
 
 func (p *Plugin) setEnabled(ctx *core.Context, enabled bool) error {
+	return p.setEnabledForActor(ctx.Ctx, ctx.SenderID(), enabled)
+}
+
+// Both the text command and owner-bound a2 action share the same settings
+// mutation. The live binder remains authoritative when Settings is available.
+func (p *Plugin) setEnabledForActor(ctx context.Context, actorID int64, enabled bool) error {
 	if p.svc == nil {
 		return fmt.Errorf("PM Permit service is not configured")
+	}
+	if actorID == 0 || actorID != p.svc.OwnerID() {
+		return fmt.Errorf("pmpermit: owner authorization required")
 	}
 	if p.settings != nil {
 		value := "false"
 		if enabled {
 			value = "true"
 		}
-		return p.settings.Set(ctx.Ctx, settings.ScopeGlobal, 0, "pmpermit", "enabled", value, ctx.SenderID())
+		return p.settings.Set(ctx, settings.ScopeGlobal, 0, "pmpermit", "enabled", value, actorID)
 	}
 	// Standalone/tests without the application settings runtime retain the
 	// direct legacy behavior.
@@ -343,7 +353,15 @@ func (p *Plugin) handleToggle(ctx *core.Context) error {
 			return ctx.Fail(err, "PM Permit test failed.")
 		}
 		return ctx.Success(fmt.Sprintf("<b>PM Permit Self-Test OK</b>\n\n<b>Status:</b> %s\n<b>Max Warns:</b> %d\n\n• <b>Approved:</b> <code>%d</code>\n• <b>Pending:</b> <code>%d</code>\n• <b>Blocked:</b> <code>%d</code>\n\n<b>Commands:</b>\n• <code>.approve</code> / <code>.disapprove</code> / <code>.blockpm</code> / <code>.unblockpm</code>\n• <code>.pmpermit [on|off]</code>\n• <code>.pmpermit list [approved|blocked|pending]</code>\n• <code>.pmpermit test</code>", map[bool]string{true: "ENABLED", false: "DISABLED"}[p.svc.IsEnabled()], p.svc.MaxWarns(), approved, pending, blocked))
-	case "status", "":
+	case "status", "", "menu":
+		if sub == "" || sub == "menu" {
+			if opened, err := p.openNativePMPermit(ctx); opened {
+				if err != nil {
+					return ctx.Fail(err, "Failed to open PM Permit dashboard.")
+				}
+				return nil
+			}
+		}
 		statusStr := "❌ DISABLED"
 		if p.svc.IsEnabled() {
 			statusStr = "🛡️ ENABLED"
