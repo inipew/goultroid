@@ -119,3 +119,55 @@ Corrective source/test commit: `2d1e9cad4146765b0edec3fc8eb6bfc083fae2be`.
 - Local `gofmt` was run on both full AFK files and replacement Telegram fixture snippet; pre-commit Git blob hashes of both complete AFK files match the formatted copies.
 
 **Status remains A2-B acceptance PENDING** until full Go package/race tests pass on the authoritative checkout. Re-run the three exact user commands above, and report any remaining failures. Do not advance to A3 on an unverified test gate.
+
+## 8. A3 — PMPermit State Integrity (2026-10-08)
+
+Status: **A3-A and A3-B implemented, tests and A3-C acceptance pending.** Do not mark the whole A3 phase CLOSED.
+
+**GitHub HEAD refreshed before each code phase. CI was not inspected.**
+
+### A3-A — Bounded state / cooldown race
+
+Commit `eca612d1ddbb811f25a20ea3ba6a0d7e445eabc6`.
+
+- Replaced unbounded `approvedCache sync.Map` with a bounded positive-only cache (2,048 entries; eviction rechecks authoritative SQLite rather than granting approval).
+- Warning message ID cache is bounded by **1,024 users** and retains the existing 20 IDs per user cap. Evicted users fall back to persisted warning IDs.
+- Cooldown state is bounded by **2,048 senders**, with expiry reclamation; saturated active entries suppress new warning sends rather than creating an unbounded Telegram RPC storm.
+- Replaced unsynchronized read of `warnCooldown` with the locked `WarnCooldown()` path. Cooldown admission is atomic under its own mutex.
+- Added tests for high-cardinality approval/warning caches, saturation fail-closed behavior, and concurrent live cooldown settings.
+
+### A3-B — Durable state and RPC recovery
+
+Commit `4434c1fdf4f117fad0c94f65791b6da5086118e2`.
+
+- Added constant-size 128-stripe per-user status locks so approval reads, status transitions and cache publication do not interleave for the same user. No goroutine/worker/registry was added.
+- PM incoming now holds that user's status lock while checking approval, blocked status, cooldown and warning decision. DB read failures on the second blocked-status check fail closed without incrementing warnings.
+- Disapprove retains the old positive cache if the durable pending-state write fails; cache invalidation/cleanup follows the successful write.
+- Explicit unblock / `ApproveWithPeer` / outgoing auto-approval perform Telegram unblocking **before** publishing the corresponding durable state and positive cache. A Telegram failure returns an error without granting internal approval or downgrading a blocked state.
+- Block commits internal blocked status first and invalidates the approval cache; Telegram RPC failure is surfaced as an error and an unsuccessful event, while PM interception stays fail closed.
+- New tests simulate DB failure, Telegram block/unblock failures, blocked-to-approved failure, outgoing auto-approve failure, a secondary incoming state read failure, and concurrent approval/block publication.
+- Updated existing outgoing auto-approval fixture to carry an actual `AccessHash` (valid peer).
+- All four newly authored A3 Go helper/test files were processed through local `gofmt` and compared with the exact staged Git blobs. Legacy source edits preserved standard Go formatting in the modified regions, but repository-wide/full-file gofmt and package test runs are not verified in this environment.
+
+### Mandatory local acceptance gate
+
+```bash
+git pull --ff-only
+gofmt -w internal/services/pmpermit/service.go internal/services/pmpermit/approval.go internal/services/pmpermit/state_limits.go internal/services/pmpermit/state_limits_a3_test.go internal/services/pmpermit/status_locks.go internal/services/pmpermit/status_integrity_a3_test.go internal/services/pmpermit/service_test.go
+gofmt -l internal/services/pmpermit/service.go internal/services/pmpermit/approval.go internal/services/pmpermit/state_limits.go internal/services/pmpermit/state_limits_a3_test.go internal/services/pmpermit/status_locks.go internal/services/pmpermit/status_integrity_a3_test.go internal/services/pmpermit/service_test.go
+go test ./internal/services/pmpermit -run '^TestA3' -count=1
+go test -race ./internal/services/pmpermit -run '^TestA3' -count=1
+go test ./internal/services/pmpermit ./plugins/pmpermit ./internal/telegram ./internal/plugin
+go test -race ./internal/services/pmpermit ./plugins/pmpermit
+git diff --check
+```
+
+Do not check/poll CI. If any test fails, repair source and affected tests, gofmt all changed Go files, and re-run focused checks before any further commit.
+
+### A3-C follow-up blockers (still OPEN)
+
+- Legacy `Approve(userID)` lacks an already-resolved Telegram peer with a valid access hash; it currently has different external RPC consistency semantics from `ApproveWithPeer`. Inventory/migrate concrete callers before narrowing/removing it.
+- Warning ID storage helpers still use `context.Background()` for some repository calls. Migrate their execution to the incoming command/update context or to bounded, lifecycle-aware contexts and test DB failures.
+- Add focused concurrency/failure checks for real SQLite and high-cardinality PM ingress, plus cancellation/FloodWait behavior under per-user lock stripes; a blocked Telegram RPC must not stall unrelated security decisions.
+- Validate that PMPermit applies **only to private user chats**, not groups, channels, forum topics, or Assistant PM relay.
+- Default setting consistency (`pmpermit.max_warns` and service constructor) remains to be reconciled without changing behavior unexpectedly.
