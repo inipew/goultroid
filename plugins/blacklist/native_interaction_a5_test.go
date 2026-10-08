@@ -7,9 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/interaction"
 	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
+	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 )
 
 func makeA5Blacklist(t *testing.T) *Plugin {
@@ -21,6 +24,20 @@ func makeA5Blacklist(t *testing.T) *Plugin {
 	t.Cleanup(func() { _ = db.Close() })
 	p := NewSQLiteRepository(db)
 	return NewWithMessageDeleter(p, nil)
+}
+
+// Preserve the production mutation's fresh contextual authorization even
+// when testing its repository, snapshot and cancellation failure semantics.
+func a5AuthorizedBlacklistDelete(p *Plugin, ctx context.Context, chatID int64, word, digest string) error {
+	const actorID int64 = 1001
+	session := interaction.Session{Binding: interaction.Binding{ActorID: actorID, ChatID: chatID, MessageID: 100}}
+	target := presentationtelegram.MessageTarget{
+		Peer:   &tg.InputPeerChannel{ChannelID: chatID, AccessHash: 777},
+		ChatID: chatID, MessageID: 100,
+	}
+	scope := nativeinteraction.GroupActionScope{ChatID: chatID, Kind: core.ChatKindSupergroup}
+	roles := &a5BlacklistRoles{role: core.GroupActorRoleAdministrator}
+	return p.removeNativeBlacklistIfCurrent(ctx, session, target, scope, word, digest, roles)
 }
 
 func TestA5C2BlacklistMenuPaginationAndBoundedState(t *testing.T) {
@@ -83,7 +100,7 @@ func TestA5C2BlacklistConfirmScopedToChatAndSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := blacklistSnapshot(words)
-	if err := p.removeNativeBlacklistIfCurrent(ctx, 500, "same", digest); err != nil {
+	if err := a5AuthorizedBlacklistDelete(p, ctx, 500, "same", digest); err != nil {
 		t.Fatal(err)
 	}
 	groupA, err := p.db.ListBlacklists(ctx, 500)
@@ -97,7 +114,7 @@ func TestA5C2BlacklistConfirmScopedToChatAndSnapshot(t *testing.T) {
 	if len(groupA) != 0 || len(groupB) != 1 || groupB[0] != "same" {
 		t.Fatalf("cross-chat corruption: a=%v b=%v", groupA, groupB)
 	}
-	if err := p.removeNativeBlacklistIfCurrent(ctx, 600, "same", digest); err != nil {
+	if err := a5AuthorizedBlacklistDelete(p, ctx, 600, "same", digest); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -122,7 +139,7 @@ func TestA5C2BlacklistChangedPreviewFailsClosed(t *testing.T) {
 	if _, _, err := p.nativeBlacklistView(ctx, state); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("changed list accepted: %v", err)
 	}
-	if err := p.removeNativeBlacklistIfCurrent(ctx, 500, "scam", state.Digest); !errors.Is(err, core.ErrConflict) {
+	if err := a5AuthorizedBlacklistDelete(p, ctx, 500, "scam", state.Digest); !errors.Is(err, core.ErrConflict) {
 		t.Fatalf("stale preview deleted: %v", err)
 	}
 	words, err := p.db.ListBlacklists(ctx, 500)
@@ -143,7 +160,7 @@ func TestA5C2BlacklistDBFailureCannotRemoveRule(t *testing.T) {
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := p.removeNativeBlacklistIfCurrent(canceled, 500, "scam", blacklistSnapshot(words)); err == nil {
+	if err := a5AuthorizedBlacklistDelete(p, canceled, 500, "scam", blacklistSnapshot(words)); err == nil {
 		t.Fatal("canceled DB operation succeeded")
 	}
 	check, err := p.db.ListBlacklists(ctx, 500)

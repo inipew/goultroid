@@ -265,7 +265,21 @@ func (p *Plugin) nativeBlacklistView(ctx context.Context, state nativeBlacklistS
 	return data, view, nil
 }
 
-func (p *Plugin) removeNativeBlacklistIfCurrent(ctx context.Context, chatID int64, word, digest string) error {
+// removeNativeBlacklistIfCurrent keeps the fresh Telegram authorization and
+// the persisted snapshot comparison in the same per-chat critical section.
+// There is intentionally no authorization-free variant of this mutation.
+func (p *Plugin) removeNativeBlacklistIfCurrent(
+	ctx context.Context,
+	session interaction.Session,
+	target presentation.Target,
+	scope nativeinteraction.GroupActionScope,
+	word, digest string,
+	roles core.GroupRoleResolver,
+) error {
+	if p == nil || p.db == nil {
+		return core.ErrUnavailable
+	}
+	chatID := scope.ChatID
 	if chatID <= 0 || word == "" || len(word) > MaxRuleBytes || digest == "" {
 		return core.ErrInvalidArgs
 	}
@@ -288,6 +302,11 @@ func (p *Plugin) removeNativeBlacklistIfCurrent(ctx context.Context, chatID int6
 	}
 	if !found {
 		return core.ErrNotFound
+	}
+	// Do not trust the role checked when the menu was opened or when this
+	// callback was admitted. Demotion can happen while waiting on the lock.
+	if err := nativeinteraction.AuthorizeFreshGroupAction(ctx, session, target, scope, roles, blacklistWriteRequirement); err != nil {
+		return err
 	}
 	p.featureState.MarkUnknown(chatID)
 	if err := p.db.RemoveBlacklist(ctx, chatID, word); err != nil {
@@ -316,12 +335,12 @@ func (p *Plugin) handleNativeBlacklistChoice(ctx *orchestration.Context, slot in
 	if rt.Interactions == nil {
 		return ctx.Answer("Menu blacklist tidak tersedia.", true)
 	}
-	requirement := blacklistReadRequirement
-	if choice.Kind == "confirm" {
-		requirement = blacklistWriteRequirement
-	}
-	if err := nativeinteraction.AuthorizeFreshGroupAction(ctx.Context(), ctx.Session(), ctx.Target(), state.Scope, rt.Interactions.GroupRoleResolver(), requirement); err != nil {
-		return ctx.Answer("Hak administrator grup tidak dapat diverifikasi.", true)
+	// Read/navigation actions validate here; a confirmed deletion instead
+	// validates under the rule lock immediately before writing.
+	if choice.Kind != "confirm" {
+		if err := nativeinteraction.AuthorizeFreshGroupAction(ctx.Context(), ctx.Session(), ctx.Target(), state.Scope, rt.Interactions.GroupRoleResolver(), blacklistReadRequirement); err != nil {
+			return ctx.Answer("Hak administrator grup tidak dapat diverifikasi.", true)
+		}
 	}
 	switch choice.Kind {
 	case "refresh":
@@ -343,7 +362,7 @@ func (p *Plugin) handleNativeBlacklistChoice(ctx *orchestration.Context, slot in
 		if state.Selected == "" {
 			return ctx.Answer("Konfirmasi tidak valid.", true)
 		}
-		if err := p.removeNativeBlacklistIfCurrent(ctx.Context(), state.Scope.ChatID, state.Selected, state.Digest); err != nil {
+		if err := p.removeNativeBlacklistIfCurrent(ctx.Context(), ctx.Session(), ctx.Target(), state.Scope, state.Selected, state.Digest, rt.Interactions.GroupRoleResolver()); err != nil {
 			if errors.Is(err, core.ErrConflict) {
 				return ctx.Answer("Daftar berubah. Refresh dan ulangi.", true)
 			}
