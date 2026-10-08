@@ -78,6 +78,7 @@ type Plugin struct {
 	welcomePrivateOnly bool
 	welcomeDeleteDelay time.Duration
 	stateMu            sync.RWMutex
+	native             nativeAFKRuntimeState
 	state              atomic.Pointer[afkState]
 	autoReply          atomic.Bool
 	transitionMu       sync.Mutex
@@ -322,6 +323,15 @@ func (p *Plugin) handleAFKCommand(ctx *core.Context) error {
 	}
 	sub := strings.ToLower(ctx.Args[0])
 	switch sub {
+	case "menu", "panel":
+		opened, err := p.openNativeAFK(ctx)
+		if opened {
+			if err != nil {
+				return ctx.Fail(err, "Failed to open AFK menu.")
+			}
+			return nil
+		}
+		return ctx.Status("AFK menu unavailable. Use <code>.afk status</code> or <code>.afk on|off</code>.")
 	case "off", "disable", "stop":
 		dur, changed, err := p.disableAFK(ctx.Ctx)
 		if err != nil {
