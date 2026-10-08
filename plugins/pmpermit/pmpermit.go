@@ -99,6 +99,11 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	if !message.IsPrivate() {
 		return nil
 	}
+	// Incoming private traffic must be attributed to the dialog peer.
+	// An explicit mismatched/anonymous sender is not grounds for approval.
+	if message.SenderPeer.ID != message.ChatID || !message.SenderPeer.IsUser() {
+		return core.ErrInterceptHandled
+	}
 	senderID := message.Sender.ID
 	if senderID == 0 {
 		senderID = message.ChatID

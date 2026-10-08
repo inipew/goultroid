@@ -445,6 +445,13 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	if p.svc == nil || message == nil || message.Outgoing {
 		return nil
 	}
+	// Userlog observes private users and real group/supergroup members.
+	// Unknown PeerChannel metadata and broadcast channels are not groups,
+	// and anonymous channel-backed posts have no trustworthy user identity.
+	if (!message.IsPrivate() && !message.IsGroup()) ||
+		(message.SenderPeer.ID != 0 && !message.SenderPeer.IsUser()) {
+		return nil
+	}
 
 	// Prevent recursive logging from the configured destination itself.
 	if p.svc.IsLogDestinationRef(message.Peer) {

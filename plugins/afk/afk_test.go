@@ -763,7 +763,7 @@ func TestAFKPlugin_MentionDetectionComplete(t *testing.T) {
 			2002: {ID: 2002, AccessHash: 111},
 		},
 		Channels: map[int64]*tg.Channel{
-			300: {ID: 300, AccessHash: 222},
+			300: {ID: 300, AccessHash: 222, Megagroup: true},
 		},
 	}
 
@@ -929,7 +929,7 @@ func TestAFKPlugin_MentionDetectionUTF16Emojis(t *testing.T) {
 			2002: {ID: 2002, AccessHash: 111},
 		},
 		Channels: map[int64]*tg.Channel{
-			300: {ID: 300, AccessHash: 222},
+			300: {ID: 300, AccessHash: 222, Megagroup: true},
 		},
 	}
 
@@ -983,7 +983,7 @@ func TestAFKPlugin_ForumTopicHandling(t *testing.T) {
 			3003: {ID: 3003, AccessHash: 222},
 		},
 		Channels: map[int64]*tg.Channel{
-			500: {ID: 500, AccessHash: 333},
+			500: {ID: 500, AccessHash: 333, Megagroup: true},
 		},
 	}
 
@@ -1047,7 +1047,7 @@ func TestAFKPlugin_AnonymousChannelSender(t *testing.T) {
 
 	entities := tg.Entities{
 		Channels: map[int64]*tg.Channel{
-			500: {ID: 500, AccessHash: 333},
+			500: {ID: 500, AccessHash: 333, Megagroup: true},
 			777: {ID: 777, AccessHash: 444},
 		},
 		Users: map[int64]*tg.User{
@@ -1068,11 +1068,11 @@ func TestAFKPlugin_AnonymousChannelSender(t *testing.T) {
 	if err := handleMessageEvent(p, ctx, entities, chanSenderMsg, false, ""); err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	if !strings.Contains(svc.sent, "currently AFK") {
-		t.Fatalf("expected anonymous channel sender mention to trigger AFK reply, got: %s", svc.sent)
+	if svc.sent != "" {
+		t.Fatalf("anonymous channel sender must not receive a personal AFK reply, got: %s", svc.sent)
 	}
 
-	// Second message from same channel 777 should be cooldown rate-limited
+	// Second message from the same channel also stays suppressed.
 	svc.sent = ""
 	chanSenderMsg2 := &tg.Message{
 		ID:        2,
@@ -1085,10 +1085,10 @@ func TestAFKPlugin_AnonymousChannelSender(t *testing.T) {
 		t.Fatalf("err: %v", err)
 	}
 	if svc.sent != "" {
-		t.Fatalf("expected second message from channel 777 to be rate-limited, got: %s", svc.sent)
+		t.Fatalf("expected second anonymous message to be ignored, got: %s", svc.sent)
 	}
 
-	// But a message from user 888 in the same chat 500 should NOT be blocked
+	// A real user in the same verified megagroup still receives AFK replies.
 	svc.sent = ""
 	userSenderMsg := &tg.Message{
 		ID:        3,
@@ -1127,7 +1127,7 @@ func TestAFKPlugin_AutoDiscoverOwnerUsername(t *testing.T) {
 			2002:    {ID: 2002, AccessHash: 222},
 		},
 		Channels: map[int64]*tg.Channel{
-			300: {ID: 300, AccessHash: 333},
+			300: {ID: 300, AccessHash: 333, Megagroup: true},
 		},
 	}
 

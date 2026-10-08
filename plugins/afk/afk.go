@@ -467,7 +467,9 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 			return nil
 		}
 		p.Cleanup(0)
-		if message.IsPrivate() || !p.isWelcomePrivateOnly() {
+		// Never post a welcome to broadcast channels or a channel of
+		// unknown kind; only private dialogs and known groups are eligible.
+		if message.IsPrivate() || (message.IsGroup() && !p.isWelcomePrivateOnly()) {
 			if err := p.submitWelcomeEffect(ctx, message, dur); err != nil {
 				if logger := p.getLogger(); logger != nil {
 					logger.Warn("AFK welcome effect admission failed", zap.Error(err), zap.Int64("chat_id", message.ChatID))
@@ -479,6 +481,13 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 
 	st := p.state.Load()
 	if st == nil || !st.isAFK || !p.AutoReplyEnabled() {
+		return nil
+	}
+	// A PeerChannel is not sufficient proof that this is a megagroup.
+	// Broadcast posts and anonymous/channel identities must never trigger
+	// personal AFK auto-replies, even with Mentioned=true.
+	if (!message.IsPrivate() && !message.IsGroup()) ||
+		(message.SenderPeer.ID != 0 && !message.SenderPeer.IsUser()) {
 		return nil
 	}
 	if p.getOwnerUsername() == "" && message.Self.Username != "" {
@@ -505,12 +514,13 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 			return nil
 		}
 		shouldReply = true
-	} else if message.IsGroup() || message.IsChannel() {
+	} else if message.IsGroup() {
 		shouldReply = message.Mentioned ||
 			message.MentionsUser(ownerID) ||
 			message.MentionsUsername(p.getOwnerUsername())
 
-		if !shouldReply && message.ReplyToID != 0 && !message.ReplyIsTopicRoot {
+		if !shouldReply && message.ReplyToID != 0 && !message.ReplyIsTopicRoot &&
+			(message.ReplyPeer.ID == 0 || message.ReplyPeer.SameIdentity(message.Peer)) {
 			if p.isCooldownActive(chatID, senderID) {
 				return nil
 			}
