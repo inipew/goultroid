@@ -72,7 +72,10 @@ type Service struct {
 
 	lastWarnTime map[int64]time.Time
 	warnTimeMu   sync.Mutex
-	statusLocks  [128]sync.Mutex
+	statusMu       sync.Mutex
+	statusUsers    map[int64]*pmUserStatusLock
+	statusOverflow int
+	statusFallback [128]sync.Mutex
 
 	eventBus *core.EventBus
 	delivery *savedresponse.ResponseDelivery
