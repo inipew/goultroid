@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5 CLOSED; A6-A ACCEPTANCE CLOSED (2026-10-08); A6-B audit and PMPermit privacy IMPLEMENTED (acceptance pending); A6-C/D and A7 OPEN**. Historical A0–A4 records remain below.
+Status: **A5 CLOSED; A6-A/B ACCEPTANCE CLOSED (2026-10-08); A6-C UserLog lifecycle/privacy IMPLEMENTED (acceptance pending); A6-D and A7 OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -889,3 +889,66 @@ Correct test or code failures precisely and re-run `gofmt` before committing. Do
 - **Next A6-C:** audit actual UserLog destination/privacy/category lifecycle; event/decision ordering; bounded queue/backpressure; and plugin reload/shutdown cancellation under existing TaskEngine. Then A6-D final logging/observability/security acceptance and A7 resource/FloodWait validation.
 
 **Status: A5 CLOSED; A6-A CLOSED; A6-B implemented with test gate pending; A6-C/D and A7 OPEN.**
+
+## 22. A6-B full race accepted; A6-C UserLog privacy and lifecycle (2026-10-08)
+
+### A6-B acceptance — CLOSED
+
+User fast-forwarded `test-next` from `604dc87b` to `e21f5e7d5e3fbba9a047cab4bf7427f6592935f5`, ran `gofmt -w` on eight modified A6-B Go files and `git diff --check`, and supplied the following successful results:
+
+- `go test ./internal/platform/audit ./internal/platform/process ./internal/platform/secret ./internal/services/pmpermit -run '^TestA6' -count=1`: **PASS** across all four.
+- `go test -race` with the same package and test selections: **PASS**.
+- `go test ./internal/platform/... ./internal/services/pmpermit ./plugins/pmpermit ./internal/app`: **PASS**.
+- `go test -race ./...`: **PASS across the entire repository**.
+
+**A6-B CLOSED** by user-run acceptance. The privacy contract is specific to AuditService metadata and PMPermit EventBus payloads; it does not remove owner-configured UserLog message forwarding or claim remote observability is anonymized. CI was not checked.
+
+### A6-C audit findings — UserLog
+
+Review of `plugins/userlog/userlog.go`, `internal/services/userlog/service.go`, related userlog tests, EventBus registration, and `plugin.Scope.Go` found:
+
+- The message observer runs in the existing `core.MessageHookEvent` observability lane (priority 90), not as a synchronous security decision. PM and mention text are intentionally sent to the owner's configured Telegram log destination when their category is enabled. The plugin rejects destination self-recursion, owner/bot messages, anonymous channel senders and broadcast channels.
+- The plugin already owns a bounded `queueCapacity=256` and one lazy worker that retires after inactivity. It drops work on full queue, has lifecycle-owned EventBus subscriptions for admin and PMPermit events, and uses the existing shared Telegram RPC path without a second retry engine.
+- `Service.recordFailure` previously retained `err.Error()` verbatim as `lastErrorMsg`, subsequently surfaced in owner-facing `.log` health display via `Stats.LastError`. Error strings from Telegram may contain private text or credentials. The delivery and settings lookup logs also used raw `zap.Error(err)`.
+- During `ShutdownContext`, cancellation formerly occurred only after `wg.Wait()`, while the worker continued draining a potentially full 256-entry queue. A single pending Telegram send could run until its timeout; draining many sequential jobs could make plugin unload slow.
+- The first lifecycle patch canceled the UserLog child context at shutdown, but an additional audit verified `plugin.Scope.Go` invokes its callback with the **parent scope context**, not that cancelable child context. The follow-up patch passes the actual UserLog lifecycle context to the worker so both queued deliveries and loop termination respond to shutdown.
+
+### A6-C1 changes pushed — acceptance pending
+
+Commits:
+- `38f3155c7f510c9eb06525bf6bc4f3cb6223a1c6` — redact UserLog health/structured delivery errors, cancel before waiting and prevent stale queue execution, plus privacy and capacity/lifecycle regression tests.
+- `dba80e319a2029270f475b56fa11b60d9a82b27c` — correct `Scope.Go` vs child context wiring (mandatory for prompt cancellation).
+
+Changes:
+- `internal/services/userlog/service.go`: `LastError` retains only fixed error categories (`canceled`, `deadline_exceeded`, `delivery_failed`); the owner-facing error returned from `LogPM/LogMention/LogAction` remains the original error. Raw Zap error fields for destination lookup, delivery, and category settings are removed in favor of bounded codes. Health counters/timestamps remain unchanged.
+- `plugins/userlog/userlog.go`: shutdown closes new admission and cancels the UserLog child context *before* waiting for worker teardown. Worker receives that child context even though `Scope.Go` supplies the parent scope context. Worker checks cancellation before taking another queued task. This intentionally discards unsent notifications on unload instead of serially draining old-generation RPCs. Queue remains at 256; there is still only one lazy worker and no new retry executor or callback path.
+- `internal/services/userlog/privacy_a6_test.go`: malicious Telegram error text cannot appear in Zap logs or `Stats.LastError` while caller retains the full original error; a deadline error is classified correctly.
+- `plugins/userlog/lifecycle_a6_test.go`: a context-blocked Telegram sender holds the lazy worker while over 3× queue capacity of messages arrives. The test verifies bounded queue/drop behavior, quick shutdown, at most the in-flight send, no post-shutdown queued RPC sends, and scope goroutine settling.
+
+The two new test files were formatted using local `gofmt`, with exact Git blob SHA-1 hashes equal to their staged GitHub blobs. Production edits were limited to small logging/context expressions; **full-repository compilation, formatting and race acceptance for A6-C have not yet been run in the user's authoritative checkout**. Do not declare A6-C or A6 CLOSED yet. No CI was inspected.
+
+### Required A6-C acceptance gate
+
+```bash
+git pull --ff-only
+gofmt -w internal/services/userlog/service.go internal/services/userlog/privacy_a6_test.go \
+  plugins/userlog/userlog.go plugins/userlog/lifecycle_a6_test.go
+gofmt -l internal/services/userlog/service.go internal/services/userlog/privacy_a6_test.go \
+  plugins/userlog/userlog.go plugins/userlog/lifecycle_a6_test.go
+go test ./internal/services/userlog ./plugins/userlog -run '^TestA6' -count=1
+go test -race ./internal/services/userlog ./plugins/userlog -run '^TestA6' -count=1
+go test ./internal/services/userlog ./plugins/userlog ./internal/telegram ./internal/core \
+  ./plugins/afk ./plugins/pmpermit ./plugins/blacklist ./plugins/filters ./internal/app
+go test -race ./...
+git diff --check
+```
+
+If the new lifecycle test fails, re-check that the worker uses `p.ctx` rather than the `plugin.Scope.Go` callback's parent context, and check whether an in-flight transport respects cancellation. Fix the actual contract or fixture and gofmt all Go changes before commit. No CI checking unless explicitly requested.
+
+### A6-C2 / A6-D next acceptance requirements
+
+- A6-C2: verify category toggles for PM, mentions and admin actions; owner configured destination isolation and title/id validation, self-recursion, disabled/absent destination, and subscriber teardown/rebind on repeated unload/reload. Reuse the existing UserLog service and its lazy worker; no new logging queue.
+- A6-D: acceptance matrix joining A6-A/B/C (private payload redaction, audit ring immutability, PMPermit state event categories, UserLog backpressure/shutdown), error behavior with security hook fail-closed vs observer fail-open, and high-cardinality/no-idle-goroutine settling. No new central observability runtime. Only mark A6 CLOSED when all required tests are green.
+- A7 remains pending for resource/soak/restart/FloodWait acceptance. All external Telegram network I/O retains its shared RPC executor semantics.
+
+**Status: A5 CLOSED; A6-A/B CLOSED; A6-C1 implemented and pending user test gate; A6-C2/D and A7 OPEN.**
