@@ -197,6 +197,9 @@ func (s *Service) Stats(ctx context.Context) ServiceStats {
 
 // SetDestination stores a structured LogDestination.
 func (s *Service) SetDestination(ctx context.Context, dest LogDestination) error {
+	if dest.ID <= 0 || (dest.Type != LogDestinationChat && dest.Type != LogDestinationChannel) {
+		return fmt.Errorf("invalid userlog destination")
+	}
 	data, err := json.Marshal(dest)
 	if err != nil {
 		return fmt.Errorf("marshal log destination: %w", err)
@@ -220,8 +223,15 @@ func (s *Service) SetDestination(ctx context.Context, dest LogDestination) error
 
 // ClearDestination removes configured destination.
 func (s *Service) ClearDestination(ctx context.Context) error {
-	_ = s.repo.SetUserLogSetting(ctx, SettingLogDestination, "")
-	_ = s.repo.SetUserLogSetting(ctx, SettingLogChatID, "")
+	// Clear the legacy fallback first. If either write fails, retain the
+	// structured destination and the cached peer rather than reporting
+	// success while a restart can resurrect the previous destination.
+	if err := s.repo.SetUserLogSetting(ctx, SettingLogChatID, ""); err != nil {
+		return fmt.Errorf("clear legacy userlog destination: %w", err)
+	}
+	if err := s.repo.SetUserLogSetting(ctx, SettingLogDestination, ""); err != nil {
+		return fmt.Errorf("clear userlog destination: %w", err)
+	}
 	s.mu.Lock()
 	s.cachedDest = nil
 	s.mu.Unlock()
@@ -244,7 +254,8 @@ func (s *Service) GetDestination(ctx context.Context) (*LogDestination, error) {
 	}
 	if val != "" {
 		var dest LogDestination
-		if err := json.Unmarshal([]byte(val), &dest); err == nil && dest.ID != 0 {
+		if err := json.Unmarshal([]byte(val), &dest); err == nil && dest.ID > 0 &&
+			(dest.Type == LogDestinationChat || dest.Type == LogDestinationChannel) {
 			s.mu.Lock()
 			s.cachedDest = &dest
 			s.mu.Unlock()

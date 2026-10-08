@@ -399,6 +399,15 @@ func (p *Plugin) InitScope(ctx context.Context, scope *plugin.Scope) error {
 	if scope == nil {
 		return fmt.Errorf("userlog plugin scope cannot be nil")
 	}
+	// Prime the persisted log destination before the message hook becomes
+	// active. IsLogDestinationRef is intentionally cache-only to keep the
+	// ingress path free of SQLite I/O; without this prime the first
+	// post-restart mention from the destination could be logged back to it.
+	if p.svc != nil {
+		if _, err := p.svc.GetDestination(scope.Context()); err != nil {
+			return fmt.Errorf("load userlog destination: %w", err)
+		}
+	}
 
 	p.mu.Lock()
 	if p.ctx != nil && !p.closing {
@@ -624,7 +633,15 @@ func (p *Plugin) handleLogStatus(ctx *core.Context) error {
 	if len(ctx.Args) >= 2 {
 		category := strings.ToLower(ctx.Args[0])
 		action := strings.ToLower(ctx.Args[1])
-		enable := action == "on" || action == "enable" || action == "true"
+		var enable bool
+		switch action {
+		case "on", "enable", "true":
+			enable = true
+		case "off", "disable", "false":
+			enable = false
+		default:
+			return ctx.Status("Choose <code>on</code> or <code>off</code> for the log category.")
+		}
 		var settingKey string
 		switch category {
 		case "tags", "tag", "mentions":
