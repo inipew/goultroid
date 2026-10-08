@@ -288,7 +288,7 @@ func TestPMPermit_DeleteWarnMessagesOnApprove(t *testing.T) {
 
 	ctx := context.Background()
 	sender := int64(66666)
-	peer := &tg.InputPeerUser{UserID: sender}
+	peer := &tg.InputPeerUser{UserID: sender, AccessHash: 123}
 
 	// Send 2 unapproved incoming messages, creating 2 warnings
 	_, _ = svc.HandleIncomingPM(ctx, peer, sender)
@@ -299,7 +299,7 @@ func TestPMPermit_DeleteWarnMessagesOnApprove(t *testing.T) {
 	}
 
 	// Now approve the user
-	if err := svc.Approve(ctx, sender, "verified", 0); err != nil {
+	if err := svc.ApproveWithPeer(ctx, peer, sender, "verified", 0); err != nil {
 		t.Fatalf("Approve failed: %v", err)
 	}
 
@@ -529,7 +529,7 @@ func TestPMPermit_UnblockAndStats(t *testing.T) {
 	userB := int64(222)
 	userC := int64(333)
 
-	_ = svc.Approve(ctx, userA, "friend", 0)
+	_ = svc.ApproveWithPeer(ctx, &tg.InputPeerUser{UserID: userA, AccessHash: 123}, userA, "friend", 0)
 	_ = svc.Block(ctx, userB, "spam")
 	_, _ = db.IncrementPMWarn(ctx, userC)
 
@@ -583,7 +583,7 @@ func TestPMPermit_EventBus(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	_ = svc.Approve(ctx, 9988, "test", 0)
+	_ = svc.ApproveWithPeer(ctx, &tg.InputPeerUser{UserID: 9988, AccessHash: 123}, 9988, "test", 0)
 
 	for i := 0; i < 20; i++ {
 		mu.Lock()

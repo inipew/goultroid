@@ -439,9 +439,18 @@ func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClas
 	return nil
 }
 
+// Approve is for deliberately storage-only installations. Managed Telegram
+// callers must use ApproveWithPeer so an actual access hash is supplied before
+// durable approval can be published.
 func (s *Service) Approve(ctx context.Context, userID int64, reason string, duration time.Duration) error {
+	if s.svc != nil || s.svcFunc != nil {
+		return fmt.Errorf("%w: use ApproveWithPeer", ErrResolvedApprovalPeer)
+	}
 	unlock := s.lockUserStatus(userID)
 	defer unlock()
+	if s.repo == nil {
+		return fmt.Errorf("pm permit database is unavailable")
+	}
 	var exp *time.Time
 	if duration != 0 {
 		t := time.Now().UTC().Add(duration)
@@ -450,40 +459,19 @@ func (s *Service) Approve(ctx context.Context, userID int64, reason string, dura
 	if reason == "" {
 		reason = "approved by user"
 	}
-	if s.repo == nil {
-		return fmt.Errorf("pm permit database is unavailable")
-	}
 	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
-		s.logger.Error("failed to set pm status approved", zap.Int64("user_id", userID), zap.Error(err))
-		return err
+		return fmt.Errorf("persist storage-only PM approval: %w", err)
 	}
 	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
-		s.logger.Warn("failed to reset pm warn count", zap.Int64("user_id", userID), zap.Error(err))
+		s.logger.Warn("failed to reset PM warn count", zap.Int64("user_id", userID), zap.Error(err))
 	}
 	entry := approvalCacheEntry{}
 	if exp != nil {
 		entry.expiresAt = *exp
 	}
 	s.approvedCache.Store(userID, entry)
-	ids, idsErr := s.getWarnIDs(ctx, userID)
-	if idsErr != nil {
-		s.logger.Warn("failed to load PM warning IDs for cleanup", zap.Int64("user_id", userID), zap.Error(idsErr))
-	}
-	peer := s.resolvePeer(userID)
-	if len(ids) > 0 {
-		if svc := s.getService(); svc != nil {
-			if err := svc.DeleteMessage(ctx, peer, ids); err != nil {
-				s.logger.Warn("failed to delete warning messages on approve", zap.Int64("user_id", userID), zap.Error(err))
-			}
-		}
-	}
 	if err := s.clearWarnIDs(ctx, userID); err != nil {
 		s.logger.Warn("failed to clear PM warning IDs", zap.Int64("user_id", userID), zap.Error(err))
-	}
-	if svc := s.getService(); svc != nil {
-		if err := svc.UnblockUser(ctx, peer); err != nil {
-			s.logger.Warn("failed to unblock user on approve", zap.Int64("user_id", userID), zap.Error(err))
-		}
 	}
 	s.publishEvent("approve", userID, "", 0, reason, true, "")
 	return nil

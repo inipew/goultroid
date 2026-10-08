@@ -132,7 +132,7 @@ func TestPMPermitPlugin(t *testing.T) {
 		Message:        &core.Message{ID: 1, IsOutgoing: true},
 		DelayedActions: noOpDelayedActions{},
 	}
-	_ = svc.Approve(context.Background(), 88888, "approved test", 0)
+	_ = svc.ApproveWithPeer(context.Background(), &tg.InputPeerUser{UserID: 88888, AccessHash: 12345}, 88888, "approved test", 0)
 	if err := cmds[4].Handler(listCtx); err != nil {
 		t.Fatalf("listapproved failed: %v", err)
 	}

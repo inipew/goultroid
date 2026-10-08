@@ -2,12 +2,17 @@ package pmpermit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/gotd/td/tg"
 	"go.uber.org/zap"
 )
+
+// ErrResolvedApprovalPeer prevents legacy approval from claiming success
+// when Telegram is configured but no authenticated target peer was supplied.
+var ErrResolvedApprovalPeer = errors.New("pm permit: resolved Telegram peer required")
 
 // ApproveWithPeer persists approval and performs Telegram cleanup using the
 // already-resolved peer. User/channel peers must carry an access hash.
