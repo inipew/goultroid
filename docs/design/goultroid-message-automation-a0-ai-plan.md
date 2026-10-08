@@ -50,3 +50,13 @@ Prior plan (historical, not current): `docs/design/goultroid-message-hook-execut
 ## 5. Starting point for the next phase
 
 Start with A1's state-only AFK admission gate on the *existing* multi-registration contract. Avoid speculative interface enlargement before this narrow gate is measured. Revalidate the branch HEAD before making any edits, gofmt every touched Go file including tests, then run targeted checks if the environment can build this repository. Do not check CI.
+
+## 6. Incremental execution record (2026-10-08)
+
+- **A0 committed** at `9e368f5b04faa3d32f51a3f2c22804c3554ee7b2`: source baseline after 50-file revert; no CI checks.
+- **A1 patch committed** at `18b5d7c07ce6efa74820c1d90bb9b6deafd6767a`: AFK outgoing and incoming registration `StateGate` with regression test. Repository-wide Go tests not yet verified in this environment.
+- **A2-A ordering isolation committed** at `f59a6b5261b8519f8f373cb4311135be09a378a3`: decision tasks use `msg-decision:chat:<id>`; event tasks use `msg-event:<plugin-owner>:chat:<id>`. Added ordering-domain and admission-controller tests.
+- **A2-A dispatcher wiring acceptance** at `c27830a3cf58147a2a3927b02e9e063b9206f3ef`: regression checks actual dispatcher submitted keys, not only helper functions.
+- Go changes/new test content were checked with local `gofmt` on corresponding snippets/new files. The entire repository was not available locally; **do not claim full Go tests or race gate are green**. CI has not been checked.
+- Before claiming A2-A fully CLOSED, run in an authoritative checkout: `gofmt -l internal/telegram/dispatcher_dispatch.go internal/telegram/dispatcher_message_hook_ordering.go internal/telegram/dispatcher_message_hook_ordering_a2_test.go internal/telegram/dispatcher_message_hook_integration_a2_test.go`, `go test ./internal/telegram -run '^TestA2'`, `go test -race ./internal/telegram -run '^TestA2'`, `go test ./internal/telegram ./internal/admission ./plugins/afk`, `git diff --check`.
+- **A2-B pending:** move AFK welcome presentation into generation-scoped, shared-TaskEngine effect only after decision-state persistence and after verifying A2-A gate. Preserve owner-global transition correctness, cancellation, timeout, and existing AFK tests. Do not add a fallback untracked goroutine.
