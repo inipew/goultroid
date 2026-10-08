@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5 CLOSED; A6-A/B/C1/C2 ACCEPTANCE CLOSED (2026-10-08); A6-D final observability/security gate IMPLEMENTED (acceptance pending); A7 OPEN**. Historical A0–A4 records remain below.
+Status: **A5 and A6 CLOSED (user-run full race acceptance, 2026-10-08); A7-A SQLite PM cardinality/FloodWait test IMPLEMENTED (acceptance pending); A7-B/C/D OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -1089,3 +1089,53 @@ git diff --check
 If a test or race failure appears, repair source/test contracts and rerun `gofmt` before committing. Do not check/poll CI unless explicitly requested. Avoid re-auditing all of A0–A5 without evidence of a regression.
 
 **Status: A5 CLOSED; A6-A/B/C1/C2 CLOSED; A6-D implementation pushed, authoritative final acceptance PENDING. Overall A6 NOT CLOSED until green. A7 resource/restart/FloodWait acceptance is next.**
+
+## 25. A6 final CLOSED; A7 Resource, Restart & FloodWait Acceptance (2026-10-08)
+
+### A6-D — user-run final acceptance CLOSED
+
+The user fast-forwarded the `test-next` branch from `28b165c1` through `79ed229783a68128ce3dc5c34a63c2af583dfa31`, which includes the A6-D final observability architecture inventory and raw diagnostic logger fence. The user supplied successful outputs for:
+
+- `go test ./internal/telegram -run '^TestA6D' -count=1` and the corresponding `-race` invocation: **PASS**;
+- `go test ./internal/architecture -run '^TestA6D' -count=1` and the corresponding `-race` invocation: **PASS**;
+- repository-wide `go test -race ./...`: **PASS** for every package listed, including plugins AFK/PMPermit/Blacklist/Filters/UserLog, Telegram, architecture and app.
+
+**A6-A/B/C1/C2/D CLOSED.** The result is source-level and mock/SQLite Go-race acceptance, not a live multi-instance deployment, measured production RSS peak, or network FloodWait soak. CI was not checked.
+
+### A7 constraints and incremental gate
+
+Goals in the original A0 roadmap: high-cardinality PM bursts, FloodWait injection, plugin reload/shutdown, concurrent auto-unAFK, database failures, TaskEngine rejection, and resource settling (goroutine/heap). Preserve the existing single TaskEngine, RPC executor, canonical a2 and per-feature bounded caches. Measure rather than assume idle RSS; collect host/Go version/context when running benchmarks. Do **not** add a parallel worker, retry engine, metrics queue, or unbounded retained state for acceptance tests.
+
+A7 is split into narrow independently validated parts, rather than declaring a production-like full-system gate on a single suite:
+
+- **A7-A — SQLite PMPermit cardinality and FloodWait isolation:** actual SQLite repository under more distinct senders than the cooldown cache limit, fail-closed suppression under saturation, persistent warning-state continuity across service restart; simulate a blocked Telegram send for one sender while a second still persists state and proceeds; cancel the first and assert settled execution. Timings/goroutine samples are diagnostics, not portable absolute pass/fail thresholds.
+- **A7-B — AFK and TaskEngine lifecycle:** real managed plugin disable/re-enable; concurrent auto-unAFK, outgoing ordering and welcome effect cancellation; fault-inject persistence failure, TaskEngine admission/rejection and blocked Telegram/FloodWait. Verify no duplicate welcome/no cancellation after a new plugin generation, and no orphaned tasks.
+- **A7-C — Combined mixed ingress and observer pressure:** messages to security/AFK/filters/blacklist, parallel userlog/burst callback traffic and plugin load-unload; verify UserLog bounded queue, no security decision delay from observation, no stale/durable a2 callback cross-generation mutation, and inspect goroutine/heap settling after GC. Use existing instrumentation and TaskEngine; avoid test-only production behavior changes.
+- **A7-D — Final resource and restart matrix:** targeted + race + end-to-end load acceptance, compared snapshots (baseline/peak/settled) with environment info, architecture proof inventory, exact limitations. Only then mark A7 CLOSED.
+
+### A7-A implementation pushed — authoritative acceptance PENDING
+
+Commit `3f25f6a48819fc0f6df5ad4c339c54f56025f6f8` introduces `plugins/pmpermit/resource_a7_test.go`:
+
+1. `TestA7PMPermitSQLiteHighCardinalitySaturationAndRestart` constructs a real SQLite PMPermit repository, processes 2,304 unique private senders with one-hour cooldown and no optional transport, checks the first **2,048** durable pending warning records and the next **256** fail-closed suppressions without extra rows, then constructs a new service against the same SQLite repository and confirms the durable warning count advances. The test records elapsed time and before/after goroutine counts with `t.Logf`; those samples are not heap/RSS acceptance thresholds.
+2. `TestA7PMPermitSQLiteFloodWaitCancellationDoesNotSerializeUnrelatedPM` blocks a user-specific Telegram `SendMessage` via an injected context-aware fake, asserts another distinct sender completes and persists a warning while the first is blocked, cancels the stalled sender, and verifies no lost committed security state.
+
+Both tests live in the owning package, reuse production service+repository boundaries and do not replace the shared executor. The new test file was **locally formatted** by `gofmt -w`, with `gofmt -l` empty and its Git blob hash matching the staged source. The complete Goultroid repository is not available for executing this new suite in the authoring environment. **Do not claim these new tests pass before the user runs them.**
+
+**Acceptance gate for A7-A:**
+
+```bash
+git pull --ff-only
+gofmt -w plugins/pmpermit/resource_a7_test.go
+gofmt -l plugins/pmpermit/resource_a7_test.go
+go test ./plugins/pmpermit -run '^TestA7' -count=1 -v
+go test -race ./plugins/pmpermit -run '^TestA7' -count=1 -v
+go test ./plugins/pmpermit ./internal/services/pmpermit ./plugins/afk \
+  ./plugins/userlog ./internal/taskengine ./internal/telegram ./internal/architecture
+go test -race ./...
+git diff --check
+```
+
+If `TestA7` fails, preserve fail-closed security and inspect the actual SQLite or transport test semantics before modifying code. Format any updated Go files before commit. Do not inspect/poll CI unless requested.
+
+**Status: A5 and A6 CLOSED; A7-A implemented with acceptance pending; A7-B/C/D OPEN.**
