@@ -3,6 +3,7 @@ package userlog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -134,6 +135,20 @@ func (s *Service) recordSuccess() {
 	s.lastSuccessAt.Store(&now)
 }
 
+// deliveryErrorCode is safe for structured logs and the owner-visible
+// health dashboard. Raw Telegram/RPC errors may include message bodies,
+// tokens, internal request URLs or other untrusted text.
+func deliveryErrorCode(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "delivery_failed"
+	}
+}
+
 func (s *Service) recordFailure(err error) {
 	if err == nil {
 		return
@@ -143,7 +158,7 @@ func (s *Service) recordFailure(err error) {
 	now := time.Now()
 	s.lastErrorAt.Store(&now)
 	s.lastErrorMu.Lock()
-	s.lastErrorMsg = err.Error()
+	s.lastErrorMsg = deliveryErrorCode(err)
 	s.lastErrorMu.Unlock()
 }
 
@@ -376,7 +391,7 @@ func (s *Service) IsFeatureEnabled(ctx context.Context, feature string) (bool, e
 func (s *Service) sendToLogChat(ctx context.Context, text string) error {
 	dest, err := s.GetDestination(ctx)
 	if err != nil {
-		s.logger.Error("failed to retrieve userlog destination", zap.Error(err))
+		s.logger.Error("failed to retrieve userlog destination", zap.String("error_code", "destination_lookup_failed"))
 		s.recordFailure(err)
 		return err
 	}
@@ -404,7 +419,7 @@ func (s *Service) sendToLogChat(ctx context.Context, text string) error {
 	s.logger.Warn("userlog delivery failed",
 		zap.String("destination_type", string(dest.Type)),
 		zap.Int64("destination_id", dest.ID),
-		zap.Error(err),
+		zap.String("error_code", deliveryErrorCode(err)),
 	)
 	s.recordFailure(err)
 	return err
@@ -433,7 +448,7 @@ func truncateRunes(s string, maxRunes int) string {
 func (s *Service) LogMention(ctx context.Context, chatTitle string, senderName string, senderID int64, messageText string) error {
 	enabled, err := s.IsFeatureEnabled(ctx, SettingTagsEnable)
 	if err != nil {
-		s.logger.Error("failed to check tags setting", zap.Error(err))
+		s.logger.Error("failed to check tags setting", zap.String("error_code", "setting_lookup_failed"))
 		return err
 	}
 	if !enabled {
@@ -467,7 +482,7 @@ func (s *Service) LogMention(ctx context.Context, chatTitle string, senderName s
 func (s *Service) LogPM(ctx context.Context, senderName string, senderID int64, messageText string) error {
 	enabled, err := s.IsFeatureEnabled(ctx, SettingPMsEnable)
 	if err != nil {
-		s.logger.Error("failed to check pms setting", zap.Error(err))
+		s.logger.Error("failed to check pms setting", zap.String("error_code", "setting_lookup_failed"))
 		return err
 	}
 	if !enabled {
@@ -504,7 +519,7 @@ func (s *Service) LogAction(ctx context.Context, action string, targetID int64, 
 func (s *Service) LogActionDetailed(ctx context.Context, action string, targetID int64, targetName string, actorID int64, chatTitle string, reason string, success bool, errDetail string) error {
 	enabled, err := s.IsFeatureEnabled(ctx, SettingActionsEnable)
 	if err != nil {
-		s.logger.Error("failed to check actions setting", zap.Error(err))
+		s.logger.Error("failed to check actions setting", zap.String("error_code", "setting_lookup_failed"))
 		return err
 	}
 	if !enabled {

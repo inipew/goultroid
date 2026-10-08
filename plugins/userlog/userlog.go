@@ -250,6 +250,11 @@ func (p *Plugin) worker(ctx context.Context, queue chan func(), idleTimeout time
 	}
 
 	for {
+		// Never execute buffered old-generation log deliveries after scope
+		// cancellation. A bounded queue must not extend plugin shutdown.
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -301,8 +306,9 @@ func (p *Plugin) enqueue(job func()) {
 	}
 }
 
-// ShutdownContext stops new work, detaches event subscriptions, drains the
-// bounded queue, and then cancels the lifecycle context.
+// ShutdownContext stops new work, cancels in-flight deliveries, detaches
+// event subscriptions, and discards queued old-generation notifications.
+// Observability must never delay a plugin unload to drain Telegram RPCs.
 func (p *Plugin) ShutdownContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -335,6 +341,12 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
+	// Cancel before waiting for the worker. Otherwise a full queue can
+	// cause shutdown to wait for N serial Telegram RPC timeouts while the
+	// lifecycle context remains active.
+	if cancel != nil {
+		cancel()
+	}
 	for _, sub := range subscriptions {
 		if sub != nil {
 			sub.Close()
@@ -343,9 +355,6 @@ func (p *Plugin) ShutdownContext(ctx context.Context) error {
 
 	go func() {
 		p.wg.Wait()
-		if cancel != nil {
-			cancel()
-		}
 		p.mu.Lock()
 		if p.shutdownDone == done {
 			p.ctx = nil
