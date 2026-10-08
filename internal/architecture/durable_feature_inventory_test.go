@@ -18,16 +18,22 @@ import (
 func TestDurableFeatureInventory(t *testing.T) {
 	root := filepath.Join("..", "..")
 	want := map[string]string{
-		"internal/assistant/shell/shell.go":      "3",
-		"plugins/calculator/calculator.go":       "1",
-		"plugins/myxl/assistant_interaction.go":  "1",
-		"plugins/settings/native_interaction.go": "1",
+		"internal/assistant/shell/shell.go":       "3",
+		"plugins/afk/native_interaction.go":       "1",
+		"plugins/blacklist/native_interaction.go": "1",
+		"plugins/calculator/calculator.go":        "1",
+		"plugins/myxl/assistant_interaction.go":   "1",
+		"plugins/pmpermit/native_interaction.go":  "1",
+		"plugins/settings/native_interaction.go":  "1",
 	}
 	proof := map[string]string{
-		"internal/assistant/shell/shell.go":      "internal/assistant/client/durable_restart_test.go",
-		"plugins/calculator/calculator.go":       "plugins/calculator/durable_restart_test.go",
-		"plugins/myxl/assistant_interaction.go":  "plugins/myxl/durable_restart_test.go",
-		"plugins/settings/native_interaction.go": "plugins/settings/durable_restart_test.go",
+		"internal/assistant/shell/shell.go":       "internal/assistant/client/durable_restart_test.go",
+		"plugins/afk/native_interaction.go":       "plugins/afk/durable_restart_test.go",
+		"plugins/blacklist/native_interaction.go": "plugins/blacklist/durable_restart_test.go",
+		"plugins/calculator/calculator.go":        "plugins/calculator/durable_restart_test.go",
+		"plugins/myxl/assistant_interaction.go":   "plugins/myxl/durable_restart_test.go",
+		"plugins/pmpermit/native_interaction.go":  "plugins/pmpermit/durable_restart_test.go",
+		"plugins/settings/native_interaction.go":  "plugins/settings/durable_restart_test.go",
 	}
 	got := make(map[string]string)
 	for _, dir := range []string{"internal", "plugins"} {
@@ -79,6 +85,11 @@ func TestDurableFeatureInventory(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("durable declarations = %v; want %v; update the owning restart test before changing this inventory", got, want)
+	}
+	for declaration := range want {
+		if _, ok := proof[declaration]; !ok {
+			t.Errorf("%s: missing owning semantic restart proof", declaration)
+		}
 	}
 	for declaration, testPath := range proof {
 		if _, ok := want[declaration]; !ok {
