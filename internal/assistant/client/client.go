@@ -81,6 +81,7 @@ type AssistantClient struct {
 	broadcast             *broadcastsvc.Service
 	groupEvents           *groupevents.Service
 	groupRules            *grouprules.Service
+	groupRoles            core.GroupRoleResolver
 	deepLinkSeq           atomic.Uint64
 	rpcExecutor           assistentrpc.Executor
 	featureCatalog        feature.Catalog
@@ -122,6 +123,19 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 }
 
 // SetRPCExecutor installs the application-owned Telegram executor before Start.
+// GroupRoleResolver exposes the existing Assistant-managed verifier to
+// native a2 group controls only while this bot is running. Never return
+// resolver authority while starting, stopping, or after shutdown.
+func (c *AssistantClient) GroupRoleResolver() core.GroupRoleResolver {
+	if c == nil || !c.IsRunning() {
+		return nil
+	}
+	c.mu.RLock()
+	resolver := c.groupRoles
+	c.mu.RUnlock()
+	return resolver
+}
+
 func (c *AssistantClient) SetRPCExecutor(executor assistentrpc.Executor) {
 	if executor == nil {
 		return
@@ -182,6 +196,9 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	managedAPI := &managedAPI{raw: tdClient.API(), executor: c.rpcExecutor}
 	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(managedAPI))
 	groupRoles := assistantgroupauth.NewTelegramRoleResolver(managedAPI, c.resolver)
+	c.mu.Lock()
+	c.groupRoles = groupRoles
+	c.mu.Unlock()
 	c.cmdRouter.SetGroupRoleResolver(groupRoles)
 	c.cmdRouter.SetGroupQueryReader(newManagedGroupQuery(managedAPI, c.resolver))
 	c.cmdRouter.SetGroupMutationExecutor(newManagedGroupMutation(managedAPI, c.resolver, groupRoles, c.selfID))
@@ -308,6 +325,7 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			c.unbindFeatureDrivers()
 			c.mu.Lock()
 			c.interactionIngress = nil
+			c.groupRoles = nil
 			c.mu.Unlock()
 			close(runDone)
 		}()

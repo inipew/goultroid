@@ -167,6 +167,17 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if err != nil {
 		return nil, fmt.Errorf("build native interaction adapter: %w", err)
 	}
+	// The native group UI borrows the Assistant's live authoritative role
+	// verifier, including its shared RPC execution path and bounded cache.
+	// When Assistant is absent or stopped, mutations fail closed.
+	nativeInteractions.SetGroupRoleProvider(func() core.GroupRoleResolver {
+		if provider, ok := tgRuntime.assistant.(interface {
+			GroupRoleResolver() core.GroupRoleResolver
+		}); ok {
+			return provider.GroupRoleResolver()
+		}
+		return nil
+	})
 	tgRuntime.dispatcher.SetNativeInteractions(nativeInteractions)
 	pluginManager.SetNativeInteractions(nativeInteractions)
 	if domServices.schedEngine != nil {

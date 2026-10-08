@@ -49,11 +49,13 @@ type BeginRequest struct {
 // Telegram transport. It owns no session store, handler registry, worker, or
 // ticker; all lifecycle state remains in the shared a2 runtime and TaskEngine.
 type Adapter struct {
-	catalog feature.Catalog
-	engine  *orchestration.Engine
-	perms   *core.Permissions
-	tasks   tasks.Client
-	port    *telegramPort
+	catalog       feature.Catalog
+	engine        *orchestration.Engine
+	perms         *core.Permissions
+	tasks         tasks.Client
+	port          *telegramPort
+	rolesMu       sync.RWMutex
+	rolesProvider func() core.GroupRoleResolver
 }
 
 func New(
@@ -79,6 +81,33 @@ func New(
 		tasks:   taskClient,
 		port:    port,
 	}, nil
+}
+
+// SetGroupRoleProvider attaches an existing authoritative Telegram group role
+// resolver via a lifecycle-bound provider. The native adapter never creates
+// its own resolver or retains a role cache. Nil is a fail-closed default.
+func (a *Adapter) SetGroupRoleProvider(provider func() core.GroupRoleResolver) {
+	if a == nil {
+		return
+	}
+	a.rolesMu.Lock()
+	a.rolesProvider = provider
+	a.rolesMu.Unlock()
+}
+
+// GroupRoleResolver resolves the currently live Assistant-managed authority.
+// A stopped or unconfigured Assistant supplies nil, never stale authority.
+func (a *Adapter) GroupRoleResolver() core.GroupRoleResolver {
+	if a == nil {
+		return nil
+	}
+	a.rolesMu.RLock()
+	provider := a.rolesProvider
+	a.rolesMu.RUnlock()
+	if provider == nil {
+		return nil
+	}
+	return provider()
 }
 
 // Begin opens a native message interaction without requiring Assistant identity

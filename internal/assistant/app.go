@@ -94,6 +94,16 @@ func (a *AssistantApp) Start(ctx context.Context) error     { return a.client.St
 func (a *AssistantApp) Quiesce(ctx context.Context) error   { return a.client.Quiesce(ctx) }
 func (a *AssistantApp) Stop(ctx context.Context) error      { return a.client.Stop(ctx) }
 func (a *AssistantApp) IsRunning() bool                     { return a.client.IsRunning() }
+
+// GroupRoleResolver exposes the existing bot-side, managed-RPC-backed
+// Telegram role verifier to native a2 moderation. It is nil unless the
+// Assistant is running, and never creates an independent resolver.
+func (a *AssistantApp) GroupRoleResolver() core.GroupRoleResolver {
+	if a == nil || a.client == nil {
+		return nil
+	}
+	return a.client.GroupRoleResolver()
+}
 func (a *AssistantApp) WaitReady(ctx context.Context) error { return a.client.WaitReady(ctx) }
 func (a *AssistantApp) Username() string                    { return a.client.Username() }
 func (a *AssistantApp) InlineUsername() (string, error)     { return a.client.InlineUsername() }
