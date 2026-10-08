@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5/A6 CLOSED; A7-A/B CLOSED by user-run full race acceptance (2026-10-08); A7-C1/C2 test implementations PUSHED (acceptance pending); A7-D OPEN**. Historical A0–A4 records remain below.
+Status: **A5/A6 CLOSED; A7-A/B and A7-C1 CLOSED by user-run tests (2026-10-08); A7-C2 corrected test gate PUSHED (acceptance pending); A7-D OPEN**. Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -1271,7 +1271,7 @@ The remaining gap is **multi-feature a2 catalog/runtime state competing for one 
 
 Commit `dd81adabd0157d0dd74cea230aad9df2dd47b506` adds two **test-only** files:
 
-1. `internal/app/resource_a7c2_test.go` — `TestA7C2FourFeatureDurableRestartAndScopedCallbackPressure`: constructs the *real* AFK, PMPermit, Blacklist and Filters `FeatureSpec` declarations, registers all four in **one** canonical feature registry and **one** canonical a2 runtime with a real SQLite interaction session store. Creates eight actor/chat-bound sessions for each feature (32 total). Exercises 1,024 successful same-feature callback resolutions, tests fail-closed rejection of a 33rd live session, persists the session state across full runtime recreation and feature generation change, and rejects cross-feature callback token forgery. Canceling the restored Blacklist scope removes **only** its eight sessions, leaving AFK/PMPermit/Filters callback tokens valid. Records Go OS/arch/version and baseline/peak/GC-settled `HeapAlloc` and goroutine samples as *diagnostics*, not brittle hard thresholds.
+1. `internal/app/resource_a7c2_test.go` — `TestA7C2FourFeatureDurableRestartAndScopedCallbackPressure`: constructs the *real* AFK, PMPermit, Blacklist and Filters `FeatureSpec` declarations, registers all four in **one** canonical feature registry and **one** canonical a2 runtime with a real SQLite interaction session store. Creates eight actor/chat-bound sessions for each feature (32 total). Exercises 1,024 successful same-feature callback resolutions, tests fail-closed rejection of a 33rd live session, persists the session state across full runtime recreation and feature generation change, and verifies canonical server-side feature ownership and binding after a2 callback restoration (the token wire format deliberately omits FeatureID). Canceling the restored Blacklist scope removes **only** its eight sessions, leaving AFK/PMPermit/Filters callback tokens valid. Records Go OS/arch/version and baseline/peak/GC-settled `HeapAlloc` and goroutine samples as *diagnostics*, not brittle hard thresholds.
 2. `internal/app/resource_a7c2_manager_test.go` — `TestA7C2ManagerReloadOneFeatureKeepsSiblingDurableCallbacks`: uses the **actual Plugin Manager** and the genuine four feature declarations through small metadata-only plugin fixtures. Registers one session per feature, disables Blacklist and confirms the old token cannot execute, keeps all sibling tokens valid, re-enables Blacklist under a new owner generation and verifies the old token is not resurrected. After a manager shutdown/recreation and SQLite durable restoration, checks that only the freshly re-enabled Blacklist session and the three sibling sessions survive (four total). This exercises production Plugin Manager generation bookkeeping and shared a2 session ownership; **the metadata-only test fixture is not equivalent to running all four production plugin message-hook effect paths simultaneously**.
 
 Neither test adds production workers, registries, callback protocols, retry engines, or any changes to the hot path. Each Go test file was processed by local `gofmt -w` before commit. `gofmt -l` was empty and **the exact local formatted Git blob hashes match the pushed blobs** (`782dccec...` and `a2c7780e...`).
@@ -1309,3 +1309,51 @@ On a failure, fix the actual contract, adapt invalid test setup assumptions with
 After both C1 and C2 focused/race gates pass, build the final executable acceptance inventory referencing **owning package** A7-A/B/C tests and A5/A6 gates. Record repeated baseline/peak/settled goroutine/heap measurements and the exact Go/host environment; separate source-level fake-transport guarantees from unverified production RSS and real MTProto FloodWait timing. Do not assert real network/FloodWait soak or absolute resource budgets from local unit tests.
 
 **Status: A5/A6 CLOSED; A7-A/B CLOSED; A7-C1 and A7-C2 implementations pushed, authoritative C1/C2 acceptance PENDING; A7-D OPEN.**
+
+## 29. A7-C1 accepted, A7-C2 token-wire test contract corrected (2026-10-08)
+
+### User acceptance at `39d4549b`
+
+The user fast-forwarded `test-next` to `39d4549b62183031edf2c9fc0faabd2b34436985`, ran `gofmt -w` on both A7-C2 test files and `git diff --check`, and provided the following results:
+
+- `TestA7C2ManagerReloadOneFeatureKeepsSiblingDurableCallbacks`: **PASS** in both ordinary and race-enabled focused runs.
+- `TestA7C2FourFeatureDurableRestartAndScopedCallbackPressure`: **FAIL** in both runs on `resource_a7c2_test.go:191`, reporting `cross-feature token afk -> pmpermit accepted`. This single test also caused `go test -race ./...` to fail in `internal/app`; the remaining reported packages passed.
+- `TestA7CMixedObserverBurstIsolatedFromSecurityAndCallbackClaims` and `TestA7CUserLogMixedChatBurstBoundedAndReloadSettles`: **PASS** in ordinary **and race** runs. The dispatcher measured baseline/settled goroutines 2/2 (normal) and 2/2 (race); UserLog 2/3 (normal) and 2/3 (race) under the test's settling tolerance. The latter exercised 1,536 messages, enqueued 257 and dropped 1,279 under the queue pressure contract. These samples are diagnostics, not production RSS measurements.
+- A7-C1 acceptance is **CLOSED** by the user's actual focused and race output. A7-C2 and repository-wide race acceptance were **NOT** green on the tested commit. Do not treat this as a race-detector data-race report; the source-level assertion failed.
+
+### Root cause — invalid assumption in A7-C2 test, not a2 cross-feature dispatch
+
+`internal/interaction/token.go` explicitly specifies the compact a2 format `a2:<action>:<session>.<revision>`. **FeatureID is server-side** and intentionally not included in Telegram callback bytes. `EncodeCallbackToken(featureID, action, session, revision)` validates the supplied feature string but does not serialize it. Therefore changing only `featureID` from AFK to PMPermit in a test-generated token produces the **identical bytes**, and `ResolveCallback` correctly resolves the original AFK session through its opaque ID; it cannot infer any attempted rename from the token. The earlier expectation that this should fail was logically invalid.
+
+The canonical a2 protection instead requires (1) feature ID recovered from the authoritative session; (2) the registered action declared for **that** feature; (3) matching actor/chat/message binding; (4) correct scope generation and revision, including after durable restoration and unload. Existing `internal/interaction/token_test.go` separately verifies the omission of FeatureID and resolution from the session. Do **not** alter callback payload format, add per-feature callback prefixes or introduce a second callback dispatcher.
+
+### Correction pushed, acceptance still pending
+
+Commit `087c2e7ed382f899ec95ba246f55b3654fcea501` modifies only `internal/app/resource_a7c2_test.go`:
+
+- Checks that a2 `Token.FeatureID` and `Session.FeatureID` both recover the original owner from the session and its scope maps to the restored feature's generation.
+- Proves that changing the unused encoder's feature argument yields the identical canonical wire token, but resolving the token **always** retains the correct original session feature and scope.
+- Adds synthetic action substitution with a valid but undeclared `a7_undeclared_action`, requiring `ErrActionNotFound`, and synthetic wrong-actor and wrong-message-target replay, requiring `ErrBindingMismatch`.
+- Preserves the original 32-session capacity, SQLite durable restore, Blacklist scope cancellation, sibling isolation, and heap/goroutine diagnostics.
+- The modified block was parsed/formatted with local `gofmt` before pushing, and surrounding source already used `gofmt` formatting. A full-module test run was **not** available in this environment; the corrected commit is not yet accepted.
+
+### Required A7-C2 rerun
+
+```bash
+git pull --ff-only
+gofmt -w internal/app/resource_a7c2_test.go internal/app/resource_a7c2_manager_test.go
+gofmt -l internal/app/resource_a7c2_test.go internal/app/resource_a7c2_manager_test.go
+go test ./internal/app -run '^TestA7C2' -count=1 -v
+go test -race ./internal/app -run '^TestA7C2' -count=1 -v
+go test ./internal/interaction -count=1
+go test ./internal/app ./internal/interaction ./internal/plugin \
+  ./internal/telegram ./internal/taskengine ./plugins/afk \
+  ./plugins/pmpermit ./plugins/blacklist ./plugins/filters ./plugins/userlog \
+  ./internal/architecture
+go test -race ./...
+git diff --check
+```
+
+If a further test fails, investigate actual session/action/binding semantics rather than weakening security boundaries. Run `gofmt` on every modified Go file before committing. No CI checking or polling unless the user explicitly requests it.
+
+**Status: A5/A6 CLOSED; A7-A/B/C1 CLOSED; A7-C2 corrective test pushed and full acceptance PENDING; A7-D OPEN.**
