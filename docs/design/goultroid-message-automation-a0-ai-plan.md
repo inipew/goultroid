@@ -252,3 +252,57 @@ The user executed the **entire A3-C acceptance matrix** after pulling through `6
 - A4 must verify private/group/supergroup/channel/topic structural routing, sender identity, and fail-closed incomplete-peer behavior before changing code.
 
 **Execution discipline:** Refresh HEAD before each new phase, `gofmt` all changed Go files before committing, update focused tests, and **do not inspect or poll CI unless the user explicitly asks**. CI was not checked as part of A3.
+
+## 11. A4 — Telegram Chat/Topic Context Integrity (2026-10-08)
+
+**Status: A4-A/B IMPLEMENTED; authoritative Go tests and race acceptance PENDING.** The verified A3 closure (§10) remains unchanged.
+
+### A4-A — Canonical chat/sender/reply consistency
+
+Commit `d5b8d67dbbba3f842804dd14fdfae8e6e0132ce3`.
+
+- Reconciled `Dispatcher.resolveDispatchChat` with `NormalizeMessageEnvelope`: a `tg.PeerChannel` is treated as **broadcast channel** unless its `tg.Channel.Megagroup` metadata positively establishes a supergroup. An unknown channel must never be silently assumed to be a group.
+- Private incoming updates with an explicitly mismatched, anonymous or non-user `FromID` are rejected before hooks and command admission. **Only truly omitted `FromID`** may use the private dialog peer for sender identity; `invocationSenderID` obeys the same rule.
+- Preserve `MessageReplyHeader.ReplyToPeerID` in canonical `MessageEnvelope.ReplyPeer` for cross-peer discussion replies. Topic ID / root-reply semantics are preserved.
+- Nil typed chat peers no longer crash canonical envelope creation; unknown classification remains conservative.
+- Added `internal/telegram/context_integrity_a4_test.go` with tests for channel/megagroup/unknown classification, sender mismatch and omitted FromID, dispatcher hook rejection, and topic/root/cross-chat reply metadata.
+
+### A4-B — Plugin automation context fences
+
+Commit `ca7d5a7aeb2650696a17121e3d28eeaec9984593`; follow-up outgoing-welcome regression commit `67ff5e052a986db11c3a3af69ba0088a84f6b107`.
+
+- AFK incoming auto-replies require a private dialog or **verified group/supergroup**, with an actual user sender. Broadcast channel posts, unknown channel types, and anonymous channel-backed senders are ignored; group mentions and forum replies from real users still work.
+- AFK reply-to-owner lookups only use a reply belonging to the same peer. A cross-chat reply does not cause an RPC lookup using the wrong channel/topic and will not provoke a personal AFK response.
+- AFK manual outgoing broadcast posts still deactivate AFK state, but never schedule a welcome response into a broadcast channel.
+- Userlog private/mention logging now skips broadcast/unknown channels and channel-backed anonymous senders rather than attributing them to users. Positive private and verified group paths are retained.
+- PMPermit inbound private interceptor fails closed when canonical sender peer does not match the private dialog peer. The dispatcher applies the same restriction before any command execution.
+- Updated existing AFK tests that previously presented `PeerChannel` as a group without `Megagroup: true`; changed anonymous-channel test expectation to suppress personal AFK replies.
+- New regression files: `plugins/afk/chat_context_a4_test.go`, `plugins/userlog/chat_context_a4_test.go`, and `plugins/pmpermit/chat_context_a4_test.go`.
+
+### A4 acceptance matrix and rules
+
+Preserve the following:
+- Private dialog: omitted `FromID` is allowed, explicit mismatch is suppressed; PMPermit applies only to private users and remains fail-closed.
+- Basic group and verified megagroup: member mentions and genuine replies still route correctly, including forum topic ID, topic-root suppression and cross-chat reply safety.
+- Broadcast channel and unknown `PeerChannel` classification: no AFK welcome/auto-reply, no anonymous-user userlog entry, no PMPermit private decision.
+- Media, edited messages, per-chat filters/blacklist, channel posts and group moderation must not acquire a **new** private-message permission or bypass. Existing filter/blacklist moderation contracts have not been rewritten in A4-A/B.
+- No extra worker, registry, rate-limiter, TaskEngine, callback protocol or background goroutine has been introduced.
+
+**Mandatory authoritative checkout checks before A4 CLOSED:**
+
+```bash
+git pull --ff-only
+gofmt -w internal/telegram/message_envelope.go internal/telegram/dispatcher_dispatch.go internal/telegram/context_integrity_a4_test.go plugins/afk/afk.go plugins/afk/afk_test.go plugins/afk/chat_context_a4_test.go plugins/userlog/userlog.go plugins/userlog/chat_context_a4_test.go plugins/pmpermit/pmpermit.go plugins/pmpermit/chat_context_a4_test.go
+gofmt -l internal/telegram/message_envelope.go internal/telegram/dispatcher_dispatch.go internal/telegram/context_integrity_a4_test.go plugins/afk/afk.go plugins/afk/afk_test.go plugins/afk/chat_context_a4_test.go plugins/userlog/userlog.go plugins/userlog/chat_context_a4_test.go plugins/pmpermit/pmpermit.go plugins/pmpermit/chat_context_a4_test.go
+go test ./internal/telegram -run 'TestA4|TestNormalizeMessageEnvelope|TestDispatcher_.*Routing' -count=1
+go test ./plugins/afk -run 'TestA4|TestAFKPlugin' -count=1
+go test ./plugins/userlog -run 'TestA4|TestUserLog' -count=1
+go test ./plugins/pmpermit -run 'TestA4|TestPMPermit' -count=1
+go test ./internal/telegram ./internal/core ./internal/plugin ./plugins/afk ./plugins/userlog ./plugins/pmpermit ./plugins/filters ./plugins/blacklist
+go test -race ./internal/telegram ./plugins/afk ./plugins/userlog ./plugins/pmpermit
+git diff --check
+```
+
+**Verification caveat:** Full Goultroid checkout / dependencies were unavailable in the execution container; source was inspected and GitHub commits were verified, but authoritative focused tests, package-level tests, race checks, and full-file `gofmt` are **not claimed**. The tests above must be executed and any failures repaired with correctly formatted Go source/tests before marking the phase closed. Do **not** poll or inspect CI unless explicitly asked.
+
+**Next after acceptance:** A5 user-facing management UX and contextual moderation, keeping a2 as the sole interaction protocol.
