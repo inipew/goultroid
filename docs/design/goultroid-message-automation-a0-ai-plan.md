@@ -1,0 +1,52 @@
+# Goultroid Message Automation — A0 Baseline and Incremental Recovery
+
+Status: **A0 BASELINE RECORDED** — baseline source inspection only; no runtime test execution claimed.
+Branch: `test-next`
+Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
+Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
+
+## 1. Mandatory execution discipline
+
+- **Refresh the actual GitHub `test-next` HEAD and record SHA + subject before starting each phase.**
+- Format **every Go source and test file changed** using `gofmt` before committing.
+- Update/add focused tests whenever production logic, signatures, routing, or lifecycle change, and format those test files too.
+- Run targeted tests and race checks where an appropriate Go toolchain/dependency environment is available; report unexecuted gates as unverified.
+- **Do not inspect, poll, or trigger CI** unless the user explicitly requests it.
+- Commit only bounded, reviewed changes with a phase-specific acceptance statement; no mass replay of reverted R0–R8.
+- Keep the existing dispatcher, TaskEngine, shared RPC executor, canonical envelope, a2 interaction and plugin lifecycle. Do not add a second runtime, registry, downloader, task queue, retry engine, or callback protocol.
+- All caches and state must be bounded. Keep idle footprint close to zero. Preserve context and shutdown cancellation.
+- Preserve PMPermit as **private-user-chat only**, independently of group moderation.
+
+## 2. Verified current architecture
+
+- `internal/telegram/dispatcher_dispatch.go`: structural routing uses a lightweight `core.MessageEnvelope`, indexed handler buckets, decision handlers before command claim, event submission through shared TaskEngine.
+- `internal/telegram/dispatcher_handlers.go`: priority 10 security, 20 moderation, 50 feature, 90 observability. Priority implies failure policy; decision and event submissions currently use `chat:<chatID>` ordering keys.
+- `internal/plugin/manager.go`: a multi-registration plugin supplies full `core.MessageHookRegistration` entries; no automatic state gate is attached to those entries.
+- `plugins/afk/afk.go`: outgoing AFK in decision lane, incoming AFK in event lane; both registered without `StateGate`, although the owner AFK state is atomically available. Welcome send currently runs within outgoing decision handler; reply-target inspection may perform Telegram GetMessage.
+- `plugins/pmpermit/pmpermit.go` and `internal/services/pmpermit/service.go`: private incoming/outgoing decision hooks; DB access, warning, block/unblock, and Telegram RPC may run inside decision barrier. Approval cache and warning maps require lifecycle/capacity audit.
+- `plugins/blacklist/blacklist.go`: chat active-state gate, synchronous delete on match.
+- `plugins/filters/filters.go`: chat active-state gate and compiled rules; matching in decision lane, response delivery can be submitted as task continuation.
+- `plugins/userlog/userlog.go`: event lane followed by a private 256-entry queue and lazy worker. Assess whether existing TaskEngine can own effect delivery without changing backpressure semantics.
+- `internal/settings/defaults.go`: PMPermit max warning default 3 vs service constructor 4; AFK cooldown default 5s vs constructor 60s. Confirm binder lifecycle before changing defaults.
+
+## 3. Risk inventory and invariants
+
+1. **A1 — Inactive AFK admission**. AFK non-active outgoing messages should not submit AFK decision work; disabled incoming auto-reply should not submit AFK event work. Active manual outgoing must still atomically transition AFK off, and .afk commands must not auto-unAFK.
+2. **A2 — Ordering and effects**. Shared chat ordering key currently permits event/decision contention; slow welcome/warning effects must not block unrelated command-start. Keep decision semantics and fail-closed security.
+3. **A3 — PMPermit correctness**. Keep unapproved PMs suppressed if approval lookup fails; handle incomplete access hashes safely; bound per-user caches; fix any race in mutable cooldown; reconcile durable status with external Telegram RPC errors.
+4. **A4 — Telegram chat semantics**. Preserve private/group/supergroup/topic distinctions and sender identity; avoid channel auto-replies and avoid topic-root false positives. Unknown peer class is not evidence of membership.
+5. **A5 — UX**. Implement owner-bound a2 management for AFK/PMPermit and chat-contextual group moderation without a new callback or authorization stack.
+6. **A6 — Observability**. Logging cannot reopen suppressed commands or make security decisions wait; keep audit metadata scoped and minimize sensitive content.
+7. **A7 — Resource/restart acceptance**. Include high-cardinality PM bursts, FloodWait injection, lifecycle reload/shutdown, concurrent auto-unAFK, DB failure, task rejection, and settling of goroutines/heap.
+
+## 4. Acceptance strategy
+
+- A0 gate: record exact baseline, identify the reverted historical plan as non-current, inventory production call paths, and designate a minimal reversible first change. This gate is **source-reviewed**, not benchmark-validated.
+- A1 gate: add tests for both AFK registration gates (initial inactive, active, auto-reply disabled, disabled again), then verify dispatcher skips task admission for a false state gate. Re-run existing AFK outgoing ordering/toggle/auto-origin tests.
+- A2 gate: deterministic decision/event contention regression and FloodWait isolation before changing execution ordering.
+- A3 gate: focused PMPermit tests, `-race` when available, and deterministic failure/reconciliation tests.
+- A4–A7 gates: each requires behavior matrix and scope/lifecycle/resource checks.
+
+## 5. Starting point for the next phase
+
+Start with A1's state-only AFK admission gate on the *existing* multi-registration contract. Avoid speculative interface enlargement before this narrow gate is measured. Revalidate the branch HEAD before making any edits, gofmt every touched Go file including tests, then run targeted checks if the environment can build this repository. Do not check CI.
