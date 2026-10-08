@@ -72,6 +72,7 @@ type Service struct {
 
 	lastWarnTime map[int64]time.Time
 	warnTimeMu   sync.Mutex
+	statusLocks  [128]sync.Mutex
 
 	eventBus *core.EventBus
 	delivery *savedresponse.ResponseDelivery
@@ -215,6 +216,13 @@ func (s *Service) IsApproved(ctx context.Context, userID int64) (bool, error) {
 	if userID == s.ownerID {
 		return true, nil
 	}
+	unlock := s.lockUserStatus(userID)
+	defer unlock()
+	return s.isApprovedLocked(ctx, userID)
+}
+
+// Called only while the user status lock is held, including from PM ingress.
+func (s *Service) isApprovedLocked(ctx context.Context, userID int64) (bool, error) {
 	if value, ok := s.approvedCache.Load(userID); ok {
 		entry := value.(approvalCacheEntry)
 		if entry.expiresAt.IsZero() || time.Now().UTC().Before(entry.expiresAt) {
@@ -233,7 +241,9 @@ func (s *Service) IsApproved(ctx context.Context, userID int64) (bool, error) {
 		return false, nil
 	}
 	if rec.ExpiresAt != nil && time.Now().UTC().After(*rec.ExpiresAt) {
-		_ = s.repo.SetPMStatus(ctx, userID, StatusPending, "approval expired", nil)
+		if err := s.repo.SetPMStatus(ctx, userID, StatusPending, "approval expired", nil); err != nil {
+			return false, fmt.Errorf("persist expired PM approval: %w", err)
+		}
 		return false, nil
 	}
 	entry := approvalCacheEntry{}
@@ -362,20 +372,31 @@ func (s *Service) resolvePeer(userID int64) tg.InputPeerClass {
 }
 
 func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClass, userID int64) error {
-	if userID == 0 || userID == s.ownerID {
+	if userID == 0 || userID == s.ownerID || s.IsSudoID(userID) {
 		return nil
 	}
-	if s.IsSudoID(userID) {
-		return nil
+	unlock := s.lockUserStatus(userID)
+	defer unlock()
+	approved, err := s.isApprovedLocked(ctx, userID)
+	if err != nil {
+		return err
 	}
-	if approved, _ := s.IsApproved(ctx, userID); approved {
+	if approved {
 		return nil
 	}
 	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
+	// Telegram must unblock first; DB/cache never claim an unusable approval.
+	if svc := s.getService(); svc != nil {
+		if !usablePeer(peer) {
+			return fmt.Errorf("pm permit: unresolved outgoing peer for user %d", userID)
+		}
+		if err := svc.UnblockUser(ctx, peer); err != nil {
+			return fmt.Errorf("auto-approve unblock user: %w", err)
+		}
+	}
 	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, "outgoing auto-approved", nil); err != nil {
-		s.logger.Error("failed to set pm status approved", zap.Int64("user_id", userID), zap.Error(err))
 		return err
 	}
 	s.approvedCache.Store(userID, approvalCacheEntry{})
@@ -389,16 +410,13 @@ func (s *Service) AutoApproveOutgoing(ctx context.Context, peer tg.InputPeerClas
 	}
 	s.clearWarnIDs(userID)
 	_ = s.repo.ResetPMWarn(ctx, userID)
-	if svc := s.getService(); svc != nil {
-		if err := svc.UnblockUser(ctx, peer); err != nil {
-			s.logger.Warn("failed to unblock user on auto-approve", zap.Int64("user_id", userID), zap.Error(err))
-		}
-	}
 	s.publishEvent("auto_approve", userID, "", 0, "outgoing auto-approved", true, "")
 	return nil
 }
 
 func (s *Service) Approve(ctx context.Context, userID int64, reason string, duration time.Duration) error {
+	unlock := s.lockUserStatus(userID)
+	defer unlock()
 	var exp *time.Time
 	if duration != 0 {
 		t := time.Now().UTC().Add(duration)
@@ -442,38 +460,46 @@ func (s *Service) Approve(ctx context.Context, userID int64, reason string, dura
 }
 
 func (s *Service) Disapprove(ctx context.Context, userID int64) error {
-	s.approvedCache.Delete(userID)
-	s.clearWarnIDs(userID)
+	unlock := s.lockUserStatus(userID)
+	defer unlock()
 	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
-	_ = s.repo.ResetPMWarn(ctx, userID)
 	if err := s.repo.SetPMStatus(ctx, userID, StatusPending, "approval revoked", nil); err != nil {
-		s.logger.Error("failed to set pm status pending on disapprove", zap.Int64("user_id", userID), zap.Error(err))
 		return err
+	}
+	s.approvedCache.Delete(userID)
+	s.clearWarnIDs(userID)
+	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
+		s.logger.Warn("failed to reset PM warnings after disapproval", zap.Int64("user_id", userID), zap.Error(err))
 	}
 	s.publishEvent("disapprove", userID, "", 0, "approval revoked", true, "")
 	return nil
 }
 
 func (s *Service) Unblock(ctx context.Context, peer tg.InputPeerClass, userID int64) error {
-	s.approvedCache.Delete(userID)
-	s.clearWarnIDs(userID)
+	unlock := s.lockUserStatus(userID)
+	defer unlock()
 	if s.repo == nil {
 		return fmt.Errorf("pm permit database is unavailable")
 	}
-	_ = s.repo.ResetPMWarn(ctx, userID)
-	if err := s.repo.SetPMStatus(ctx, userID, StatusPending, "unblocked by user", nil); err != nil {
-		s.logger.Error("failed to set pm status pending on unblock", zap.Int64("user_id", userID), zap.Error(err))
-		return err
-	}
+	// Do not publish a pending state while Telegram still blocks the peer.
 	if svc := s.getService(); svc != nil {
 		if peer == nil {
 			peer = s.resolvePeer(userID)
 		}
 		if err := svc.UnblockUser(ctx, peer); err != nil {
-			s.logger.Warn("failed to unblock user via telegram rpc", zap.Int64("user_id", userID), zap.Error(err))
+			s.publishEvent("unblock", userID, "", 0, "unblocked by user", false, err.Error())
+			return fmt.Errorf("unblock user via Telegram: %w", err)
 		}
+	}
+	if err := s.repo.SetPMStatus(ctx, userID, StatusPending, "unblocked by user", nil); err != nil {
+		return fmt.Errorf("persist PM unblock: %w", err)
+	}
+	s.approvedCache.Delete(userID)
+	s.clearWarnIDs(userID)
+	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
+		s.logger.Warn("failed to reset PM warnings after unblock", zap.Int64("user_id", userID), zap.Error(err))
 	}
 	s.publishEvent("unblock", userID, "", 0, "unblocked by user", true, "")
 	return nil
@@ -484,7 +510,12 @@ func (s *Service) Block(ctx context.Context, userID int64, reason string) error 
 }
 
 func (s *Service) BlockWithPeer(ctx context.Context, peer tg.InputPeerClass, userID int64, reason string) error {
-	s.approvedCache.Delete(userID)
+	unlock := s.lockUserStatus(userID)
+	defer unlock()
+	return s.blockWithPeerLocked(ctx, peer, userID, reason)
+}
+
+func (s *Service) blockWithPeerLocked(ctx context.Context, peer tg.InputPeerClass, userID int64, reason string) error {
 	if reason == "" {
 		reason = "blocked by user"
 	}
@@ -492,15 +523,16 @@ func (s *Service) BlockWithPeer(ctx context.Context, peer tg.InputPeerClass, use
 		return fmt.Errorf("pm permit database is unavailable")
 	}
 	if err := s.repo.SetPMStatus(ctx, userID, StatusBlocked, reason, nil); err != nil {
-		s.logger.Error("failed to set pm status blocked", zap.Int64("user_id", userID), zap.Error(err))
 		return err
 	}
+	s.approvedCache.Delete(userID)
 	if svc := s.getService(); svc != nil {
 		if peer == nil {
 			peer = s.resolvePeer(userID)
 		}
 		if err := svc.BlockUser(ctx, peer); err != nil {
-			s.logger.Warn("failed to block user via telegram rpc", zap.Int64("user_id", userID), zap.Error(err))
+			s.publishEvent("block", userID, "", 0, reason, false, err.Error())
+			return fmt.Errorf("block user via Telegram: %w", err)
 		}
 	}
 	s.publishEvent("block", userID, "", 0, reason, true, "")
@@ -525,8 +557,12 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 		return false, nil
 	}
 
+	// Serialize decisions and status transitions for this user only.
+	unlock := s.lockUserStatus(senderID)
+	defer unlock()
+
 	// 3. Approval check
-	approved, err := s.IsApproved(ctx, senderID)
+	approved, err := s.isApprovedLocked(ctx, senderID)
 	if err != nil {
 		s.logger.Warn("pm permit approval check failed", zap.Error(err), zap.Int64("sender_id", senderID))
 		return true, nil
@@ -539,7 +575,12 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 	}
 
 	// 4. Blocked state handling: SILENT DROP (no reply loop!)
-	if rec, _ := s.repo.GetPMRecord(ctx, senderID); rec != nil && rec.Status == StatusBlocked {
+	rec, readErr := s.repo.GetPMRecord(ctx, senderID)
+	if readErr != nil {
+		s.logger.Warn("PM state check failed closed", zap.Int64("sender_id", senderID), zap.Error(readErr))
+		return true, nil
+	}
+	if rec != nil && rec.Status == StatusBlocked {
 		return true, nil
 	}
 
@@ -565,7 +606,10 @@ func (s *Service) HandleIncomingPM(ctx context.Context, peer tg.InputPeerClass, 
 	}
 
 	if warnCount >= maxWarns {
-		_ = s.BlockWithPeer(ctx, peer, senderID, "exceeded pm warning threshold")
+		if err := s.blockWithPeerLocked(ctx, peer, senderID, "exceeded pm warning threshold"); err != nil {
+			s.logger.Warn("failed to apply PM block", zap.Int64("sender_id", senderID), zap.Error(err))
+			return true, nil
+		}
 		msg, err := s.sendTemplate(ctx, svc, peer, pmLimitResponse, pmLimitTemplate, savedresponse.TemplateVars{})
 		if err != nil {
 			s.logger.Warn("failed to send pm limit reached message", zap.Int64("user_id", senderID), zap.Error(err))

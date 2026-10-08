@@ -325,7 +325,7 @@ func TestPMPermit_AutoApproveOutgoing_CleansWarningsAndUnblocks(t *testing.T) {
 
 	ctx := context.Background()
 	user := int64(54321)
-	peer := &tg.InputPeerUser{UserID: user}
+	peer := &tg.InputPeerUser{UserID: user, AccessHash: 123}
 
 	// User sends 2 messages and gets blocked
 	_, _ = svc.HandleIncomingPM(ctx, peer, user)

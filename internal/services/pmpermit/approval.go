@@ -21,6 +21,8 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 	if !usablePeer(peer) {
 		return fmt.Errorf("pm permit: unresolved or incomplete peer for user %d", userID)
 	}
+	unlock := s.lockUserStatus(userID)
+	defer unlock()
 	var exp *time.Time
 	if duration != 0 {
 		t := time.Now().UTC().Add(duration)
@@ -30,21 +32,17 @@ func (s *Service) ApproveWithPeer(ctx context.Context, peer tg.InputPeerClass, u
 		reason = "approved by user"
 	}
 
-	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
-		return err
-	}
-
-	// Telegram is an external side effect. If it fails, compensate the durable
-	// state so DB/cache do not claim approval that Telegram did not establish.
+	// Unblock first: on Telegram failure durable approval remains unchanged
+	// (possibly blocked). This avoids an uncommitted positive cache entry and
+	// an unsafe compensation window if a rollback were to fail.
 	if svc := s.getService(); svc != nil {
 		if err := svc.UnblockUser(ctx, peer); err != nil {
-			s.approvedCache.Delete(userID)
-			if rollbackErr := s.repo.SetPMStatus(ctx, userID, StatusPending, "approval Telegram side-effect failed", nil); rollbackErr != nil {
-				s.logger.Error("failed to rollback PM approval after Telegram failure", zap.Int64("user_id", userID), zap.Error(rollbackErr))
-			}
 			s.publishEvent("approve", userID, "", 0, reason, false, err.Error())
 			return fmt.Errorf("unblock user: %w", err)
 		}
+	}
+	if err := s.repo.SetPMStatus(ctx, userID, StatusApproved, reason, exp); err != nil {
+		return fmt.Errorf("persist PM approval: %w", err)
 	}
 
 	if err := s.repo.ResetPMWarn(ctx, userID); err != nil {
