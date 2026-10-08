@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A5/A6 CLOSED; A7-A/B and A7-C1 CLOSED by user-run tests (2026-10-08); A7-C2 corrected test gate PUSHED (acceptance pending); A7-D OPEN**. Historical A0–A4 records remain below.
+Status: **A5/A6 CLOSED; A7-A/B/C1/C2 CLOSED by user-run tests (2026-10-08); A7-D final inventory/repeated settling IMPLEMENTED (acceptance pending).** Historical A0–A4 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -1357,3 +1357,65 @@ git diff --check
 If a further test fails, investigate actual session/action/binding semantics rather than weakening security boundaries. Run `gofmt` on every modified Go file before committing. No CI checking or polling unless the user explicitly requests it.
 
 **Status: A5/A6 CLOSED; A7-A/B/C1 CLOSED; A7-C2 corrective test pushed and full acceptance PENDING; A7-D OPEN.**
+
+## 30. A7-C2 accepted and A7-D final executable resource/restart gate (2026-10-08)
+
+### Refreshed authoritative baseline
+
+Refreshed GitHub `test-next` before A7-D: `1ae8e886834527b2db6d3b36f66c57b4000337df` — `docs(design): accept A7-C1 and correct A7-C2 canonical callback proof`.
+
+The user pulled from `39d4549b` to `1ae8e886`, ran `gofmt` on both A7-C2 files and `git diff --check`, and supplied:
+
+- `TestA7C2ManagerReloadOneFeatureKeepsSiblingDurableCallbacks`: **PASS**, normal and `-race`.
+- `TestA7C2FourFeatureDurableRestartAndScopedCallbackPressure`: **PASS**, normal and `-race`, after the corrected canonical callback token test.
+- `go test ./internal/interaction -count=1`: **PASS**.
+- `go test -race ./...`: **PASS across every package**, including application, dispatcher, AFK, PMPermit, Blacklist, Filters, UserLog and architecture gates.
+
+User measurements for `TestA7C2FourFeatureDurableRestartAndScopedCallbackPressure`:
+
+| Environment | Goroutines baseline → settled | Heap baseline → peak → settled | Durable data |
+| --- | --- | --- | --- |
+| linux/amd64 Go 1.27.1-X:nodwarf5, normal | 3 → 3 | 892,192 → 1,148,336 → 911,776 bytes | 32 restored, 8 scoped cancellations |
+| linux/amd64 Go 1.27.1-X:nodwarf5, `-race` | 3 → 3 | 889,888 → 1,150,368 → 909,536 bytes | 32 restored, 8 scoped cancellations |
+
+These are process-scoped **Go heap allocation** samples, not operating-system RSS or Telegram network performance figures. Earlier A7-C1 observer pressure measured 1,536 messages with 257 enqueued/1,279 dropped, and the shared dispatcher separated 64 security decisions from a blocked observer and 128 duplicate callback attempts; those are focused/fake transport gates, not external load benchmarks.
+
+**A7-A/B/C1/C2 are CLOSED** by user-run executable acceptance. The original A7-C2 failure was a mistaken wire-format test expectation, not an actual cross-feature a2 runtime failure; its corrected test has now passed. No CI checked.
+
+### A7-D implemented — pending user-run gate
+
+Commit `59c169b33ecd5a2a237e4dfa5e34572603dca1c0` adds two **test-only** files; no runtime production logic, TaskEngine, RPC executor, callback protocol or queues changed:
+
+1. `internal/architecture/resource_a7d_test.go`: `TestA7DResourceAndRestartAcceptanceInventory` parses each owning-package test file and fences named semantic proof functions spanning PMPermit SQLite saturation and simulated FloodWait, managed AFK scoped TaskEngine and persistence failure, Telegram security/observer/callback pressure, UserLog queue/reload, four-feature native a2 durable callbacks under one shared runtime, real plugin manager disable/re-enable/restart, A6 redaction, and A5 group authorization. It **checks existence/parseability only**, not execution or performance.
+2. `internal/app/resource_a7d_test.go`: `TestA7DRepeatedFourFeatureDurableRestartAndSettling` invokes the actual C2 canonical four-feature durable SQLite/a2 test and real Plugin Manager scoped-reload test in **three rounds**. The owning tests enforce deterministic 32-session capacity, restored feature ownership, stale callback and generation isolation; A7-D logs repeated post-GC Go heap/goroutine samples and guards against persistent multi-round goroutine accumulation while allowing incidental Go runtime/test scheduling variations. A fixed RSS or heap-ratio budget is intentionally absent.
+
+The authoring container has Go 1.23.2 (not the user's Go 1.27.1-X); both new files were passed through local `gofmt -w` and `gofmt -l` returned empty. Exact `git hash-object` output matches staged GitHub blobs: `29b57003174224d7603bb8e509876b0dc366015e` (architecture) and `29a906d82e7113fb63772d8f3279149606e36330` (application).
+
+**Not yet validated in a full Goultroid checkout:** A7-D's new Go tests, full-module compilation, all-package race suite and repeated settling measurements. Treat acceptance as pending until user-run output. No CI was checked.
+
+### A7-D required final acceptance
+
+```bash
+git pull --ff-only
+gofmt -w internal/architecture/resource_a7d_test.go internal/app/resource_a7d_test.go
+gofmt -l internal/architecture/resource_a7d_test.go internal/app/resource_a7d_test.go
+
+go test ./internal/architecture ./internal/app -run '^TestA7D' -count=1 -v
+go test -race ./internal/architecture ./internal/app -run '^TestA7D' -count=1 -v
+
+# Real owning feature tests must run, not merely appear in inventory:
+go test ./plugins/pmpermit ./plugins/afk ./internal/telegram \
+  ./plugins/userlog ./internal/app -run '^TestA7' -count=1
+
+# Full source/race acceptance includes A5, A6, A7 and unrelated regressions.
+go test -race ./...
+git diff --check
+```
+
+If any new test fails, fix the concrete invariant/test fixture, run `gofmt` on all changed Go files and re-run the focused gate. Do not poll CI unless explicitly requested.
+
+### A7 final guarantees and exclusions
+
+After final tests pass, A7 can close as **code-level, deterministic, fake-transport and race acceptance** for the shared dispatcher/TaskEngine, durable interaction runtime/SQLite, managed plugin reload, bounded observer queue, cancellation and callback ownership. A7 does **not** assert 24-hour production soak, RSS staying below a numeric budget, real MTProto FloodWait cancellation guarantees, or Telegram server timing. Obtaining those measurements would require a separately authorized live workload with production host metrics and should not block truthful code-level closure.
+
+**Status: A5/A6 CLOSED; A7-A/B/C1/C2 CLOSED; A7-D implementation PUSHED, acceptance pending. A7 not yet CLOSED.**
