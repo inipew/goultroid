@@ -85,7 +85,11 @@ func TestA5AFKNativeA2OwnerAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() {
+		if p.currentNativeAFK().Interactions != nil {
+			cleanup()
+		}
+	}()
 
 	cmd := &core.Context{
 		Ctx: context.Background(), Source: core.ExecutionInteractive,
