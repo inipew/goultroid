@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync/atomic"
@@ -46,7 +47,16 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	commandIdentity, hasCommandIdentity := telegramMessageIdentity(msg.PeerID, msg.ID)
 	parsed, isCmd, err := d.router.Parse(msg.Message)
 	if err != nil {
-		d.logger.Warn("command parse syntax error", zap.Error(err), zap.String("text", msg.Message))
+		// Do not log the command body or err.Error(): parser diagnostics
+		// can otherwise disclose PM contents or command arguments.
+		reason := "invalid_syntax"
+		switch {
+		case errors.Is(err, core.ErrUnclosedQuote):
+			reason = "unclosed_quote"
+		case errors.Is(err, core.ErrTrailingEscape):
+			reason = "trailing_escape"
+		}
+		d.logger.Warn("command parse syntax error", zap.String("reason", reason))
 		return nil
 	}
 	cmdName := ""
@@ -389,7 +399,7 @@ func (d *Dispatcher) messageHookStateInterested(registered prioritizedHandler, c
 		if r := recover(); r != nil {
 			d.logger.Warn("message hook state gate panicked; failing open",
 				zap.Uint64("handler_id", registered.id),
-				zap.Any("panic", r),
+				zap.String("panic_type", fmt.Sprintf("%T", r)),
 			)
 			interested = true
 		}

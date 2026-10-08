@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -443,7 +444,8 @@ func (d *Dispatcher) safeExecuteMessageHook(
 	defer func() {
 		if r := recover(); r != nil {
 			d.logger.Error("message interceptor panicked",
-				zap.Any("panic", r),
+				// Panic values can contain the raw private message. Type only.
+				zap.String("panic_type", fmt.Sprintf("%T", r)),
 				zap.Bool("fail_closed", failClosed),
 			)
 			handled = failClosed
@@ -460,8 +462,12 @@ func (d *Dispatcher) safeExecuteMessageHook(
 		if errors.Is(err, core.ErrInterceptHandled) {
 			return true
 		}
+		// Hook errors are plugin-controlled and may include private message
+		// bodies, tokens, or chat text. Keep bounded diagnostics only.
 		d.logger.Warn("message interceptor returned error",
-			zap.Error(err),
+			zap.String("error_type", fmt.Sprintf("%T", err)),
+			zap.Bool("canceled", errors.Is(err, context.Canceled)),
+			zap.Bool("deadline_exceeded", errors.Is(err, context.DeadlineExceeded)),
 			zap.Bool("fail_closed", failClosed),
 		)
 		return failClosed
