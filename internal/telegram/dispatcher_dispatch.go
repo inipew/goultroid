@@ -351,12 +351,12 @@ func (d *Dispatcher) executeDecisionHandlersEnvelope(ctx context.Context, handle
 		var handled atomic.Bool
 		d.inFlight.Add(1)
 		ticket, err := client.Submit(decisionCtx, tasks.WorkSpec{
-			ID:               tasks.TaskID(fmt.Sprintf("decision:%d:%d:%d", registered.id, chatID, msg.ID)),
+			ID:               messageHookTaskID("decision", registered.id, message.Peer, msg.ID),
 			Scope:            registered.scope,
 			QuotaOwner:       tasks.OwnerID(registered.scope.Owner),
 			Pool:             "interactive",
 			Class:            tasks.PriorityInteractive,
-			OrderingKey:      messageHookDecisionOrderingKey(chatID),
+			OrderingKey:      messageHookDecisionOrderingKey(message.Peer),
 			ExecutionTimeout: 5 * time.Second,
 			Handler: func(taskCtx context.Context) error {
 				hookCtx := taskCtx
@@ -443,12 +443,12 @@ func (d *Dispatcher) dispatchEventHandlersEnvelope(ctx context.Context, handlers
 			owner = tasks.OwnerID(registered.scope.Owner)
 		}
 		_, err := client.Submit(ctx, tasks.WorkSpec{
-			ID:               tasks.TaskID(fmt.Sprintf("hook:%d:%d:%d", registered.id, chatID, msg.ID)),
+			ID:               messageHookTaskID("hook", registered.id, message.Peer, msg.ID),
 			Scope:            registered.scope,
 			QuotaOwner:       owner,
 			Pool:             "general",
 			Class:            class,
-			OrderingKey:      messageHookEventOrderingKey(registered.scope, chatID),
+			OrderingKey:      messageHookEventOrderingKey(registered.scope, message.Peer),
 			ExecutionTimeout: 10 * time.Second,
 			Handler: func(taskCtx context.Context) error {
 				hookCtx := taskCtx
