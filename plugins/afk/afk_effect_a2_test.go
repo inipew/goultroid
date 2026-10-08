@@ -94,8 +94,8 @@ func TestA2AFKWelcomeEffectIndependentOfDecisionBarrier(t *testing.T) {
 	if spec.Pool != "general" || spec.Class != tasks.PriorityNormal || spec.ExecutionTimeout != afkWelcomeEffectTimeout {
 		t.Fatalf("wrong effect resources: pool=%q class=%q timeout=%s", spec.Pool, spec.Class, spec.ExecutionTimeout)
 	}
-	if effect, ok := spec.Input.(afkWelcomeEffect); !ok || effect.ChatID != 2002 || effect.Peer.AccessHash != 111 {
-		t.Fatalf("effect must contain immutable peer facts, got %T %+v", spec.Input, spec.Input)
+	if input, ok := spec.Input.(string); !ok || !strings.Contains(input, "2002:0:2002:111:") {
+		t.Fatalf("TaskEngine Input must be an immutable supported string, got %T %v", spec.Input, spec.Input)
 	}
 	if !strings.Contains(string(spec.ID), "afk:welcome:1001:") {
 		t.Fatalf("effect task identity=%q", spec.ID)

@@ -50,7 +50,10 @@ func (p *Plugin) submitWelcomeEffect(ctx context.Context, message *core.MessageE
 		Class:            tasks.PriorityNormal,
 		OrderingKey:      fmt.Sprintf("afk-welcome:owner:%d", p.ownerID),
 		ExecutionTimeout: afkWelcomeEffectTimeout,
-		Input:            effect,
+		// TaskEngine accepts bounded immutable payload kinds, not structs.
+		// The handler retains this small value snapshot for execution.
+		Input: fmt.Sprintf("%d:%d:%d:%d:%s",
+			effect.ChatID, effect.Peer.Kind, effect.Peer.ID, effect.Peer.AccessHash, effect.Duration),
 		Handler: func(taskCtx context.Context) error {
 			if err := taskCtx.Err(); err != nil {
 				return err

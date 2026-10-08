@@ -23,7 +23,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) {
+func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) *taskengine.Engine {
 	t.Helper()
 	engine := taskengine.NewEngine(taskengine.DefaultConfig)
 	if err := engine.Start(context.Background()); err != nil {
@@ -31,6 +31,7 @@ func configureDispatcherTasks(t *testing.T, dispatcher *Dispatcher) {
 	}
 	dispatcher.SetTasks(engine)
 	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
+	return engine
 }
 
 func TestDispatcher_OnNewMessage(t *testing.T) {
@@ -843,11 +844,12 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	}
 
 	dispatcher := NewDispatcher(router, perms, nil, logger)
-	configureDispatcherTasks(t, dispatcher)
+	engine := configureDispatcherTasks(t, dispatcher)
 	dispatcher.SetSelfID(ownerID)
 	dispatcher.SetService(svc)
 
 	mgr := plugin.NewManager(router)
+	mgr.SetTaskClient(engine)
 	mgr.SetHookRegistrar(dispatcher)
 
 	afkRepo := afk.NewSQLiteRepository(db)
@@ -998,13 +1000,8 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	if err != nil || st == nil || st.IsAFK {
 		t.Fatalf("AFK transition must finish before the next update, got: %+v, err: %v", st, err)
 	}
-	svc.mu.Lock()
-	lastSent = svc.sentMessages[len(svc.sentMessages)-1]
-	svc.mu.Unlock()
-	if !strings.Contains(lastSent, "Welcome back") {
-		t.Fatalf("welcome must be sent before the next update, got %q", lastSent)
-	}
-
+	// Welcome is an asynchronous shared-TaskEngine effect. The AFK-off
+	// transition above is synchronous; delivery must be observed eventually.
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		st, err = afkRepo.GetAFK(ctx, ownerID)
