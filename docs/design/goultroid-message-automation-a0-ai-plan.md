@@ -86,3 +86,15 @@ git diff --check
 ```
 
 Additional acceptance still needed for managed runtime: inject a blocked Telegram/FloodWait welcome, confirm unrelated command begins after durable AFK-off and before welcome completes, and confirm actual TaskEngine cancellation on plugin disable/re-enable. Never claim final A2 closure based only on mock TaskClient tests.
+
+### A2-B managed integration regression (2026-10-08)
+
+Added commit `3e9068f1946756ac1c2151349b3447d3ee3c79f7` (`plugins/afk/afk_managed_effect_a2b_test.go`).
+
+- Uses **real shared TaskEngine**, **real Plugin Manager**, canonical dispatcher, capability-gated manifest, and a deliberately blocked Telegram welcome mock.
+- Verifies that the owner's next command can begin and read the durably inactive AFK state **while the welcome Telegram call is still blocked**.
+- Disables the AFK plugin while welcome is in flight; verifies cancellation, enables the plugin again, asserts a new scope generation and no rollback of AFK state.
+- The exact GitHub blob SHA `6e0935b5a8588bac06117a170c07eec2365a04a3` matches a local file that was processed with `gofmt -w` and has empty `gofmt -l` output.
+- **Acceptance remains pending:** the full module graph is not available in the local container and GitHub network access from the container is unavailable. Syntax formatting is verified, but compilation, runtime result, race result, and CI result are not claimed. CI was not checked.
+
+Run `go test ./plugins/afk -run '^TestA2BManagedWelcomeDoesNotDelayCommandsAndCancelsOnReload$' -count=1` and `go test -race ./plugins/afk -run '^TestA2B' -count=1` in an authoritative checkout, along with the previously recorded A2-A/A2-B gates. If a regression is found, **fix it and its tests before proceeding to A3**. Also verify that no stale generation can send after disable/re-enable.
