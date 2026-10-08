@@ -420,3 +420,28 @@ A5-B test lifecycle fix: `b3b6d5fa66d9a290a3387db59fefe56e50ff1374` ensures the 
 - Do not change default PMPermit max warnings (settings **3**, constructor **4**) without a separate compatibility decision.
 
 A5 will be CLOSED only after the owner management and contextual moderation acceptance gates pass. A6 observability and A7 resource/restart acceptance remain subsequent phases.
+
+### A5 owner dashboard acceptance regression: import and fixture (2026-10-08)
+
+The user ran the A5-A/B acceptance commands at `2905f46cb659f02fcb00a7d508ed526ba8aad7c6` and reported two blockers:
+
+- `plugins/afk/native_interaction.go`: an unused `context` import prevented AFK and `internal/app` compilation.
+- `plugins/pmpermit/TestPMPermitPlugin`: the direct handler test fixture passed no `Sender`; `core.Context.SenderID()` returned zero, correctly failing the new owner-authorization guard. Runtime authorization must not be weakened to make this test pass.
+
+Correction committed as `3b1bb3d5bdc210b3c365309dd2be6ca55af52530`:
+- Remove the unused AFK import.
+- Supply actual owner `Sender` and `Message.SenderID` on the PMPermit text toggle fixture.
+- Both edited regions were `gofmt`-verified; the full AFK source Git blob matches the local formatted file.
+
+**Status remains A5-A/B implementation complete, authoritative package/race acceptance PENDING, A5-C OPEN.** The corrected commit has not yet been verified with the full Go tests. Do not inspect CI.
+
+Re-run:
+```bash
+git pull --ff-only
+gofmt -w plugins/afk/native_interaction.go plugins/pmpermit/pmpermit_test.go
+gofmt -l plugins/afk/native_interaction.go plugins/pmpermit/pmpermit_test.go
+go test ./plugins/afk ./plugins/pmpermit ./internal/plugin
+go test -race ./plugins/afk ./plugins/pmpermit ./internal/plugin
+go test ./internal/interaction/... ./internal/app ./plugins/settings
+git diff --check
+```
