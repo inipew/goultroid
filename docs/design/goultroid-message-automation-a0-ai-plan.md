@@ -60,3 +60,29 @@ Start with A1's state-only AFK admission gate on the *existing* multi-registrati
 - Go changes/new test content were checked with local `gofmt` on corresponding snippets/new files. The entire repository was not available locally; **do not claim full Go tests or race gate are green**. CI has not been checked.
 - Before claiming A2-A fully CLOSED, run in an authoritative checkout: `gofmt -l internal/telegram/dispatcher_dispatch.go internal/telegram/dispatcher_message_hook_ordering.go internal/telegram/dispatcher_message_hook_ordering_a2_test.go internal/telegram/dispatcher_message_hook_integration_a2_test.go`, `go test ./internal/telegram -run '^TestA2'`, `go test -race ./internal/telegram -run '^TestA2'`, `go test ./internal/telegram ./internal/admission ./plugins/afk`, `git diff --check`.
 - **A2-B pending:** move AFK welcome presentation into generation-scoped, shared-TaskEngine effect only after decision-state persistence and after verifying A2-A gate. Preserve owner-global transition correctness, cancellation, timeout, and existing AFK tests. Do not add a fallback untracked goroutine.
+
+## 7. A2-B — AFK welcome effect separation
+
+Status: **IMPLEMENTED, acceptance gate pending** at commit `d1c21686f661d6bdb19686f52cf0f2f09ddf66fc`.
+
+- Outgoing AFK still commits DB-first deactivation in the synchronous decision lane. After committing the transition it submits a small, immutable `afkWelcomeEffect` with chat ID, peer reference and duration to the existing shared TaskEngine. No direct Telegram send remains in the outgoing decision hook.
+- AFK declares `CapTasks` and uses the capability-gated `PluginContext.TaskClient()` scoped client, with generation-aware task ID and `plugin:afk` quota ownership. Admission is bounded by 250 ms; effect execution by 15 s. A failed admission does not restore AFK or spawn a fallback goroutine.
+- The effect retrieves its Telegram provider at execution time and uses the captured plugin scope for any optional delayed deletion; disabling the plugin must fence stale work.
+- Adjusted six existing AFK tests to inject a test-only TaskClient and replaced the old blocking-welcome ordering test with a DB-first / queued-effect assertion. Added four A2-specific tests: blocked welcome isolation, rejected admission, scope cancellation, and module capabilities.
+- The two new Go files and touched production function fragments were formatted/parsed locally with Go 1.23 standard tools; exact staged blob SHAs were checked against formatted local new files. A complete checkout was unavailable locally, therefore **full-file gofmt, package compilation, targeted tests, race tests, and resource acceptance are not yet verified**. CI was not checked.
+
+**Required local acceptance before closing A2-B:**
+
+```bash
+git fetch origin test-next
+git switch test-next
+git pull --ff-only
+gofmt -w plugins/afk/afk.go plugins/afk/welcome_effect.go plugins/afk/module.go plugins/afk/afk_test.go plugins/afk/afk_effect_a2_test.go
+gofmt -l plugins/afk/afk.go plugins/afk/welcome_effect.go plugins/afk/module.go plugins/afk/afk_test.go plugins/afk/afk_effect_a2_test.go
+go test ./plugins/afk -run 'TestA2AFK|TestAFKPlugin|TestAFKWelcome'
+go test -race ./plugins/afk -run 'TestA2AFK|TestAFKPlugin|TestAFKWelcome'
+go test ./internal/telegram ./internal/plugin ./plugins/afk
+git diff --check
+```
+
+Additional acceptance still needed for managed runtime: inject a blocked Telegram/FloodWait welcome, confirm unrelated command begins after durable AFK-off and before welcome completes, and confirm actual TaskEngine cancellation on plugin disable/re-enable. Never claim final A2 closure based only on mock TaskClient tests.
