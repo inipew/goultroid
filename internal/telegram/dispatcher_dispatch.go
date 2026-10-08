@@ -57,7 +57,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 			reason = "trailing_escape"
 		}
 		d.logger.Warn("command parse syntax error", zap.String("reason", reason))
-		return nil
+		// Invalid command syntax must not bypass security or message observers.
+		// The message is plain text for routing; no command will be executed.
+		parsed, isCmd = nil, false
 	}
 	cmdName := ""
 	if isCmd {
