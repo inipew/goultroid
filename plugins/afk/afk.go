@@ -14,11 +14,13 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
+	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
 
 var (
 	_ plugin.MessageEventRegistrationsPlugin = (*Plugin)(nil)
+	_ plugin.PluginContextInitializer        = (*Plugin)(nil)
 	_ plugin.ContextInitializer              = (*Plugin)(nil)
 	_ plugin.ScopeInitializer                = (*Plugin)(nil)
 	_ execution.CapabilityProvider           = (*Plugin)(nil)
@@ -83,6 +85,8 @@ type Plugin struct {
 	cooldownMap        map[[2]int64]time.Time
 	cooldownDur        time.Duration
 	scope              *plugin.Scope
+	tasks              tasks.Client
+	effectSeq          atomic.Uint64
 	delivery           *savedresponse.ResponseDelivery
 }
 
@@ -464,7 +468,11 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 		}
 		p.Cleanup(0)
 		if message.IsPrivate() || !p.isWelcomePrivateOnly() {
-			p.sendWelcome(ctx, svc, message, dur)
+			if err := p.submitWelcomeEffect(ctx, message, dur); err != nil {
+				if logger := p.getLogger(); logger != nil {
+					logger.Warn("AFK welcome effect admission failed", zap.Error(err), zap.Int64("chat_id", message.ChatID))
+				}
+			}
 		}
 		return nil
 	}
@@ -535,7 +543,7 @@ func (p *Plugin) HandleMessageEvent(ctx context.Context, message *core.MessageEn
 	}
 	return nil
 }
-func (p *Plugin) sendWelcome(ctx context.Context, svc TelegramService, message *core.MessageEnvelope, dur string) {
+func (p *Plugin) sendWelcome(ctx context.Context, svc TelegramService, message *core.MessageEnvelope, dur string, scope *plugin.Scope) error {
 	peer := p.resolveEnvelopePeer(ctx, message)
 	if peer == nil {
 		if logger := p.getLogger(); logger != nil {
@@ -545,23 +553,27 @@ func (p *Plugin) sendWelcome(ctx context.Context, svc TelegramService, message *
 	}
 	sent, err := p.sendTemplate(ctx, svc, peer, afkWelcomeResponse, afkWelcomeTemplate, afkTemplateVars("", dur))
 	if err != nil {
-		if logger := p.getLogger(); logger != nil {
+		if logger := p.getLogger(); logger != nil && ctx.Err() == nil {
 			logger.Warn("failed to send welcome back message", zap.Error(err))
 		}
-	} else if sent != nil && sent.ID > 0 {
-		p.deleteWelcomeAfter(svc, peer, sent.ID)
+		return err
 	}
+	if sent != nil && sent.ID > 0 && ctx.Err() == nil {
+		p.deleteWelcomeAfterInScope(scope, svc, peer, sent.ID)
+	}
+	return nil
 }
-func (p *Plugin) deleteWelcomeAfter(svc TelegramService, peer tg.InputPeerClass, messageID int) {
-	delay := p.getWelcomeDeleteDelay()
-	if delay <= 0 || svc == nil || peer == nil || messageID <= 0 {
-		return
-	}
 
+func (p *Plugin) deleteWelcomeAfter(svc TelegramService, peer tg.InputPeerClass, messageID int) {
 	p.stateMu.RLock()
 	scope := p.scope
 	p.stateMu.RUnlock()
-	if scope == nil {
+	p.deleteWelcomeAfterInScope(scope, svc, peer, messageID)
+}
+
+func (p *Plugin) deleteWelcomeAfterInScope(scope *plugin.Scope, svc TelegramService, peer tg.InputPeerClass, messageID int) {
+	delay := p.getWelcomeDeleteDelay()
+	if delay <= 0 || svc == nil || peer == nil || messageID <= 0 || scope == nil {
 		return
 	}
 

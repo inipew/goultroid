@@ -163,6 +163,7 @@ func TestAFKPlugin(t *testing.T) {
 
 	repo := NewSQLiteRepository(db)
 	p := New(repo, ownerID, func() core.TelegramServicer { return svc })
+	p.SetTaskClient(&afkEffectTestClient{inline: true})
 	p.SetWelcomeDeleteDelay(10 * time.Millisecond)
 	if p.Name() != "afk" {
 		t.Errorf("expected name afk, got %s", p.Name())
@@ -453,6 +454,7 @@ func TestAFKPlugin_BotSentMessageDoesNotTurnOffAFK(t *testing.T) {
 	}
 	ownerID := int64(1001)
 	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
+	p.SetTaskClient(&afkEffectTestClient{inline: true})
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -513,6 +515,7 @@ func TestAFKPlugin_WelcomeAfterOutgoingGroupMessage(t *testing.T) {
 	svc := &mockService{}
 	ownerID := int64(1001)
 	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
+	p.SetTaskClient(&afkEffectTestClient{inline: true})
 	_ = p.Init()
 
 	ctx := context.Background()
@@ -551,6 +554,7 @@ func TestAFKPlugin_WelcomeInSavedMessagesWhenPrivatePeerCannotResolve(t *testing
 
 	svc := &mockService{}
 	p := New(NewSQLiteRepository(db), 1001, func() core.TelegramServicer { return svc })
+	p.SetTaskClient(&afkEffectTestClient{inline: true})
 	if err := p.enableAFK(context.Background(), "sleeping"); err != nil {
 		t.Fatal(err)
 	}
@@ -569,6 +573,7 @@ func TestAFKPlugin_WelcomeInSavedMessagesWhenPrivatePeerCannotResolve(t *testing
 func TestAFKPlugin_DefaultWelcomeRemainsVisible(t *testing.T) {
 	svc := &mockService{deleteCh: make(chan int, 1)}
 	p := New(nil, 1001, func() core.TelegramServicer { return svc })
+	p.SetTaskClient(&afkEffectTestClient{inline: true})
 	scope := plugin.NewScope(context.Background(), "plugin:afk")
 	if err := p.InitScope(scope.Context(), scope); err != nil {
 		t.Fatal(err)
@@ -596,46 +601,38 @@ func TestAFKPlugin_DefaultWelcomeRemainsVisible(t *testing.T) {
 	}
 }
 
-func TestAFKPlugin_OutgoingTransitionPreservesWelcomeOrder(t *testing.T) {
-	svc := &blockingWelcomeService{started: make(chan struct{}), release: make(chan struct{})}
-	p := New(nil, 1001, func() core.TelegramServicer { return svc })
-	scope := plugin.NewScope(context.Background(), "plugin:afk")
-	if err := p.InitScope(scope.Context(), scope); err != nil {
+func TestAFKPlugin_OutgoingTransitionPersistsBeforeWelcomeEffect(t *testing.T) {
+	db, err := database.Open(":memory:")
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		select {
-		case <-svc.release:
-		default:
-			close(svc.release)
-		}
-		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = scope.Close(closeCtx)
-	}()
+	defer db.Close()
+
+	svc := &mockService{}
+	repo := NewSQLiteRepository(db)
+	p := New(repo, 1001, func() core.TelegramServicer { return svc })
+	client := &afkEffectTestClient{}
+	p.SetTaskClient(client)
 	if err := p.enableAFK(context.Background(), "sleeping"); err != nil {
 		t.Fatal(err)
 	}
-	msg := &tg.Message{ID: 53, Out: true, Message: "P", PeerID: &tg.PeerUser{UserID: 2002}}
+	msg := &tg.Message{ID: 53, Out: true, Message: "manual", PeerID: &tg.PeerUser{UserID: 2002}}
 	entities := tg.Entities{Users: map[int64]*tg.User{2002: {ID: 2002, AccessHash: 111}}}
-	done := make(chan error, 1)
-	go func() { done <- handleMessageEvent(p, context.Background(), entities, msg, false, "") }()
-	select {
-	case <-svc.started:
-	case <-time.After(time.Second):
-		t.Fatal("welcome send did not start")
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("AFK update returned before welcome was sent: %v", err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	if st := p.state.Load(); st == nil || st.isAFK {
-		t.Fatalf("AFK should be inactive while welcome is being sent: %+v", st)
-	}
-	close(svc.release)
-	if err := <-done; err != nil {
+	if err := handleMessageEvent(p, context.Background(), entities, msg, false, ""); err != nil {
 		t.Fatal(err)
+	}
+	state, err := repo.GetAFK(context.Background(), 1001)
+	if err != nil || state == nil || state.IsAFK {
+		t.Fatalf("AFK must be durably inactive before queued welcome effect: state=%+v err=%v", state, err)
+	}
+	if count := len(client.snapshot()); count != 1 {
+		t.Fatalf("queued welcome effects=%d, want 1", count)
+	}
+	svc.mu.Lock()
+	sent := len(svc.sentMessages)
+	svc.mu.Unlock()
+	if sent != 0 {
+		t.Fatalf("welcome must not run synchronously with decision, sent=%d", sent)
 	}
 }
 
@@ -870,6 +867,7 @@ func TestAFKPlugin_ConcurrentOutgoingAtomicCAS(t *testing.T) {
 	svc := &mockService{}
 	ownerID := int64(1001)
 	p := New(NewSQLiteRepository(db), ownerID, func() core.TelegramServicer { return svc })
+	p.SetTaskClient(&afkEffectTestClient{inline: true})
 	p.SetWelcomePrivateOnly(false) // allow private welcome
 	_ = p.Init()
 
