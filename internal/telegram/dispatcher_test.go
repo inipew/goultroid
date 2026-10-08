@@ -796,10 +796,11 @@ func TestPeerStorage_SaveEntitiesBatch(t *testing.T) {
 
 type afkTestService struct {
 	core.MockTelegramServicer
-	mu           sync.Mutex
-	sentMessages []string
-	botSentIDs   map[int]bool
-	messages     map[int]*tg.Message
+	mu            sync.Mutex
+	sentMessages  []string
+	botSentIDs    map[int]bool
+	botSentPeerID int64
+	messages      map[int]*tg.Message
 }
 
 func (s *afkTestService) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
@@ -813,6 +814,18 @@ func (s *afkTestService) IsBotSent(msgID int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.botSentIDs[msgID]
+}
+
+// The dispatcher must classify automated messages by peer and message ID;
+// an ID-only mock would no longer model the Telegram transport contract.
+func (s *afkTestService) IsBotSentForPeer(peer tg.PeerClass, msgID int, selfID int64) bool {
+	user, ok := peer.(*tg.PeerUser)
+	if !ok || user == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return user.UserID == s.botSentPeerID && s.botSentIDs[msgID]
 }
 
 func (s *afkTestService) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
@@ -839,8 +852,9 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 	defer db.Close()
 
 	svc := &afkTestService{
-		botSentIDs: make(map[int]bool),
-		messages:   make(map[int]*tg.Message),
+		botSentIDs:    make(map[int]bool),
+		botSentPeerID: 2002,
+		messages:      make(map[int]*tg.Message),
 	}
 
 	dispatcher := NewDispatcher(router, perms, nil, logger)
@@ -984,16 +998,17 @@ func TestDispatcher_AFK_EndToEnd(t *testing.T) {
 		t.Fatalf("expected AFK to remain active after automated bot message, got: %+v", st)
 	}
 
-	// 5. Manual owner outgoing message in private chat -> auto-unAFK + Welcome Back!
+	// 5. A manual message to another peer may reuse automated message ID 10.
+	// It must still auto-unAFK and deliver Welcome Back to the correct chat.
 	manualUpdate := &tg.UpdateNewMessage{
 		Message: &tg.Message{
-			ID:      11,
+			ID:      10,
 			Out:     true,
 			Message: "I'm back!",
-			PeerID:  &tg.PeerUser{UserID: 2002},
+			PeerID:  &tg.PeerUser{UserID: 3003},
 		},
 	}
-	if err := dispatcher.OnNewMessage(ctx, dmEntities, manualUpdate); err != nil {
+	if err := dispatcher.OnNewMessage(ctx, sgEntities, manualUpdate); err != nil {
 		t.Fatalf("OnNewMessage manual unAFK failed: %v", err)
 	}
 	st, err = afkRepo.GetAFK(ctx, ownerID)
