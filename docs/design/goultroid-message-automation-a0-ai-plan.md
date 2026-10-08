@@ -98,3 +98,24 @@ Added commit `3e9068f1946756ac1c2151349b3447d3ee3c79f7` (`plugins/afk/afk_manage
 - **Acceptance remains pending:** the full module graph is not available in the local container and GitHub network access from the container is unavailable. Syntax formatting is verified, but compilation, runtime result, race result, and CI result are not claimed. CI was not checked.
 
 Run `go test ./plugins/afk -run '^TestA2BManagedWelcomeDoesNotDelayCommandsAndCancelsOnReload$' -count=1` and `go test -race ./plugins/afk -run '^TestA2B' -count=1` in an authoritative checkout, along with the previously recorded A2-A/A2-B gates. If a regression is found, **fix it and its tests before proceeding to A3**. Also verify that no stale generation can send after disable/re-enable.
+
+### A2-B local acceptance failure and corrective patch (2026-10-08)
+
+User ran:
+- `go test ./plugins/afk -run '^TestA2B' -count=1`
+- `go test -race ./plugins/afk -run '^TestA2B' -count=1`
+- `go test ./internal/telegram ./internal/plugin ./plugins/afk`
+
+Observed (before fix): managed welcome effect did not start; Telegram E2E plugin registration failed with `afk: initialize scoped TaskEngine client: task client not configured`.
+
+Source-root cause: `internal/taskengine/accounting.go:payloadSize` rejects arbitrary struct inputs. A2-B's `WorkSpec.Input = afkWelcomeEffect` was `ErrUnsupportedPayload` at real TaskEngine admission, silently logged by AFK and omitted from fake-client validation. Also the existing `configureDispatcherTasks` test helper did not give the shared engine to `plugin.Manager` after AFK adopted `PluginContext.TaskClient()`.
+
+Corrective source/test commit: `2d1e9cad4146765b0edec3fc8eb6bfc083fae2be`.
+- Encodes bounded immutable TaskEngine input as a string while retaining the small immutable effect snapshot for the handler closure.
+- Adjusts fake TaskClient regression to enforce compatible input.
+- Wires dispatcher test fixture's shared engine into Plugin Manager.
+- Removes the invalid synchronous-welcome assertion in Telegram end-to-end test; retains eventual-delivery expectation.
+- No new runtime, TaskEngine, queue, callback protocol, or retry layer. CI not inspected.
+- Local `gofmt` was run on both full AFK files and replacement Telegram fixture snippet; pre-commit Git blob hashes of both complete AFK files match the formatted copies.
+
+**Status remains A2-B acceptance PENDING** until full Go package/race tests pass on the authoritative checkout. Re-run the three exact user commands above, and report any remaining failures. Do not advance to A3 on an unverified test gate.
