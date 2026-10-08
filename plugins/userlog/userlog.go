@@ -213,12 +213,15 @@ func (p *Plugin) startWorkerLocked() error {
 		idleTimeout = defaultWorkerIdleTimeout
 	}
 	queue := p.queue
+	workerCtx := p.ctx
 	p.workerGeneration++
 	generation := p.workerGeneration
 	p.workerRunning = true
 	p.wg.Add(1)
-	if err := p.scope.Go(func(ctx context.Context) {
-		p.worker(ctx, queue, idleTimeout, generation)
+	if err := p.scope.Go(func(context.Context) {
+		// Use the UserLog child lifecycle context, not the parent scope
+		// context, so ShutdownContext can cancel the worker immediately.
+		p.worker(workerCtx, queue, idleTimeout, generation)
 	}); err != nil {
 		p.workerRunning = false
 		p.wg.Done()
