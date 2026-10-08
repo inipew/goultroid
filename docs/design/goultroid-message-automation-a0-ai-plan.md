@@ -1,6 +1,6 @@
 # Goultroid Message Automation — A0 Baseline and Incremental Recovery
 
-Status: **A3 ACCEPTANCE CLOSED (2026-10-08); A4 pending**. Historical A0 baseline remains recorded below.
+Status: **A4 ACCEPTANCE CLOSED (2026-10-08); A5 pending**. Historical A0–A3 records remain below.
 Branch: `test-next`
 Baseline GitHub HEAD: `3b62276798d5c638c99059fa2657f5b763345247` — `Revert "docs(design): add message hook execution model v2 plan"`
 Prior plan (historical, not current): `docs/design/goultroid-message-hook-execution-model-v2-ai-plan.md` at `a57130c3`.
@@ -255,7 +255,7 @@ The user executed the **entire A3-C acceptance matrix** after pulling through `6
 
 ## 11. A4 — Telegram Chat/Topic Context Integrity (2026-10-08)
 
-**Status: A4-A/B IMPLEMENTED; authoritative Go tests and race acceptance PENDING.** The verified A3 closure (§10) remains unchanged.
+**Historical A4-A/B implementation checkpoint:** tests and race acceptance were pending at the time. Subsequent user-run acceptance is recorded in §12. A3 remains CLOSED.
 
 ### A4-A — Canonical chat/sender/reply consistency
 
@@ -317,7 +317,7 @@ The user ran the A4 focused, package and race test commands against `cf8450ca208
 
 Corrective **test-only** commit: `36c9b4c40957377c6fb45e9108bf4a7e4710a49f`. It fixes the expected explicit sender ID, removes the unused import, and marks the two test groups as megagroups. Runtime guards, status transitions, TaskEngine, and RPC behavior are unchanged.
 
-**A4 remains acceptance PENDING.** New patch snippets were checked with local `gofmt` tooling; the user previously applied full-file `gofmt` to the repository before the test-only edits, but a fresh full-file formatting and Go test run for this new commit have **not** yet been observed. Do not claim the acceptance tests pass or that CI is green; CI was not checked.
+**Historical regression checkpoint:** A4 acceptance was still pending directly after the test-only correction. The user has since reported passing package and race tests, recorded in §12. CI was not checked.
 
 Next check in the user's full checkout:
 ```bash
@@ -334,3 +334,18 @@ git diff --check
 ```
 
 If any gate fails, fix production or test according to the actual contract, format changed Go files before committing, and do not advance to A5 until the A4 gate is met.
+
+## 12. A4 Acceptance CLOSED — User-run full package/race gate (2026-10-08)
+
+The user fast-forwarded `test-next` from `cf8450ca...` through the A4 test-only fix `36c9b4c40957377c6fb45e9108bf4a7e4710a49f` and plan update `345e3de942071cddee734371e65845522d691ccf`. All reported checks passed:
+
+- `gofmt -w internal/telegram/context_integrity_a4_test.go plugins/userlog/chat_context_a4_test.go plugins/afk/afk_test.go` was run. The command produced no error. No separate `gofmt -l` output was provided on this final gate; do not claim a clean working tree solely from `git diff --check`.
+- `go test ./internal/telegram ./internal/core ./internal/plugin ./plugins/afk ./plugins/userlog ./plugins/pmpermit ./plugins/filters ./plugins/blacklist`: **PASS in all eight packages**. The full package runs include the A4 tests.
+- `go test -race ./internal/telegram ./plugins/afk ./plugins/userlog ./plugins/pmpermit`: **PASS in all four packages**, including A4 routing and plugin regressions.
+- `git diff --check`: no errors were reported.
+
+**A4 acceptance is CLOSED within the tested scope.** The previous failures (wrong expectation for explicit sender ID, unused userlog test import, and mislabeled AFK megagroup fixtures) have been corrected and revalidated by the user's complete package tests. The A4 implementation keeps channel vs megagroup classification conservative, denies mismatched private sender updates before dispatch, retains cross-peer reply facts, and fences AFK/userlog/PMPermit automation by chat and sender identity.
+
+**Not included in this closure:** repository-wide `go test ./...` or `go test -race ./...`, live Telegram multi-chat testing, or CI inspection. Do not present those as verified. The A7 resource/restart acceptance still owns high-cardinality production-like workloads and settling metrics.
+
+**Next phase: A5 — owner-bound a2 management UX and contextual group moderation.** Before modifying code, refresh HEAD and inspect canonical a2 interaction/authority/presentation contracts and existing management surfaces, then implement only concrete missing routes without inventing a second callback stack. Always `gofmt` changed Go source/tests before commit, update focused regressions, keep idle and retained state bounded, and do not inspect/poll CI unless explicitly requested.
