@@ -179,17 +179,48 @@ func TestA7C2FourFeatureDurableRestartAndScopedCallbackPressure(t *testing.T) {
 		if err != nil || result.Session.Scope != scopes2[proof.feature] {
 			t.Fatalf("old callback not restored to correct generation for %s: %+v %v", proof.feature, result, err)
 		}
+		// a2 intentionally omits FeatureID from Telegram callback bytes:
+		// the opaque session ID is the sole authoritative feature owner.
+		// Supplying another feature ID to the encoder cannot redirect
+		// dispatch or change the session's restored plugin generation.
+		if result.Session.FeatureID != proof.feature || result.Token.FeatureID != proof.feature {
+			t.Fatalf("callback owner mismatch for %s: %+v", proof.feature, result)
+		}
 		for _, other := range specs {
 			if other.ID == proof.feature {
 				continue
 			}
-			forged, err := rootinteraction.EncodeCallbackToken(other.ID, proof.action, proof.session, result.Session.Revision)
+			sameWire, err := rootinteraction.EncodeCallbackToken(other.ID, proof.action, proof.session, result.Session.Revision)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := second.ResolveCallback(ctx, forged, proof.binding); err == nil {
-				t.Fatalf("cross-feature token %s -> %s accepted", proof.feature, other.ID)
+			if string(sameWire) != string(proof.token) {
+				t.Fatalf("a2 unexpectedly encoded feature identity for %s -> %s", proof.feature, other.ID)
 			}
+			restored, err := second.ResolveCallback(ctx, sameWire, proof.binding)
+			if err != nil || restored.Session.FeatureID != proof.feature ||
+				restored.Token.FeatureID != proof.feature || restored.Session.Scope != scopes2[proof.feature] {
+				t.Fatalf("a2 session identity crossed from %s to %s: %+v %v", proof.feature, other.ID, restored, err)
+			}
+		}
+		// A syntactically valid action absent from the session owner's
+		// declaration must fail even when the session ID/revision is valid.
+		unknownAction, err := rootinteraction.EncodeCallbackToken(proof.feature, "a7_undeclared_action", proof.session, result.Session.Revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := second.ResolveCallback(ctx, unknownAction, proof.binding); !errors.Is(err, rootinteraction.ErrActionNotFound) {
+			t.Fatalf("undeclared action for %s resolved: %v", proof.feature, err)
+		}
+		wrongActor := proof.binding
+		wrongActor.ActorID++
+		if _, err := second.ResolveCallback(ctx, proof.token, wrongActor); !errors.Is(err, rootinteraction.ErrBindingMismatch) {
+			t.Fatalf("cross-actor callback for %s resolved: %v", proof.feature, err)
+		}
+		wrongTarget := proof.binding
+		wrongTarget.MessageID++
+		if _, err := second.ResolveCallback(ctx, proof.token, wrongTarget); !errors.Is(err, rootinteraction.ErrBindingMismatch) {
+			t.Fatalf("cross-target callback for %s resolved: %v", proof.feature, err)
 		}
 	}
 	canceled := second.CancelScope(scopes2["blacklist"])
