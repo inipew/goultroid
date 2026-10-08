@@ -145,7 +145,8 @@ func TestPMPermitPlugin(t *testing.T) {
 		Ctx:     context.Background(),
 		Svc:     mockTG,
 		PeerID:  &tg.InputPeerUser{UserID: 88888},
-		Message: &core.Message{ID: 1, IsOutgoing: true},
+		Sender:  &core.User{ID: 12345},
+		Message: &core.Message{ID: 1, SenderID: 12345, IsOutgoing: true},
 		Args:    []string{"off"},
 	}
 	if err := cmds[5].Handler(toggleCtx); err != nil {

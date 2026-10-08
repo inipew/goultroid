@@ -1,7 +1,6 @@
 package afk
 
 import (
-	"context"
 	"fmt"
 	"html"
 	"sync"
