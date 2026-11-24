@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/execution"
@@ -30,6 +31,7 @@ const (
 	schedulerClaimLease               = 3 * time.Minute
 	misfireThreshold                  = time.Minute
 	schedulerSettlementSafetyInterval = 30 * time.Second
+	blockedOccurrenceReason           = "job occurrence blocked: external effect unknown; manual reconciliation required"
 )
 
 // trackedClaim follows one claimed row until its occurrence settles durably.
@@ -46,7 +48,8 @@ type Engine struct {
 	access privilegedChecker
 	// Prevent startup recovery from treating an in-flight registration as an
 	// abandoned prepared schedule in this Engine instance.
-	registrationMu sync.Mutex
+	registrationMu   sync.Mutex
+	claimOperationMu sync.Mutex
 
 	tasks   tasks.Client
 	jobsMgr *jobs.Manager
@@ -61,8 +64,19 @@ type Engine struct {
 	claimZero   chan struct{}
 	quiescing   bool
 
-	claimsMu sync.Mutex
-	claims   map[int64]*trackedClaim
+	claimsMu                 sync.Mutex
+	claims                   map[int64]*trackedClaim
+	reconcilePasses          atomic.Uint64
+	completedReconcilePasses atomic.Uint64
+	claimsInspected          atomic.Uint64
+	scheduledReads           atomic.Uint64
+	occurrenceReads          atomic.Uint64
+	reconcileNanos           atomic.Uint64
+	notificationWakes        atomic.Uint64
+	dueTimerWakes            atomic.Uint64
+	safetyTimerWakes         atomic.Uint64
+	retryTimerWakes          atomic.Uint64
+	immediatePasses          atomic.Uint64
 
 	periodic *periodicCoordinator
 
@@ -92,6 +106,39 @@ type PeriodicTaskSnapshot struct {
 	Failures  int64
 	LastRunAt time.Time
 	LastError string
+}
+
+// Diagnostics reports cumulative reconciliation work and current legacy claims.
+type Diagnostics struct {
+	ActiveLegacyClaims       int
+	ReconcilePasses          uint64
+	CompletedReconcilePasses uint64
+	ClaimsInspected          uint64
+	ScheduledReads           uint64
+	OccurrenceReads          uint64
+	ReconcileDuration        time.Duration
+	NotificationWakes        uint64
+	DueTimerWakes            uint64
+	SafetyTimerWakes         uint64
+	RetryTimerWakes          uint64
+	ImmediatePasses          uint64
+}
+
+func (e *Engine) Diagnostics() Diagnostics {
+	return Diagnostics{
+		ActiveLegacyClaims:       e.trackedClaimCount(),
+		ReconcilePasses:          e.reconcilePasses.Load(),
+		CompletedReconcilePasses: e.completedReconcilePasses.Load(),
+		ClaimsInspected:          e.claimsInspected.Load(),
+		ScheduledReads:           e.scheduledReads.Load(),
+		OccurrenceReads:          e.occurrenceReads.Load(),
+		ReconcileDuration:        time.Duration(e.reconcileNanos.Load()),
+		NotificationWakes:        e.notificationWakes.Load(),
+		DueTimerWakes:            e.dueTimerWakes.Load(),
+		SafetyTimerWakes:         e.safetyTimerWakes.Load(),
+		RetryTimerWakes:          e.retryTimerWakes.Load(),
+		ImmediatePasses:          e.immediatePasses.Load(),
+	}
 }
 
 // PeriodicTaskOptions controls timeout and retry behavior for one periodic task execution.
@@ -609,28 +656,64 @@ func (e *Engine) Cancel(ctx context.Context, jobID int64) error {
 	if jobID <= 0 {
 		return errors.New("invalid scheduled job ID")
 	}
-	if err := e.db.DeleteScheduledJob(ctx, jobID); err != nil {
-		return err
+	e.claimOperationMu.Lock()
+	defer e.claimOperationMu.Unlock()
+	row, err := e.db.GetScheduledJob(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("read scheduled job before cancellation: %w", err)
 	}
 	if e.jobsMgr != nil {
 		if err := e.jobsMgr.DisableSchedule(ctx, redesignedScheduleID(jobID)); err != nil {
 			return fmt.Errorf("disable redesigned schedule: %w", err)
 		}
 	}
+	// Close the scheduler-owned execution scope before cancelling occurrences.
+	// If durable cancellation fails, a retry cannot start another wrapper.
 	if e.tasks != nil {
 		e.tasks.CancelScope(tasks.ScopeIdentity{Owner: scheduledTaskScope(jobID), Generation: 1}, tasks.CauseUserCancel)
 	}
+	if e.jobsMgr != nil {
+		if err := e.jobsMgr.CancelScheduleOccurrences(ctx, redesignedScheduleID(jobID), "scheduled job cancelled"); err != nil {
+			return fmt.Errorf("cancel redesigned occurrences: %w", err)
+		}
+	}
 	e.claimsMu.Lock()
-	claim, tracked := e.claims[jobID]
-	if tracked {
+	claim := e.claims[jobID]
+	e.claimsMu.Unlock()
+	var occurrenceID string
+	var occurrenceBlocked bool
+	if row != nil && e.jobsMgr != nil {
+		key := fmt.Sprintf("sched:%d:%d", jobID, row.NextRunAt.UTC().UnixNano())
+		occ, lookupErr := e.jobsMgr.OccurrenceByKey(ctx, key)
+		if lookupErr != nil && !errors.Is(lookupErr, jobs.ErrOccurrenceNotFound) {
+			return fmt.Errorf("find legacy scheduled occurrence: %w", lookupErr)
+		}
+		if occ != nil {
+			occurrenceID = occ.ID
+			occurrenceBlocked = occ.State == jobs.OccurrenceBlocked
+		}
+	}
+	if occurrenceID == "" && claim != nil {
+		occurrenceID = claim.occurrenceID
+	}
+	if occurrenceID != "" && e.jobsMgr != nil {
+		if !occurrenceBlocked {
+			cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := e.jobsMgr.CancelOccurrence(cctx, occurrenceID, "scheduled job cancelled")
+			cancel()
+			if err != nil {
+				return fmt.Errorf("cancel legacy occurrence: %w", err)
+			}
+		}
+	}
+	if err := e.db.DeleteScheduledJob(ctx, jobID); err != nil {
+		return err
+	}
+	e.claimsMu.Lock()
+	if current := e.claims[jobID]; claim != nil && current != nil && current.claimToken == claim.claimToken {
 		delete(e.claims, jobID)
 	}
 	e.claimsMu.Unlock()
-	if tracked && e.jobsMgr != nil {
-		cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		_ = e.jobsMgr.CancelOccurrence(cctx, claim.occurrenceID, "scheduled job cancelled")
-	}
 	e.notifyWake()
 	return nil
 }
@@ -665,6 +748,7 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 		now := time.Now()
 		var nextDelay time.Duration
 		var hasDeadline bool
+		wakeKind := "due"
 		e.reconcileSettledClaims(ctx)
 		if ctx.Err() != nil {
 			return
@@ -692,6 +776,7 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 			e.logger.Error("failed to query earliest due scheduled job", zap.Error(err))
 			nextDelay = time.Second
 			hasDeadline = true
+			wakeKind = "retry"
 		} else if found {
 			hasDeadline = true
 			if earliest.Before(now) || earliest.Equal(now) {
@@ -711,7 +796,9 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 			if claimed == 0 {
 				nextDelay = 250 * time.Millisecond
 				hasDeadline = true
+				wakeKind = "retry"
 			} else {
+				e.immediatePasses.Add(1)
 				select {
 				case <-ctx.Done():
 					return
@@ -726,6 +813,7 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 		if e.trackedClaimCount() > 0 && (!hasDeadline || nextDelay > schedulerSettlementSafetyInterval) {
 			nextDelay = schedulerSettlementSafetyInterval
 			hasDeadline = true
+			wakeKind = "safety"
 		}
 
 		if !hasDeadline {
@@ -733,6 +821,7 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 			case <-ctx.Done():
 				return
 			case <-e.wakeChan:
+				e.notificationWakes.Add(1)
 				continue
 			}
 		}
@@ -752,7 +841,16 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 		case <-ctx.Done():
 			return
 		case <-e.wakeChan:
+			e.notificationWakes.Add(1)
 		case <-timer.C:
+			switch wakeKind {
+			case "safety":
+				e.safetyTimerWakes.Add(1)
+			case "retry":
+				e.retryTimerWakes.Add(1)
+			default:
+				e.dueTimerWakes.Add(1)
+			}
 		}
 	}
 }
@@ -774,6 +872,8 @@ func (e *Engine) processRedesignedSchedules(ctx context.Context, now time.Time) 
 }
 
 func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
+	e.claimOperationMu.Lock()
+	defer e.claimOperationMu.Unlock()
 	if !e.beginClaimBatch() {
 		return 0
 	}
@@ -799,9 +899,26 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 
 	for _, job := range claimedJobs {
 		j := job
-		// Misfire is a WHEN policy. Resolve it before materializing any
-		// JobOccurrence/JobAttempt so a skipped slot consumes no execution budget.
+		occurrenceKey := fmt.Sprintf("sched:%d:%d", j.ID, j.NextRunAt.UTC().UnixNano())
 		if e.shouldSkipMisfire(j) {
+			// A previous process may have materialized this due slot before
+			// losing its durable result. Misfire handling must not advance it.
+			if existing, lookupErr := e.jobsMgr.OccurrenceByKey(ctx, occurrenceKey); lookupErr != nil && !errors.Is(lookupErr, jobs.ErrOccurrenceNotFound) {
+				e.onSubmitRejected(ctx, j, occurrenceKey, lookupErr)
+				continue
+			} else if existing != nil {
+				quarantined, quarantineErr := e.occurrenceNeedsUnknownEffectQuarantine(ctx, existing)
+				if quarantineErr != nil {
+					e.onSubmitRejected(ctx, j, occurrenceKey, quarantineErr)
+					continue
+				}
+				if quarantined {
+					e.failBlockedScheduledJob(ctx, j.ID, j.ClaimToken)
+					continue
+				}
+			}
+			// Misfire is a WHEN policy. Resolve it before materializing any
+			// JobOccurrence/JobAttempt so a skipped slot consumes no budget.
 			e.logger.Warn("recurring scheduled job misfired: skipping execution", zap.Int64("job_id", j.ID), zap.Time("next_run_at", j.NextRunAt))
 			stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			cerr := e.db.CompleteScheduledJob(stateCtx, j.ID, j.ClaimToken, 0, time.Now().UTC())
@@ -813,7 +930,6 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 			continue
 		}
 
-		occurrenceKey := fmt.Sprintf("sched:%d:%d", j.ID, j.NextRunAt.UTC().UnixNano())
 		definitionID := scheduledDefinitionID(j.ID)
 		if j.ActionType == ActionJob {
 			definitionID = strings.TrimSpace(j.Payload)
@@ -861,22 +977,37 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 	}
 	stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if occ, oerr := e.jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey); oerr == nil && occ != nil {
-		switch occ.State {
-		case jobs.OccurrenceReady, jobs.OccurrenceDispatched:
-			if rerr := e.db.RenewJobLease(stateCtx, job.ID, job.ClaimToken, schedulerClaimLease, time.Now().UTC()); rerr != nil && !errors.Is(rerr, ErrJobLeaseLost) {
-				e.logger.Error("failed to renew lease for live scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(rerr))
-			} else {
+	occ, oerr := e.jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey)
+	if oerr != nil && !errors.Is(oerr, jobs.ErrOccurrenceNotFound) {
+		// The canonical occurrence may already represent an external effect. Keep
+		// this legacy slot claimed until its state can be read; retrying by moving
+		// NextRunAt could create a second logical occurrence.
+		e.retainLegacyClaim(stateCtx, job, definitionID, "")
+		e.logger.Error("failed to inspect scheduled occurrence after admission rejection", zap.Int64("job_id", job.ID), zap.Error(oerr))
+		return
+	}
+	if occ != nil {
+		quarantined, quarantineErr := e.occurrenceNeedsUnknownEffectQuarantine(stateCtx, occ)
+		if quarantineErr != nil {
+			e.retainLegacyClaim(stateCtx, job, definitionID, occ.ID)
+			e.logger.Error("failed to read unknown-effect review", zap.Int64("job_id", job.ID), zap.Error(quarantineErr))
+			return
+		} else if quarantined {
+			e.failBlockedScheduledJob(stateCtx, job.ID, job.ClaimToken)
+			return
+		} else {
+			switch occ.State {
+			case jobs.OccurrenceReady, jobs.OccurrenceDispatched:
+				e.retainLegacyClaim(stateCtx, job, definitionID, occ.ID)
+				return
+			case jobs.OccurrenceCompleted, jobs.OccurrenceFailed, jobs.OccurrenceCancelled:
+				// Admission may fail after canonical materialization and then settle
+				// quickly (e.g. aborted-before-start + automatic recovery). Track the
+				// canonical terminal occurrence so row reconciliation records the real
+				// outcome instead of releasing the slot and creating another logical run.
 				e.trackClaim(job.ID, job.ClaimToken, definitionID, occ.ID)
+				return
 			}
-			return
-		case jobs.OccurrenceCompleted, jobs.OccurrenceFailed, jobs.OccurrenceCancelled:
-			// Admission may fail after canonical materialization and then settle
-			// quickly (e.g. aborted-before-start + automatic recovery). Track the
-			// canonical terminal occurrence so row reconciliation records the real
-			// outcome instead of releasing the slot and creating another logical run.
-			e.trackClaim(job.ID, job.ClaimToken, definitionID, occ.ID)
-			return
 		}
 	}
 	e.logger.Error("failed to admit scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(submitErr))
@@ -884,6 +1015,36 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 	if failErr := e.db.FailScheduledJob(stateCtx, job.ID, job.ClaimToken, submitErr.Error(), 0, retryDelay, permanent, time.Now().UTC()); failErr != nil && !errors.Is(failErr, ErrJobLeaseLost) {
 		e.logger.Error("failed to release rejected scheduled claim", zap.Int64("job_id", job.ID), zap.Error(failErr))
 	}
+}
+
+func (e *Engine) retainLegacyClaim(ctx context.Context, job ScheduledJob, definitionID, occurrenceID string) {
+	if err := e.db.RenewJobLease(ctx, job.ID, job.ClaimToken, schedulerClaimLease, time.Now().UTC()); err != nil {
+		if !errors.Is(err, ErrJobLeaseLost) {
+			e.logger.Error("failed to renew lease for unresolved scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(err))
+		}
+		return
+	}
+	if occurrenceID != "" {
+		e.trackClaim(job.ID, job.ClaimToken, definitionID, occurrenceID)
+	}
+}
+
+func (e *Engine) occurrenceNeedsUnknownEffectQuarantine(ctx context.Context, occ *jobs.JobOccurrence) (bool, error) {
+	if occ == nil {
+		return false, nil
+	}
+	if occ.State == jobs.OccurrenceBlocked {
+		return true, nil
+	}
+	return e.jobsMgr.WasBlockedOccurrence(ctx, occ.ID)
+}
+
+func (e *Engine) failBlockedScheduledJob(ctx context.Context, jobID int64, claimToken string) bool {
+	if err := e.db.FailScheduledJob(ctx, jobID, claimToken, blockedOccurrenceReason, 0, 0, true, time.Now().UTC()); err != nil && !errors.Is(err, ErrJobLeaseLost) {
+		e.logger.Error("failed to quarantine blocked scheduled job", zap.Int64("job_id", jobID), zap.Error(err))
+		return false
+	}
+	return true
 }
 
 func (e *Engine) trackClaim(jobID int64, claimToken, definitionID, occurrenceID string) {
@@ -908,6 +1069,12 @@ func (e *Engine) trackedClaimCount() int {
 }
 
 func (e *Engine) reconcileSettledClaims(ctx context.Context) {
+	started := time.Now()
+	e.reconcilePasses.Add(1)
+	defer func() {
+		e.reconcileNanos.Add(uint64(time.Since(started)))
+		e.completedReconcilePasses.Add(1)
+	}()
 	e.claimsMu.Lock()
 	pending := make([]*trackedClaim, 0, len(e.claims))
 	for _, c := range e.claims {
@@ -918,6 +1085,7 @@ func (e *Engine) reconcileSettledClaims(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		e.claimsInspected.Add(1)
 		e.reconcileClaim(ctx, c)
 	}
 }
@@ -926,6 +1094,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 	stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	row, err := e.db.GetScheduledJob(stateCtx, c.jobID)
+	e.scheduledReads.Add(1)
 	if err != nil {
 		e.logger.Warn("failed to read scheduled job during claim reconciliation", zap.Int64("job_id", c.jobID), zap.Error(err))
 		return
@@ -939,7 +1108,20 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 		return
 	}
 	occ, err := e.jobsMgr.GetOccurrence(stateCtx, c.occurrenceID)
+	e.occurrenceReads.Add(1)
 	if err != nil || occ == nil {
+		return
+	}
+	quarantined, err := e.occurrenceNeedsUnknownEffectQuarantine(stateCtx, occ)
+	if err != nil {
+		e.logger.Warn("failed to read unknown-effect review during claim reconciliation", zap.Int64("job_id", c.jobID), zap.Error(err))
+		return
+	}
+	if quarantined {
+		if e.failBlockedScheduledJob(stateCtx, c.jobID, c.claimToken) {
+			e.untrackClaim(c.jobID)
+			e.notifyWake()
+		}
 		return
 	}
 	now := time.Now().UTC()

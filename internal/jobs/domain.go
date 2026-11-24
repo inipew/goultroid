@@ -1,10 +1,13 @@
 package jobs
 
 import (
+	"errors"
 	"time"
 
 	"github.com/inipew/goultroid/internal/tasks"
 )
+
+var ErrOccurrenceNotFound = errors.New("job occurrence not found")
 
 // OverlapPolicy controls what happens when a new occurrence is due while a previous occurrence is still active.
 type OverlapPolicy string
@@ -136,6 +139,7 @@ type AttemptSummary struct {
 // so application diagnostics cannot grow with workload cardinality.
 type DurableDiagnostics struct {
 	DeferredOccurrences int
+	BlockedOccurrences  int
 	RetainedDeferrals   int
 	EarliestDeferredAt  time.Time
 }

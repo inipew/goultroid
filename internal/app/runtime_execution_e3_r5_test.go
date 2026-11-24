@@ -59,6 +59,7 @@ type runtimeExecutionR5Metrics struct {
 	childWaiting     int
 	queueDelays      []time.Duration
 	attemptLatencies []time.Duration
+	independentDelay time.Duration
 }
 
 type runtimeExecutionR5MeasuringClient struct {
@@ -142,7 +143,7 @@ func runtimeExecutionR5Percentile(samples []time.Duration, percentile float64) t
 	return ordered[index]
 }
 
-func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCount int) (runtimeExecutionR5Metrics, error) {
+func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCount int, hold time.Duration) (runtimeExecutionR5Metrics, error) {
 	if wrapperCount <= 0 {
 		return runtimeExecutionR5Metrics{}, fmt.Errorf("wrapper count must be positive")
 	}
@@ -270,6 +271,33 @@ func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCou
 		)
 	}
 
+	var independentTicket tasks.Ticket
+	var independentSubmitted time.Time
+	if hold > 0 {
+		independentSubmitted = time.Now()
+		independentTicket, err = engine.Submit(ctx, tasks.WorkSpec{
+			ID: "r5-independent-scheduler-work", QuotaOwner: "r5:independent",
+			Pool: "scheduler", Class: tasks.PriorityMaintenance,
+			Handler: func(context.Context) error { return nil },
+		})
+		if err != nil {
+			return runtimeExecutionR5Metrics{}, fmt.Errorf("submit independent work: %w", err)
+		}
+		timer := time.NewTimer(hold)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return runtimeExecutionR5Metrics{}, ctx.Err()
+		}
+		stats, statsErr := engine.Stats(ctx)
+		if statsErr != nil {
+			return runtimeExecutionR5Metrics{}, fmt.Errorf("sustained contention stats: %w", statsErr)
+		}
+		if stats.Pools["scheduler"].Running != wrapperCount || stats.Pools["scheduler"].Waiting == 0 {
+			return runtimeExecutionR5Metrics{}, fmt.Errorf("scheduler occupancy did not persist during %s hold", hold)
+		}
+	}
 	releaseBlocker()
 	if _, err := blockerTicket.Wait(ctx); err != nil {
 		return runtimeExecutionR5Metrics{}, fmt.Errorf("wait blocker: %w", err)
@@ -286,6 +314,16 @@ func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCou
 		metrics.attemptLatencies = append(metrics.attemptLatencies, result.FinishedAt.Sub(wrapperSubmitted[i]))
 	}
 	metrics.queueDelays = measuringClient.queueDelaySnapshot()
+	if independentTicket != nil {
+		result, waitErr := independentTicket.Wait(ctx)
+		if waitErr != nil {
+			return runtimeExecutionR5Metrics{}, fmt.Errorf("wait independent work: %w", waitErr)
+		}
+		if result.StartedAt.IsZero() {
+			return runtimeExecutionR5Metrics{}, fmt.Errorf("independent work never started")
+		}
+		metrics.independentDelay = result.StartedAt.Sub(independentSubmitted)
+	}
 	if len(metrics.queueDelays) != wrapperCount {
 		return runtimeExecutionR5Metrics{}, fmt.Errorf("recorded child queue delays = %d, want %d", len(metrics.queueDelays), wrapperCount)
 	}
@@ -295,7 +333,7 @@ func measureRuntimeExecutionR5ResourceContention(ctx context.Context, wrapperCou
 func TestRuntimeExecutionE3_ResourceScheduledCommandOccupiesSchedulerPoolWhileChildQueued(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	metrics, err := measureRuntimeExecutionR5ResourceContention(ctx, 4)
+	metrics, err := measureRuntimeExecutionR5ResourceContention(ctx, 4, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,6 +353,36 @@ func TestRuntimeExecutionE3_ResourceScheduledCommandOccupiesSchedulerPoolWhileCh
 	)
 }
 
+func TestRuntimeExecutionE3_SustainedContentionDelaysIndependentSchedulerWork(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	metrics, err := measureRuntimeExecutionR5ResourceContention(ctx, 4, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metrics.independentDelay < 1900*time.Millisecond {
+		t.Fatalf("independent scheduler work started after %s, want sustained worker hold", metrics.independentDelay)
+	}
+	t.Logf("R5 sustained hold=2s independent_start=%s child_queue_p95=%s wrapper_p95=%s",
+		metrics.independentDelay,
+		runtimeExecutionR5Percentile(metrics.queueDelays, 0.95),
+		runtimeExecutionR5Percentile(metrics.attemptLatencies, 0.95))
+}
+
+func BenchmarkRuntimeExecutionE3_SustainedSchedulerContention(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		metrics, err := measureRuntimeExecutionR5ResourceContention(ctx, 4, 30*time.Second)
+		cancel()
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ReportMetric(float64(metrics.independentDelay.Nanoseconds()), "independent_start_ns/op")
+		b.ReportMetric(float64(runtimeExecutionR5Percentile(metrics.queueDelays, 0.95).Nanoseconds()), "child_queue_p95_ns/op")
+		b.ReportMetric(float64(runtimeExecutionR5Percentile(metrics.attemptLatencies, 0.95).Nanoseconds()), "wrapper_p95_ns/op")
+	}
+}
+
 func BenchmarkRuntimeExecutionE3_ResourceScheduledCommandContention(b *testing.B) {
 	var schedulerRunning float64
 	var childWaiting float64
@@ -323,7 +391,7 @@ func BenchmarkRuntimeExecutionE3_ResourceScheduledCommandContention(b *testing.B
 	var attemptP95 time.Duration
 	for i := 0; i < b.N; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		metrics, err := measureRuntimeExecutionR5ResourceContention(ctx, 4)
+		metrics, err := measureRuntimeExecutionR5ResourceContention(ctx, 4, 0)
 		cancel()
 		if err != nil {
 			b.Fatal(err)

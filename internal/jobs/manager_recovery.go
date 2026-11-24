@@ -180,10 +180,6 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 			report.Stale++
 			continue
 		}
-		if !found || !def.Enabled || handler == nil {
-			report.Orphaned++
-			continue
-		}
 		summary := candidate.Summary
 		if summary == nil {
 			var err error
@@ -199,9 +195,24 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		}
 		latest := &summary.Latest
 		switch latest.State {
+		case AttemptLeased, AttemptRunning:
+			if !latest.LeaseUntil.After(time.Now().UTC()) && m.stores.ExpiredAttempts != nil {
+				blocked, err := m.stores.ExpiredAttempts.BlockExpiredAttempt(ctx, occ.ID, latest.ID, latest.LeaseEpoch, time.Now().UTC())
+				if err == nil && blocked {
+					m.untrackOrWakeTimingOccurrence(occ)
+					report.Blocked++
+					continue
+				}
+			}
+			report.Stale++
+			continue
 		case AttemptCompleted, AttemptFailed, AttemptTimedOut, AttemptCancelled, AttemptAbortedBeforeStart, AttemptDeferred:
 		default:
 			report.Stale++
+			continue
+		}
+		if !found || !def.Enabled || handler == nil {
+			report.Orphaned++
 			continue
 		}
 		if latest.State != AttemptDeferred {

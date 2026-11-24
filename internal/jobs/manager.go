@@ -36,26 +36,28 @@ type Manager struct {
 	accepting      bool
 	started        bool
 
-	retryQueue       chan retryItem
-	retryMu          sync.Mutex
-	retryRemaining   atomic.Int64
-	retryQueued      atomic.Int64
-	retryActive      atomic.Int64
-	retryStopping    bool
-	retryIdleTimeout time.Duration
-	recoveryWake     chan struct{}
-	outboxWake       chan struct{}
-	outboxSink       OutboxSink
-	scheduleWake     func()
-	stopCh           chan struct{}
-	stopOnce         sync.Once
-	baseCtx          context.Context
-	baseCancel       context.CancelFunc
-	wg               sync.WaitGroup
-	workersRemaining atomic.Int64
-	doneOnce         sync.Once
-	done             chan struct{}
-	tracked          map[string]*trackedOccurrence
+	retryQueue        chan retryItem
+	retryMu           sync.Mutex
+	retryRemaining    atomic.Int64
+	retryQueued       atomic.Int64
+	retryActive       atomic.Int64
+	retryStopping     bool
+	retryIdleTimeout  time.Duration
+	recoveryWake      chan struct{}
+	outboxWake        chan struct{}
+	outboxSink        OutboxSink
+	scheduleWake      func()
+	stopCh            chan struct{}
+	stopOnce          sync.Once
+	baseCtx           context.Context
+	baseCancel        context.CancelFunc
+	wg                sync.WaitGroup
+	workersRemaining  atomic.Int64
+	doneOnce          sync.Once
+	done              chan struct{}
+	tracked           map[string]*trackedOccurrence
+	occurrenceGatesMu sync.Mutex
+	occurrenceGates   map[string]*occurrenceGate
 }
 
 // retryItem watches one submitted attempt for retry/recovery decisions.
@@ -93,6 +95,7 @@ type RecoverReport struct {
 	Scanned   int
 	Redriven  int
 	Finalized int
+	Blocked   int
 	Stale     int
 	Orphaned  int
 }
@@ -108,6 +111,7 @@ type Diagnostics struct {
 	Handlers            int
 	Accepting           bool
 	DeferredOccurrences int
+	BlockedOccurrences  int
 	RetainedDeferrals   int
 	EarliestDeferredAt  time.Time
 	DurableSnapshotOK   bool
@@ -522,8 +526,28 @@ func (m *Manager) CancelByOwner(owner string) int {
 	return cancelled
 }
 
+// CancelScheduleOccurrences closes work already materialized by a disabled schedule.
+func (m *Manager) CancelScheduleOccurrences(ctx context.Context, scheduleID, reason string) error {
+	store := m.stores.ScheduleOccurrences
+	if store == nil {
+		return errors.New("schedule occurrence store is not configured")
+	}
+	ids, err := store.ListActiveScheduleOccurrences(ctx, scheduleID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := m.CancelOccurrence(ctx, id, reason); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CancelOccurrence durably cancels one occurrence and requests cancellation of its latest task.
 func (m *Manager) CancelOccurrence(ctx context.Context, occurrenceID, reason string) error {
+	unlock := m.lockOccurrence(occurrenceID)
+	defer unlock()
 	m.mu.RLock()
 	var taskID tasks.TaskID
 	if tr, ok := m.tracked[occurrenceID]; ok {
@@ -638,6 +662,8 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 	// Materialization is idempotent on occurrence_key and rewrites occurrence.ID
 	// to the canonical identity when this logical run already exists.
 	occurrenceID = tasks.OccurrenceID(occurrence.ID)
+	unlock := m.lockOccurrence(occurrence.ID)
+	defer unlock()
 	attempt, err := m.prepareNextAttemptLease(ctx, occurrence.ID, leaseDurationFor(definition))
 	if err != nil {
 		return nil, "", fmt.Errorf("prepare job attempt: %w", err)
@@ -754,10 +780,46 @@ func (m *Manager) Diagnostics() Diagnostics {
 		cancel()
 		if err == nil {
 			diagnostics.DeferredOccurrences = snapshot.DeferredOccurrences
+			diagnostics.BlockedOccurrences = snapshot.BlockedOccurrences
 			diagnostics.RetainedDeferrals = snapshot.RetainedDeferrals
 			diagnostics.EarliestDeferredAt = snapshot.EarliestDeferredAt
 			diagnostics.DurableSnapshotOK = true
 		}
 	}
 	return diagnostics
+}
+
+// ListBlockedOccurrences returns a bounded operator review page. Reading this
+// list never admits or replays the underlying external work.
+func (m *Manager) ListBlockedOccurrences(ctx context.Context, limit int) ([]JobOccurrence, error) {
+	store := m.stores.BlockedOccurrences
+	if store == nil {
+		return nil, errors.New("blocked occurrence store is not configured")
+	}
+	return store.ListBlockedOccurrences(ctx, limit)
+}
+
+// ResolveBlockedOccurrence records an operator's external-effect decision.
+// It never submits another physical attempt.
+func (m *Manager) ResolveBlockedOccurrence(ctx context.Context, occurrenceID string, state OccurrenceState, reason string) error {
+	store := m.stores.BlockedOccurrences
+	if store == nil {
+		return errors.New("blocked occurrence store is not configured")
+	}
+	if err := store.ResolveBlockedOccurrence(ctx, occurrenceID, state, reason); err != nil {
+		return err
+	}
+	m.signalOutbox()
+	m.signalSchedule()
+	return nil
+}
+
+// WasBlockedOccurrence identifies a reviewed unknown-effect occurrence even
+// after its current state has become completed, failed, or cancelled.
+func (m *Manager) WasBlockedOccurrence(ctx context.Context, occurrenceID string) (bool, error) {
+	store := m.stores.BlockedOccurrences
+	if store == nil {
+		return false, nil
+	}
+	return store.WasBlockedOccurrence(ctx, occurrenceID)
 }

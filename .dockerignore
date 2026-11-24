@@ -1,0 +1,16 @@
+.git
+.github
+*.zip
+*.tar.gz
+*.log
+coverage.out
+cmd/
+internal/
+plugins/
+tools/
+docs/
+analisa/
+.agents/
+.codex/
+codex-session-*.md
+test_*.log

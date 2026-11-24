@@ -165,6 +165,8 @@ func leaseDurationFor(def JobDefinition) time.Duration {
 
 // driveAttempt prepares the next attempt lease and submits its task, then re-arms the monitor.
 func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler, timingOwned bool) error {
+	unlock := m.lockOccurrence(occurrenceID)
+	defer unlock()
 	attempt, err := m.prepareNextAttemptLease(ctx, occurrenceID, leaseDurationFor(def))
 	if err != nil {
 		return err

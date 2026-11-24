@@ -49,6 +49,11 @@ type ScheduleStore interface {
 	CutoverActive(context.Context) (bool, error)
 }
 
+// ScheduleOccurrenceStore finds durable work already materialized from one schedule.
+type ScheduleOccurrenceStore interface {
+	ListActiveScheduleOccurrences(context.Context, string) ([]string, error)
+}
+
 // OutboxStore is the durable outbox boundary used by the coordinator.
 type OutboxStore interface {
 	ListPendingOutbox(context.Context, int) ([]OutboxEvent, error)
@@ -80,6 +85,19 @@ type RecoveryCandidateStore interface {
 	ListRecoveryCandidates(context.Context, int) ([]RecoveryCandidate, error)
 }
 
+// ExpiredAttemptStore quarantines an unresolved attempt whose external effect
+// cannot be safely replayed after its lease expires.
+type ExpiredAttemptStore interface {
+	BlockExpiredAttempt(context.Context, string, string, uint64, time.Time) (bool, error)
+}
+
+// BlockedOccurrenceStore lists work that needs an explicit external-effect decision.
+type BlockedOccurrenceStore interface {
+	ListBlockedOccurrences(context.Context, int) ([]JobOccurrence, error)
+	ResolveBlockedOccurrence(context.Context, string, OccurrenceState, string) error
+	WasBlockedOccurrence(context.Context, string) (bool, error)
+}
+
 // DefinitionLoaderStore loads durable definitions during Manager startup.
 type DefinitionLoaderStore interface {
 	ListDefinitions(context.Context) ([]JobDefinition, error)
@@ -89,18 +107,21 @@ type DefinitionLoaderStore interface {
 // production SQLite store may implement every field; focused tests can provide
 // only the ports exercised by the responsibility under test.
 type StorePorts struct {
-	Definitions        DefinitionStore
-	Occurrences        OccurrenceStore
-	Attempts           AttemptStore
-	Recovery           RecoveryStore
-	Schedules          ScheduleStore
-	Outbox             OutboxStore
-	DeferredDeadlines  DeferredDeadlineStore
-	Diagnostics        DurableDiagnosticsStore
-	AttemptSummaries   AttemptSummaryStore
-	NextAttemptLeases  NextAttemptLeaseStore
-	RecoveryCandidates RecoveryCandidateStore
-	DefinitionLoader   DefinitionLoaderStore
+	Definitions         DefinitionStore
+	Occurrences         OccurrenceStore
+	Attempts            AttemptStore
+	Recovery            RecoveryStore
+	Schedules           ScheduleStore
+	ScheduleOccurrences ScheduleOccurrenceStore
+	Outbox              OutboxStore
+	DeferredDeadlines   DeferredDeadlineStore
+	Diagnostics         DurableDiagnosticsStore
+	AttemptSummaries    AttemptSummaryStore
+	NextAttemptLeases   NextAttemptLeaseStore
+	RecoveryCandidates  RecoveryCandidateStore
+	ExpiredAttempts     ExpiredAttemptStore
+	BlockedOccurrences  BlockedOccurrenceStore
+	DefinitionLoader    DefinitionLoaderStore
 }
 
 func (p StorePorts) coreReady() bool {

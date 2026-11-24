@@ -135,6 +135,21 @@ type executionLifecycleRepository struct {
 	deleted     []int64
 }
 
+type failingLegacyCancelStore struct {
+	jobs.OccurrenceStore
+	err error
+}
+
+func (s failingLegacyCancelStore) CancelOccurrence(context.Context, string, string) error {
+	return s.err
+}
+
+type emptyScheduleOccurrences struct{}
+
+func (emptyScheduleOccurrences) ListActiveScheduleOccurrences(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
 func (r *executionLifecycleRepository) CreateScheduledJob(_ context.Context, job *ScheduledJob) (*ScheduledJob, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -142,6 +157,10 @@ func (r *executionLifecycleRepository) CreateScheduledJob(_ context.Context, job
 	copy := *job
 	copy.ID = r.nextID
 	return &copy, nil
+}
+
+func (r *executionLifecycleRepository) GetScheduledJob(context.Context, int64) (*ScheduledJob, error) {
+	return nil, nil
 }
 
 func (r *executionLifecycleRepository) ActivateScheduledJob(ctx context.Context, id int64) error {
@@ -203,6 +222,47 @@ func TestRuntimeExecutionE0_RegisterFailureDeletesInitializingRow(t *testing.T) 
 	}
 	if _, ok := schedules.schedule(redesignedScheduleID(1)); ok {
 		t.Fatal("schedule persisted despite definition registration failure")
+	}
+}
+
+func TestCancelKeepsCompatibilityRowWhenScheduleDisableFails(t *testing.T) {
+	definitions := newExecutionLifecycleDefinitionStore()
+	schedules := newExecutionLifecycleScheduleStore()
+	repo := &executionLifecycleRepository{}
+	engine, _ := newExecutionLifecycleEngine(t, repo, definitions, schedules)
+	job, err := engine.ScheduleOnce(context.Background(), 1, "chat", 0, time.Now().Add(time.Hour), ActionMessage, "later")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schedules.disableErr = errors.New("schedule store unavailable")
+	if err := engine.Cancel(context.Background(), job.ID); !errors.Is(err, schedules.disableErr) {
+		t.Fatalf("cancel error = %v, want disable failure", err)
+	}
+	if len(repo.deleted) != 0 {
+		t.Fatalf("compatibility row deleted before schedule disable: %+v", repo.deleted)
+	}
+}
+
+func TestCancelKeepsLegacyClaimWhenDurableOccurrenceCancelFails(t *testing.T) {
+	repo := &executionLifecycleRepository{}
+	schedules := newExecutionLifecycleScheduleStore()
+	cancelErr := errors.New("occurrence store unavailable")
+	manager := jobs.NewManagerWithPorts(nil, jobs.StorePorts{
+		Schedules: schedules, Occurrences: failingLegacyCancelStore{err: cancelErr},
+		ScheduleOccurrences: emptyScheduleOccurrences{},
+	}, nil)
+	engine := NewEngine(repo, nil)
+	engine.SetJobsManager(manager)
+	engine.trackClaim(1, "claim-1", "definition-1", "occ-1")
+
+	if err := engine.Cancel(context.Background(), 1); !errors.Is(err, cancelErr) {
+		t.Fatalf("cancel error = %v, want durable occurrence cancellation failure", err)
+	}
+	if len(repo.deleted) != 0 {
+		t.Fatalf("compatibility row deleted before durable cancellation: %+v", repo.deleted)
+	}
+	if got := engine.trackedClaimCount(); got != 1 {
+		t.Fatalf("tracked claims = %d, want retryable legacy claim", got)
 	}
 }
 

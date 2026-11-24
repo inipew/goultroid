@@ -9,18 +9,21 @@ func Ports(store *Store) jobs.StorePorts {
 		return jobs.StorePorts{}
 	}
 	return jobs.StorePorts{
-		Definitions:        store,
-		Occurrences:        store,
-		Attempts:           store,
-		Recovery:           store,
-		Schedules:          store,
-		Outbox:             store,
-		DeferredDeadlines:  store,
-		Diagnostics:        store,
-		AttemptSummaries:   store,
-		NextAttemptLeases:  store,
-		RecoveryCandidates: store,
-		DefinitionLoader:   store,
+		Definitions:         store,
+		Occurrences:         store,
+		Attempts:            store,
+		Recovery:            store,
+		Schedules:           store,
+		ScheduleOccurrences: store,
+		Outbox:              store,
+		DeferredDeadlines:   store,
+		Diagnostics:         store,
+		AttemptSummaries:    store,
+		NextAttemptLeases:   store,
+		RecoveryCandidates:  store,
+		ExpiredAttempts:     store,
+		BlockedOccurrences:  store,
+		DefinitionLoader:    store,
 	}
 }
 
@@ -31,17 +34,20 @@ func ResourcePorts(store *ResourceStore) jobs.StorePorts {
 		return jobs.StorePorts{}
 	}
 	return jobs.StorePorts{
-		Definitions:        store,
-		Occurrences:        store,
-		Attempts:           store,
-		Recovery:           store,
-		Schedules:          store,
-		Outbox:             store,
-		DeferredDeadlines:  store,
-		Diagnostics:        store,
-		AttemptSummaries:   store,
-		NextAttemptLeases:  store,
-		RecoveryCandidates: store,
-		DefinitionLoader:   store,
+		Definitions:         store,
+		Occurrences:         store,
+		Attempts:            store,
+		Recovery:            store,
+		Schedules:           store,
+		ScheduleOccurrences: store,
+		Outbox:              store,
+		DeferredDeadlines:   store,
+		Diagnostics:         store,
+		AttemptSummaries:    store,
+		NextAttemptLeases:   store,
+		RecoveryCandidates:  store,
+		ExpiredAttempts:     store,
+		BlockedOccurrences:  store,
+		DefinitionLoader:    store,
 	}
 }

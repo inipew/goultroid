@@ -1,30 +1,36 @@
-# Stage 1: Build binary
-# Keep this aligned with go.mod and CI: Go 1.27 is the supported toolchain.
-FROM golang:1.27-alpine AS builder
-
-WORKDIR /app
-
-# Download dependencies
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy source code
-COPY . .
-
-# Build statically linked binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o bin/goultroid ./cmd/goultroid
-
-# Stage 2: Minimal runtime
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates tzdata
+# Install seluruh dependencies runtime untuk Alpine:
+# - ca-certificates: koneksi TLS/HTTPS Telegram API & layanan eksternal
+# - tzdata: zona waktu
+# - ffmpeg (menyediakan ffmpeg & ffprobe): pemrosesan audio/video/stiker
+# - tesseract-ocr (+ data ind): OCR extraction
+# - git: fitur pembaruan sistem (.update / gitupdate)
+# - curl & python3: runtime untuk yt-dlp
+RUN apk add --no-cache \
+    ca-certificates \
+    tzdata \
+    ffmpeg \
+    tesseract-ocr \
+    tesseract-ocr-data-ind \
+    git \
+    curl \
+    python3 \
+    && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp
 
 WORKDIR /app
 
-COPY --from=builder /app/bin/goultroid .
+# Salin binary goultroid statis dan konfigurasi .env (jika ada)
+COPY goultroid ./goultroid
+COPY .env* ./
 
-RUN mkdir -p data && chmod 700 data
+# Pastikan permission executable dan direktori data aman
+RUN chmod +x /app/goultroid && \
+    mkdir -p /app/data && \
+    chmod 700 /app/data
 
+# Mount point untuk data persisten (session, database goultroid.db, cache, storage)
 VOLUME ["/app/data"]
 
 ENTRYPOINT ["./goultroid"]

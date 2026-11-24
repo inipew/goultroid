@@ -16,7 +16,7 @@ import (
 var (
 	ErrDefinitionNotFound = errors.New("job definition not found")
 	ErrScheduleNotFound   = errors.New("job schedule not found")
-	ErrOccurrenceNotFound = errors.New("job occurrence not found")
+	ErrOccurrenceNotFound = jobs.ErrOccurrenceNotFound
 	ErrAttemptNotFound    = errors.New("job attempt not found")
 	ErrLeaseFencingLost   = errors.New("lease fencing lost or stale epoch")
 	ErrOccurrenceNotReady = errors.New("occurrence is not in ready state")
@@ -459,6 +459,112 @@ func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jo
 	return out, rows.Err()
 }
 
+// ListBlockedOccurrences returns a bounded page of unknown-effect work for
+// operator review. Blocked occurrences are excluded from automatic recovery.
+func (s *Store) ListBlockedOccurrences(ctx context.Context, limit int) ([]jobs.JobOccurrence, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state,
+		       ready_at, cancel_epoch, revision
+		FROM job_occurrences WHERE state = 'blocked'
+		ORDER BY updated_at ASC, id ASC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list blocked job occurrences: %w", err)
+	}
+	defer rows.Close()
+	out := make([]jobs.JobOccurrence, 0, limit)
+	for rows.Next() {
+		var occ jobs.JobOccurrence
+		var scheduleID sql.NullString
+		var state string
+		if err := rows.Scan(&occ.ID, &occ.JobID, &scheduleID, &occ.ScheduledFor,
+			&occ.OccurrenceKey, &state, &occ.ReadyAt, &occ.CancelEpoch, &occ.Revision); err != nil {
+			return nil, fmt.Errorf("scan blocked job occurrence: %w", err)
+		}
+		occ.ScheduleID = scheduleID.String
+		occ.State = jobs.OccurrenceState(state)
+		out = append(out, occ)
+	}
+	return out, rows.Err()
+}
+
+// ResolveBlockedOccurrence records an explicit review decision without
+// creating another attempt. The outbox row retains the review reason.
+func (s *Store) ResolveBlockedOccurrence(ctx context.Context, occurrenceID string, state jobs.OccurrenceState, reason string) error {
+	if state != jobs.OccurrenceCompleted && state != jobs.OccurrenceFailed && state != jobs.OccurrenceCancelled {
+		return errors.New("blocked occurrence resolution must be completed, failed, or cancelled")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return errors.New("blocked occurrence resolution requires a reason")
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin blocked occurrence resolution: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences SET revision = revision WHERE id = ?`, occurrenceID); err != nil {
+		return fmt.Errorf("acquire blocked resolution writer intent: %w", err)
+	}
+	var current string
+	if err := tx.QueryRowContext(ctx, `SELECT state FROM job_occurrences WHERE id = ?`, occurrenceID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrOccurrenceNotFound
+		}
+		return err
+	}
+	if current == string(state) {
+		var reviewed int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM job_outbox WHERE event_id = ? AND kind = 'occurrence_resolved'`, "outbox:resolve:"+occurrenceID).Scan(&reviewed); err != nil {
+			return err
+		}
+		if reviewed != 1 {
+			return fmt.Errorf("%w: occurrence %s was not manually resolved", ErrLeaseFencingLost, occurrenceID)
+		}
+		return tx.Commit()
+	}
+	if current != string(jobs.OccurrenceBlocked) {
+		return fmt.Errorf("%w: occurrence %s is %s", ErrLeaseFencingLost, occurrenceID, current)
+	}
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE job_occurrences
+		SET state = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND state = 'blocked'`, string(state), now, occurrenceID); err != nil {
+		return fmt.Errorf("update blocked occurrence resolution: %w", err)
+	}
+	payload, err := json.Marshal(struct {
+		OccurrenceID string `json:"occurrence_id"`
+		State        string `json:"state"`
+		Reason       string `json:"reason"`
+	}{OccurrenceID: occurrenceID, State: string(state), Reason: reason})
+	if err != nil {
+		return fmt.Errorf("encode blocked occurrence resolution: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO job_outbox
+		(event_id, occurrence_id, kind, payload, committed_at, delivery_state)
+		VALUES (?, ?, 'occurrence_resolved', ?, ?, 'pending')`,
+		"outbox:resolve:"+occurrenceID, occurrenceID, payload, now); err != nil {
+		return fmt.Errorf("record blocked occurrence resolution: %w", err)
+	}
+	return tx.Commit()
+}
+
+// WasBlockedOccurrence checks the immutable manual-review event, which remains
+// after the occurrence has left the blocked state.
+func (s *Store) WasBlockedOccurrence(ctx context.Context, occurrenceID string) (bool, error) {
+	var reviewed int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM job_outbox
+		WHERE event_id = ? AND kind = 'occurrence_resolved'`, "outbox:resolve:"+occurrenceID).Scan(&reviewed); err != nil {
+		return false, fmt.Errorf("read blocked occurrence review: %w", err)
+	}
+	return reviewed == 1, nil
+}
+
 // ListRecoveryCandidates collapses the unresolved-occurrence page, latest
 // attempt lookup, and retry/deferral counts into one query. This removes the
 // recovery N+1 query pattern while preserving immutable attempt history.
@@ -552,6 +658,35 @@ func (s *Store) ListRecoveryCandidates(ctx context.Context, limit int) ([]jobs.R
 		return nil, fmt.Errorf("iterate job recovery candidates: %w", err)
 	}
 	return out, nil
+}
+
+// BlockExpiredAttempt atomically fences a nonterminal attempt whose external
+// effect is unknown. The latest-attempt condition prevents an older recovery
+// snapshot from blocking a newer attempt or a result committed concurrently.
+func (s *Store) BlockExpiredAttempt(ctx context.Context, occurrenceID, attemptID string, leaseEpoch uint64, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE job_occurrences
+		SET state = 'blocked', cancel_epoch = cancel_epoch + 1,
+		    revision = revision + 1, updated_at = ?
+		WHERE id = ? AND state = 'dispatched'
+		  AND EXISTS (
+			SELECT 1 FROM job_attempts a
+			WHERE a.id = ? AND a.occurrence_id = job_occurrences.id
+			  AND a.lease_epoch = ? AND a.state IN ('leased', 'running')
+			  AND a.lease_until <= ?
+			  AND a.attempt_no = (
+				SELECT MAX(latest.attempt_no) FROM job_attempts latest
+				WHERE latest.occurrence_id = job_occurrences.id
+			  )
+		  )`, now.UTC(), occurrenceID, attemptID, leaseEpoch, now.UTC())
+	if err != nil {
+		return false, fmt.Errorf("block expired job attempt: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("block expired job attempt rows affected: %w", err)
+	}
+	return affected == 1, nil
 }
 
 // DeleteTerminalOccurrences removes terminal occurrences of one job older
@@ -1187,10 +1322,12 @@ func (s *Store) DurableDiagnostics(ctx context.Context, now time.Time) (jobs.Dur
 		SELECT
 			(SELECT COUNT(*) FROM job_occurrences WHERE state = 'dispatched' AND ready_at > ?),
 			(SELECT COUNT(*) FROM job_attempts WHERE state = 'deferred'),
+			(SELECT COUNT(*) FROM job_occurrences WHERE state = 'blocked'),
 			(SELECT MIN(ready_at) FROM job_occurrences WHERE state = 'dispatched' AND ready_at > ?)
 	`, now.UTC(), now.UTC()).Scan(
 		&snapshot.DeferredOccurrences,
 		&snapshot.RetainedDeferrals,
+		&snapshot.BlockedOccurrences,
 		&rawEarliest,
 	)
 	if err != nil {
@@ -1304,7 +1441,7 @@ func (s *Store) MaterializeDueSchedule(ctx context.Context, scheduleID string, n
 	// Overlap check
 	if jobs.OverlapPolicy(overlap) == jobs.OverlapForbid {
 		var activeCount int
-		checkActive := `SELECT COUNT(*) FROM job_occurrences WHERE job_id = ? AND state IN ('ready', 'dispatched');`
+		checkActive := `SELECT COUNT(*) FROM job_occurrences WHERE job_id = ? AND state IN ('ready', 'dispatched', 'blocked');`
 		if err := tx.QueryRowContext(ctx, checkActive, jobID).Scan(&activeCount); err != nil {
 			return nil, err
 		}
@@ -1360,6 +1497,24 @@ func (s *Store) MaterializeDueSchedule(ctx context.Context, scheduleID string, n
 	}, nil
 }
 
+// ListActiveScheduleOccurrences finds work a disabled schedule has already created.
+func (s *Store) ListActiveScheduleOccurrences(ctx context.Context, scheduleID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM job_occurrences WHERE schedule_id = ? AND state IN ('ready', 'dispatched')`, scheduleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // CancelOccurrence cancels a job occurrence, bumps its cancel epoch to fence in-flight attempts,
 // and records an outbox event (ADR 0006 §7.2).
 func (s *Store) CancelOccurrence(ctx context.Context, occurrenceID string, reason string) error {
@@ -1384,6 +1539,9 @@ func (s *Store) CancelOccurrence(ctx context.Context, occurrenceID string, reaso
 
 	if state == string(jobs.OccurrenceCompleted) || state == string(jobs.OccurrenceFailed) || state == string(jobs.OccurrenceCancelled) {
 		return nil // Already terminal
+	}
+	if state == string(jobs.OccurrenceBlocked) {
+		return fmt.Errorf("%w: blocked occurrence %s requires manual resolution", ErrLeaseFencingLost, occurrenceID)
 	}
 
 	now := time.Now().UTC()

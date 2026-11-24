@@ -12,6 +12,7 @@ var (
 	_ jobs.AttemptStore            = (*Store)(nil)
 	_ jobs.RecoveryStore           = (*Store)(nil)
 	_ jobs.ScheduleStore           = (*Store)(nil)
+	_ jobs.ScheduleOccurrenceStore = (*Store)(nil)
 	_ jobs.OutboxStore             = (*Store)(nil)
 	_ jobs.DeferredDeadlineStore   = (*Store)(nil)
 	_ jobs.DurableDiagnosticsStore = (*Store)(nil)
@@ -25,6 +26,7 @@ var (
 	_ jobs.AttemptStore            = (*ResourceStore)(nil)
 	_ jobs.RecoveryStore           = (*ResourceStore)(nil)
 	_ jobs.ScheduleStore           = (*ResourceStore)(nil)
+	_ jobs.ScheduleOccurrenceStore = (*ResourceStore)(nil)
 	_ jobs.OutboxStore             = (*ResourceStore)(nil)
 	_ jobs.DeferredDeadlineStore   = (*ResourceStore)(nil)
 	_ jobs.DurableDiagnosticsStore = (*ResourceStore)(nil)
@@ -39,7 +41,7 @@ func TestSQLitePortsPreserveOptionalCapabilities(t *testing.T) {
 	if ports.Definitions == nil || ports.Occurrences == nil || ports.Attempts == nil || ports.Recovery == nil {
 		t.Fatal("core SQLite store ports were not populated")
 	}
-	if ports.Schedules == nil || ports.Outbox == nil || ports.DeferredDeadlines == nil ||
+	if ports.Schedules == nil || ports.ScheduleOccurrences == nil || ports.Outbox == nil || ports.DeferredDeadlines == nil ||
 		ports.Diagnostics == nil || ports.AttemptSummaries == nil || ports.NextAttemptLeases == nil ||
 		ports.RecoveryCandidates == nil || ports.DefinitionLoader == nil {
 		t.Fatalf("optional SQLite store ports were not preserved: %+v", ports)
@@ -47,7 +49,7 @@ func TestSQLitePortsPreserveOptionalCapabilities(t *testing.T) {
 
 	resourcePorts := ResourcePorts(NewResourceStore(nil))
 	if resourcePorts.Definitions == nil || resourcePorts.DefinitionLoader == nil ||
-		resourcePorts.Schedules == nil || resourcePorts.Outbox == nil {
+		resourcePorts.Schedules == nil || resourcePorts.ScheduleOccurrences == nil || resourcePorts.Outbox == nil {
 		t.Fatalf("resource SQLite ports were not preserved: %+v", resourcePorts)
 	}
 }

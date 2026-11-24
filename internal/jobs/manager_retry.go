@@ -217,6 +217,15 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 		m.untrack(item.occurrenceID)
 		return
 	}
+	if res.Cause == tasks.CauseShutdown &&
+		(summary.Latest.State == AttemptLeased || summary.Latest.State == AttemptRunning) {
+		// ForceStop may resolve the ticket while the handler's external effect is
+		// still unknown and no durable result was committed. Leave the attempt
+		// for lease-expiry quarantine rather than finalizing it as cancelled.
+		m.untrack(item.occurrenceID)
+		m.signalRecovery()
+		return
+	}
 
 	semantics := res.Semantics()
 	if !semantics.ShouldRetry() && !semantics.IsSuccess() {

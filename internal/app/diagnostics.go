@@ -9,6 +9,7 @@ import (
 	"github.com/inipew/goultroid/internal/jobs"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/scheduler"
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
@@ -33,6 +34,7 @@ type DiagnosticsSnapshot struct {
 	Media                media.DiagnosticsSnapshot
 	Process              processSvc.DiagnosticsSnapshot
 	Jobs                 jobs.Diagnostics
+	Scheduler            scheduler.Diagnostics
 	PersistencePanics    uint64
 	PersistencePump      jobs.PersistencePumpStats
 	LifecycleCallbacks   runtime.CallbackExecutorStats
@@ -120,6 +122,7 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 		snapshot.Commands = CommandDiagnostics{Capacity: commands.Capacity, Active: commands.Active, Total: commands.Total}
 	}
 	if a.sched != nil {
+		snapshot.Scheduler = a.sched.Diagnostics()
 		for _, task := range a.sched.PeriodicTaskSnapshots() {
 			snapshot.PeriodicTasks = append(snapshot.PeriodicTasks, PeriodicTaskDiagnostics{
 				Owner: task.Owner, Name: task.Name, Runs: task.Runs,

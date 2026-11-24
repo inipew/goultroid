@@ -46,12 +46,13 @@ func (s *captureSvc) count() int {
 }
 
 type timingHarness struct {
-	sched *Engine
-	repo  *SQLiteRepository
-	svc   *captureSvc
-	jobs  *jobs.Manager
-	store *jobsqlite.Store
-	jobDB *sql.DB
+	sched  *Engine
+	repo   *SQLiteRepository
+	svc    *captureSvc
+	jobs   *jobs.Manager
+	store  *jobsqlite.Store
+	jobDB  *sql.DB
+	engine *taskengine.Engine
 }
 
 func newTimingHarness(t *testing.T) *timingHarness {
@@ -123,7 +124,7 @@ func newTimingHarness(t *testing.T) *timingHarness {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sched.Stop(context.Background()) })
-	return &timingHarness{sched: sched, repo: repo, svc: svc, jobs: jobsMgr, store: store, jobDB: jobDB.DB}
+	return &timingHarness{sched: sched, repo: repo, svc: svc, jobs: jobsMgr, store: store, jobDB: jobDB.DB, engine: engine}
 }
 
 func TestEngineStartRequiresExecutionDependencies(t *testing.T) {
