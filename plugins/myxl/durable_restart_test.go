@@ -125,11 +125,11 @@ func d4MyXLCallbackData(t *testing.T, svc *mockTgService, label string) []byte {
 	}
 	for _, row := range inline.Rows {
 		for _, button := range row.Buttons {
-			callbackButton, ok := button.(*tg.KeyboardButtonCallback)
+			callbackButton, ok := button.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
-			if strings.Contains(callbackButton.Text, label) {
+			if strings.Contains(button.Text, label) {
 				return append([]byte(nil), callbackButton.Data...)
 			}
 		}

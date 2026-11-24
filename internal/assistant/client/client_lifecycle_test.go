@@ -142,3 +142,14 @@ func TestAssistantClientQuiesceHonorsCanceledContext(t *testing.T) {
 		t.Fatal("canceled Quiesce unexpectedly changed admission state")
 	}
 }
+
+func TestAssistantClientSetDC(t *testing.T) {
+	c := NewAssistantClient(1234, "hash", "test-token", zap.NewNop())
+	if c.dc != 0 {
+		t.Fatalf("expected default dc 0, got %d", c.dc)
+	}
+	c.SetDC(5)
+	if c.dc != 5 {
+		t.Fatalf("expected dc 5, got %d", c.dc)
+	}
+}

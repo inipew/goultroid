@@ -268,9 +268,10 @@ func TestEngine_TypedFeatureActionsCompileToA2AndClaimInlineTarget(t *testing.T)
 	if !ok || len(markup.Rows) != 1 || len(markup.Rows[0].Buttons) != 1 {
 		t.Fatalf("compiled markup = %#v", message.ReplyMarkup)
 	}
-	button, ok := markup.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
+	btn := markup.Rows[0].Buttons[0]
+	button, ok := btn.Type.(*tg.InlineButtonTypeCallback)
 	if !ok {
-		t.Fatalf("compiled button type = %T", markup.Rows[0].Buttons[0])
+		t.Fatalf("compiled button type = %T", btn.Type)
 	}
 	token, err := rootinteraction.ParseCallbackToken(button.Data)
 	if err != nil {

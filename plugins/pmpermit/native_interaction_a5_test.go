@@ -104,7 +104,7 @@ func TestA5NativePMPermitA2OwnerMutationAndStaleCallback(t *testing.T) {
 	var data []byte
 	for _, row := range markup.Rows {
 		for _, btn := range row.Buttons {
-			callback, ok := btn.(*tg.KeyboardButtonCallback)
+			callback, ok := btn.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
@@ -114,7 +114,7 @@ func TestA5NativePMPermitA2OwnerMutationAndStaleCallback(t *testing.T) {
 			if _, err := rootinteraction.ParseCallbackToken(callback.Data); err != nil {
 				t.Fatalf("malformed a2 callback: %v", err)
 			}
-			if strings.Contains(callback.Text, "Disable") {
+			if strings.Contains(btn.Text, "Disable") {
 				data = append([]byte(nil), callback.Data...)
 			}
 		}

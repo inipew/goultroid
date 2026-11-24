@@ -70,14 +70,14 @@ func a5BlacklistCallback(t *testing.T, markup tg.ReplyMarkupClass, label string)
 	}
 	for _, row := range rows.Rows {
 		for _, button := range row.Buttons {
-			cb, ok := button.(*tg.KeyboardButtonCallback)
+			cb, ok := button.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
 			if !rootinteraction.OwnsCallbackData(cb.Data) {
 				t.Fatalf("non-a2 callback: %q", cb.Data)
 			}
-			if strings.Contains(cb.Text, label) {
+			if strings.Contains(button.Text, label) {
 				return append([]byte(nil), cb.Data...)
 			}
 		}

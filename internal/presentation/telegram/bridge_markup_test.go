@@ -26,17 +26,25 @@ func TestEncodeMarkupCompilesTypedPresentationButtons(t *testing.T) {
 	if len(inline.Rows[0].Buttons) != 3 || len(inline.Rows[1].Buttons) != 1 {
 		t.Fatalf("rows=%+v", inline.Rows)
 	}
-	if button, ok := inline.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback); !ok || button.Text != "Next" || string(button.Data) != "a2:next" {
-		t.Fatalf("callback button=%T %+v", inline.Rows[0].Buttons[0], inline.Rows[0].Buttons[0])
+	btn0 := inline.Rows[0].Buttons[0]
+	cb0, ok := btn0.Type.(*tg.InlineButtonTypeCallback)
+	if !ok || btn0.Text != "Next" || string(cb0.Data) != "a2:next" {
+		t.Fatalf("callback button=%T %+v", btn0, btn0)
 	}
-	if button, ok := inline.Rows[0].Buttons[1].(*tg.KeyboardButtonURL); !ok || button.Text != "Docs" || button.URL != "https://example.com/docs" {
-		t.Fatalf("url button=%T %+v", inline.Rows[0].Buttons[1], inline.Rows[0].Buttons[1])
+	btn1 := inline.Rows[0].Buttons[1]
+	url1, ok := btn1.Type.(*tg.InlineButtonTypeURL)
+	if !ok || btn1.Text != "Docs" || url1.URL != "https://example.com/docs" {
+		t.Fatalf("url button=%T %+v", btn1, btn1)
 	}
-	if button, ok := inline.Rows[0].Buttons[2].(*tg.KeyboardButtonSwitchInline); !ok || button.Text != "Search" || button.Query != "help " || button.SamePeer {
-		t.Fatalf("switch-inline button=%T %+v", inline.Rows[0].Buttons[2], inline.Rows[0].Buttons[2])
+	btn2 := inline.Rows[0].Buttons[2]
+	sw2, ok := btn2.Type.(*tg.InlineButtonTypeSwitchInline)
+	if !ok || btn2.Text != "Search" || sw2.Query != "help " || sw2.SamePeer {
+		t.Fatalf("switch-inline button=%T %+v", btn2, btn2)
 	}
-	if button, ok := inline.Rows[1].Buttons[0].(*tg.KeyboardButtonSwitchInline); !ok || button.Text != "Search here" || button.Query != "help current" || !button.SamePeer {
-		t.Fatalf("same-peer switch-inline button=%T %+v", inline.Rows[1].Buttons[0], inline.Rows[1].Buttons[0])
+	btnRow1 := inline.Rows[1].Buttons[0]
+	swRow1, ok := btnRow1.Type.(*tg.InlineButtonTypeSwitchInline)
+	if !ok || btnRow1.Text != "Search here" || swRow1.Query != "help current" || !swRow1.SamePeer {
+		t.Fatalf("same-peer switch-inline button=%T %+v", btnRow1, btnRow1)
 	}
 }
 
@@ -65,16 +73,17 @@ func TestEncodeMarkupCopiesCallbackData(t *testing.T) {
 	if !ok || len(inline.Rows) != 1 || len(inline.Rows[0].Buttons) != 1 {
 		t.Fatalf("markup=%T %+v", got, got)
 	}
-	button, ok := inline.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
+	btn := inline.Rows[0].Buttons[0]
+	cb, ok := btn.Type.(*tg.InlineButtonTypeCallback)
 	if !ok {
-		t.Fatalf("button=%T %+v", inline.Rows[0].Buttons[0], inline.Rows[0].Buttons[0])
+		t.Fatalf("button=%T %+v", btn, btn)
 	}
 
 	source[0] = 'X'
-	if got := string(button.Data); got != "callback" {
+	if got := string(cb.Data); got != "callback" {
 		t.Fatalf("encoded callback data changed with source: %q", got)
 	}
-	button.Data[1] = 'Y'
+	cb.Data[1] = 'Y'
 	if source[1] != 'a' {
 		t.Fatalf("source callback data changed with encoded buffer: %q", source)
 	}

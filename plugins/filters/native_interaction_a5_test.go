@@ -98,14 +98,14 @@ func a5FiltersCallback(t *testing.T, markup tg.ReplyMarkupClass, label string) [
 	}
 	for _, row := range inline.Rows {
 		for _, button := range row.Buttons {
-			cb, ok := button.(*tg.KeyboardButtonCallback)
+			cb, ok := button.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
 			if !rootinteraction.OwnsCallbackData(cb.Data) {
 				t.Fatalf("unexpected callback protocol %q", cb.Data)
 			}
-			if strings.Contains(cb.Text, label) {
+			if strings.Contains(button.Text, label) {
 				return append([]byte(nil), cb.Data...)
 			}
 		}

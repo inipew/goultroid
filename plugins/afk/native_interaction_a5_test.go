@@ -109,7 +109,7 @@ func TestA5AFKNativeA2OwnerAndLifecycle(t *testing.T) {
 	var enable []byte
 	for _, row := range markup.Rows {
 		for _, button := range row.Buttons {
-			cb, ok := button.(*tg.KeyboardButtonCallback)
+			cb, ok := button.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
@@ -119,7 +119,7 @@ func TestA5AFKNativeA2OwnerAndLifecycle(t *testing.T) {
 			if _, err := rootinteraction.ParseCallbackToken(cb.Data); err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(cb.Text, "Enable") {
+			if strings.Contains(button.Text, "Enable") {
 				enable = append([]byte(nil), cb.Data...)
 			}
 		}

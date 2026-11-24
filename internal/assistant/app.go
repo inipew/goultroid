@@ -45,6 +45,7 @@ type Client interface {
 	SetInteractionFoundation(catalog feature.Catalog, sessions *rootinteraction.Runtime, actions *rootinteraction.Dispatcher)
 	SetInteractionDrivers(drivers []assistantinteraction.FeatureDriver)
 	SetRPCExecutor(executor assistentrpc.Executor)
+	SetDC(dc int)
 }
 
 type AssistantApp struct {
@@ -162,4 +163,10 @@ func (a *AssistantApp) SetInteractionFoundation(catalog feature.Catalog, session
 }
 func (a *AssistantApp) SetInteractionDrivers(drivers []assistantinteraction.FeatureDriver) {
 	a.client.SetInteractionDrivers(drivers)
+}
+func (a *AssistantApp) SetDC(dc int) {
+	if a == nil || a.client == nil {
+		return
+	}
+	a.client.SetDC(dc)
 }

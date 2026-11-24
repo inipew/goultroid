@@ -194,11 +194,12 @@ func callbackData(t *testing.T, service *testTelegramService) []byte {
 	if !ok || len(markup.Rows) != 1 || len(markup.Rows[0].Buttons) != 1 {
 		t.Fatalf("markup=%T %+v", service.markup, service.markup)
 	}
-	button, ok := markup.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
+	btn := markup.Rows[0].Buttons[0]
+	cb, ok := btn.Type.(*tg.InlineButtonTypeCallback)
 	if !ok {
-		t.Fatalf("button=%T %+v", markup.Rows[0].Buttons[0], markup.Rows[0].Buttons[0])
+		t.Fatalf("button=%T %+v", btn, btn)
 	}
-	return append([]byte(nil), button.Data...)
+	return append([]byte(nil), cb.Data...)
 }
 
 func callbackEvent(data []byte, queryID, userID, chatID int64, messageID int, peer tg.InputPeerClass) *core.CallbackQueryEvent {

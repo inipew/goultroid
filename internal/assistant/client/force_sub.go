@@ -398,9 +398,12 @@ func (t *telegramRelayVisitorTransport) SendForceSubGuidance(
 			" and retry shortly."
 	}
 	markup := &tg.ReplyInlineMarkup{
-		Rows: []tg.KeyboardButtonRow{{
-			Buttons: []tg.KeyboardButtonClass{
-				&tg.KeyboardButtonURL{Text: "Join channel", URL: config.JoinURL},
+		Rows: []tg.KeyboardInlineButtonRow{{
+			Buttons: []tg.KeyboardInlineButton{
+				{
+					Text: "Join channel",
+					Type: &tg.InlineButtonTypeURL{URL: config.JoinURL},
+				},
 			},
 		}},
 	}

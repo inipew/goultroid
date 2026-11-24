@@ -244,9 +244,10 @@ func nativeQuotaCallbackData(t *testing.T, markup tg.ReplyMarkupClass) []byte {
 	if !ok || len(inline.Rows) != 1 || len(inline.Rows[0].Buttons) != 1 {
 		t.Fatalf("native quota markup=%T %+v", markup, markup)
 	}
-	button, ok := inline.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback)
+	btn := inline.Rows[0].Buttons[0]
+	button, ok := btn.Type.(*tg.InlineButtonTypeCallback)
 	if !ok {
-		t.Fatalf("native quota button=%T", inline.Rows[0].Buttons[0])
+		t.Fatalf("native quota button=%T", btn.Type)
 	}
 	return append([]byte(nil), button.Data...)
 }
@@ -451,11 +452,11 @@ func nativePurchaseCallbackData(t *testing.T, markup tg.ReplyMarkupClass, label 
 	}
 	for _, row := range inline.Rows {
 		for _, button := range row.Buttons {
-			callbackButton, ok := button.(*tg.KeyboardButtonCallback)
+			callbackButton, ok := button.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
-			if strings.Contains(callbackButton.Text, label) {
+			if strings.Contains(button.Text, label) {
 				return append([]byte(nil), callbackButton.Data...)
 			}
 		}

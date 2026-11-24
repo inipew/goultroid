@@ -150,7 +150,7 @@ func p1CallbackDataFromAssistantAnswer(t *testing.T, req *tg.MessagesSetInlineBo
 	}
 	for _, row := range markup.Rows {
 		for _, raw := range row.Buttons {
-			if callback, ok := raw.(*tg.KeyboardButtonCallback); ok && len(callback.Data) > 0 {
+			if callback, ok := raw.Type.(*tg.InlineButtonTypeCallback); ok && len(callback.Data) > 0 {
 				return append([]byte(nil), callback.Data...)
 			}
 		}

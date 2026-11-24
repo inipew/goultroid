@@ -136,7 +136,7 @@ func TestP1DNativeSettingsUsesA2WithoutLegacyCallbackState(t *testing.T) {
 	}
 	for _, row := range markup.Rows {
 		for _, button := range row.Buttons {
-			callbackButton, ok := button.(*tg.KeyboardButtonCallback)
+			callbackButton, ok := button.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
@@ -244,11 +244,11 @@ func findNativeCallbackData(t *testing.T, markup *tg.ReplyInlineMarkup, label st
 	t.Helper()
 	for _, row := range markup.Rows {
 		for _, button := range row.Buttons {
-			callbackButton, ok := button.(*tg.KeyboardButtonCallback)
+			callbackButton, ok := button.Type.(*tg.InlineButtonTypeCallback)
 			if !ok {
 				continue
 			}
-			if strings.Contains(callbackButton.Text, label) {
+			if strings.Contains(button.Text, label) {
 				return append([]byte(nil), callbackButton.Data...)
 			}
 		}

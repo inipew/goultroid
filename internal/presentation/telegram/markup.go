@@ -13,31 +13,37 @@ func EncodeMarkup(rows []presentation.CompiledRow) tg.ReplyMarkupClass {
 		return nil
 	}
 
-	tgRows := make([]tg.KeyboardButtonRow, 0, len(rows))
+	tgRows := make([]tg.KeyboardInlineButtonRow, 0, len(rows))
 	for _, row := range rows {
-		buttons := make([]tg.KeyboardButtonClass, 0, len(row))
+		buttons := make([]tg.KeyboardInlineButton, 0, len(row))
 		for _, button := range row {
 			switch button.Type {
 			case presentation.ButtonAction:
-				buttons = append(buttons, &tg.KeyboardButtonCallback{
+				buttons = append(buttons, tg.KeyboardInlineButton{
 					Text: button.Text,
-					Data: append([]byte(nil), button.Data...),
+					Type: &tg.InlineButtonTypeCallback{
+						Data: append([]byte(nil), button.Data...),
+					},
 				})
 			case presentation.ButtonURL:
-				buttons = append(buttons, &tg.KeyboardButtonURL{
+				buttons = append(buttons, tg.KeyboardInlineButton{
 					Text: button.Text,
-					URL:  button.URL,
+					Type: &tg.InlineButtonTypeURL{
+						URL: button.URL,
+					},
 				})
 			case presentation.ButtonSwitchInline:
-				buttons = append(buttons, &tg.KeyboardButtonSwitchInline{
-					Text:     button.Text,
-					Query:    button.InlineQuery,
-					SamePeer: button.SamePeer,
+				buttons = append(buttons, tg.KeyboardInlineButton{
+					Text: button.Text,
+					Type: &tg.InlineButtonTypeSwitchInline{
+						Query:    button.InlineQuery,
+						SamePeer: button.SamePeer,
+					},
 				})
 			}
 		}
 		if len(buttons) > 0 {
-			tgRows = append(tgRows, tg.KeyboardButtonRow{Buttons: buttons})
+			tgRows = append(tgRows, tg.KeyboardInlineButtonRow{Buttons: buttons})
 		}
 	}
 	if len(tgRows) == 0 {

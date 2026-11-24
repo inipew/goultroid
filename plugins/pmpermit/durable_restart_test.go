@@ -66,7 +66,7 @@ func TestD4PMPermitOwnerToggleSurvivesDurableRestart(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected PMPermit markup: %T", telegram1.markup)
 	}
-	oldData := append([]byte(nil), markup.Rows[0].Buttons[0].(*tg.KeyboardButtonCallback).Data...)
+	oldData := append([]byte(nil), markup.Rows[0].Buttons[0].Type.(*tg.InlineButtonTypeCallback).Data...)
 	token, err := rootinteraction.ParseCallbackToken(oldData)
 	if err != nil {
 		t.Fatal(err)

@@ -22,9 +22,9 @@ func TestP1BSingleTelegramKeyboardSerializer(t *testing.T) {
 	encoder := string(encoderRaw)
 	for _, required := range []string{
 		"func EncodeMarkup(rows []presentation.CompiledRow) tg.ReplyMarkupClass",
-		"tg.KeyboardButtonCallback",
-		"tg.KeyboardButtonURL",
-		"tg.KeyboardButtonSwitchInline",
+		"tg.InlineButtonTypeCallback",
+		"tg.InlineButtonTypeURL",
+		"tg.InlineButtonTypeSwitchInline",
 		"append([]byte(nil), button.Data...)",
 	} {
 		if !strings.Contains(encoder, required) {
@@ -86,9 +86,9 @@ func TestP1BPresentationNeverImportsLegacyUI(t *testing.T) {
 func assertNoTelegramButtonConstruction(t *testing.T, path, source string) {
 	t.Helper()
 	for _, forbidden := range []string{
-		"tg.KeyboardButtonCallback",
-		"tg.KeyboardButtonURL",
-		"tg.KeyboardButtonSwitchInline",
+		"tg.InlineButtonTypeCallback",
+		"tg.InlineButtonTypeURL",
+		"tg.InlineButtonTypeSwitchInline",
 	} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("%s constructs %s outside canonical encoder", path, forbidden)

@@ -432,9 +432,10 @@ func TestForceSubGuidanceCarriesExplicitJoinButton(t *testing.T) {
 		len(markup.Rows[0].Buttons) != 1 {
 		t.Fatalf("guidance markup=%T %+v", req.ReplyMarkup, req.ReplyMarkup)
 	}
-	button, ok := markup.Rows[0].Buttons[0].(*tg.KeyboardButtonURL)
-	if !ok || button.Text != "Join channel" || button.URL != config.JoinURL {
-		t.Fatalf("guidance button=%T %+v", markup.Rows[0].Buttons[0], markup.Rows[0].Buttons[0])
+	btn := markup.Rows[0].Buttons[0]
+	button, ok := btn.Type.(*tg.InlineButtonTypeURL)
+	if !ok || btn.Text != "Join channel" || button.URL != config.JoinURL {
+		t.Fatalf("guidance button=%T %+v", btn, btn)
 	}
 }
 

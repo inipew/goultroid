@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/gotd/td/telegram/message"
 	"github.com/gotd/td/telegram/updates"
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/assistant/command"
 	assistantdeeplink "github.com/inipew/goultroid/internal/assistant/deeplink"
 	assistantgroupauth "github.com/inipew/goultroid/internal/assistant/groupauth"
@@ -51,6 +53,7 @@ type AssistantClient struct {
 	appID                 int
 	appHash               string
 	botToken              string
+	dc                    int
 	logger                *zap.Logger
 	startTime             time.Time
 	self                  *tg.User
@@ -108,7 +111,7 @@ func NewAssistantClient(appID int, appHash string, botToken string, logger *zap.
 	rl.SetCategoryLimit("interaction", 12, 250*time.Millisecond)
 	cmdR := command.NewRouter(logger)
 	c := &AssistantClient{
-		appID: appID, appHash: appHash, botToken: botToken, logger: logger,
+		appID: appID, appHash: appHash, botToken: strings.TrimSpace(botToken), logger: logger,
 		startTime: time.Now(), lifecycle: NewLifecycle(), rateLimiter: rl,
 		cache: cache, resolver: res, cmdRouter: cmdR,
 		callbackDeduper: newCallbackQueryDeduper(),
@@ -190,9 +193,17 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 	c.startTime = time.Now()
 	c.mu.Unlock()
 
+	c.mu.RLock()
+	dc := c.dc
+	c.mu.RUnlock()
+
 	dispatcher := tg.NewUpdateDispatcher()
 	updateMgr := updates.New(updates.Config{Handler: dispatcher})
-	tdClient := telegram.NewClient(c.appID, c.appHash, telegram.Options{UpdateHandler: updateMgr})
+	opts := telegram.Options{UpdateHandler: updateMgr}
+	if dc > 0 {
+		opts.DC = dc
+	}
+	tdClient := telegram.NewClient(c.appID, c.appHash, opts)
 	managedAPI := &managedAPI{raw: tdClient.API(), executor: c.rpcExecutor}
 	c.resolver.SetEntityFetcher(peer.NewTelegramEntityFetcher(managedAPI))
 	groupRoles := assistantgroupauth.NewTelegramRoleResolver(managedAPI, c.resolver)
@@ -330,18 +341,70 @@ func (c *AssistantClient) Start(ctx context.Context) error {
 			close(runDone)
 		}()
 		err := tdClient.Run(runCtx, func(ctx context.Context) error {
-			status, err := tdClient.Auth().Status(ctx)
-			if err != nil {
-				return err
+			var authResult *tg.AuthAuthorization
+			var loginErr error
+			for attempt := 0; attempt < 5; attempt++ {
+				authResult, loginErr = tdClient.Auth().Bot(ctx, c.botToken)
+				if loginErr == nil {
+					break
+				}
+				if tgerr.Is(loginErr, "ACCESS_TOKEN_EXPIRED") {
+					c.logger.Error("assistant: bot token has expired! Please generate a new bot token via @BotFather and update BOT_TOKEN in .env",
+						zap.Error(loginErr),
+					)
+					return fmt.Errorf("assistant bot token expired: %w", loginErr)
+				}
+				if tgerr.Is(loginErr, "ACCESS_TOKEN_INVALID") || tgerr.Is(loginErr, "BOT_TOKEN_INVALID") || tgerr.Is(loginErr, "BOT_ACCESS_TOKEN_INVALID") {
+					c.logger.Error("assistant: bot token is invalid! Please verify BOT_TOKEN in .env",
+						zap.Error(loginErr),
+					)
+					return fmt.Errorf("assistant bot token invalid: %w", loginErr)
+				}
+				if d, ok := tgerr.AsFloodWait(loginErr); ok {
+					c.logger.Warn("assistant: flood wait during bot login", zap.Duration("wait", d))
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(d):
+						continue
+					}
+				}
+				if tgerr.Is(loginErr, "RPC_CALL_FAIL") || tgerr.IsCode(loginErr, 500) {
+					c.logger.Warn("assistant: transient error during bot login, retrying",
+						zap.Error(loginErr),
+						zap.Int("attempt", attempt+1),
+					)
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(time.Duration(1<<attempt) * 500 * time.Millisecond):
+						continue
+					}
+				}
+				return fmt.Errorf("assistant bot authorization: %w", loginErr)
 			}
-			if !status.Authorized {
-				if _, err := tdClient.Auth().Bot(ctx, c.botToken); err != nil {
-					return err
+			if loginErr != nil {
+				if tgerr.Is(loginErr, "RPC_CALL_FAIL") || tgerr.IsCode(loginErr, 500) {
+					c.logger.Error("assistant: Telegram returned RPC_CALL_FAIL (500). If your bot token is expired, revoked, or registered on another datacenter, please verify BOT_TOKEN in .env or regenerate it via @BotFather",
+						zap.Error(loginErr),
+						zap.Int("dc", dc),
+					)
+				}
+				return fmt.Errorf("assistant bot authorization after retries: %w", loginErr)
+			}
+
+			var user *tg.User
+			if authResult != nil && authResult.User != nil {
+				if u, ok := authResult.User.AsNotEmpty(); ok {
+					user = u
 				}
 			}
-			user, err := tdClient.Self(ctx)
-			if err != nil {
-				return err
+			if user == nil {
+				var selfErr error
+				user, selfErr = tdClient.Self(ctx)
+				if selfErr != nil {
+					return fmt.Errorf("fetch bot self: %w", selfErr)
+				}
 			}
 			if inlineErr := inlineCapability(user); inlineErr != nil {
 				c.logger.Warn(
@@ -487,6 +550,12 @@ func (c *AssistantClient) StartTime() time.Time {
 	defer c.mu.RUnlock()
 	return c.startTime
 }
+func (c *AssistantClient) SetDC(dc int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.dc = dc
+}
+
 func (c *AssistantClient) SetOwner(ownerID int64, sudoGetter func() []int64) {
 	c.mu.Lock()
 	c.ownerID = ownerID
