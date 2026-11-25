@@ -14,6 +14,9 @@ const transportJoinTimeout = 5 * time.Second
 // startBackgroundServices starts long-lived services in dependency order. App lifecycle
 // admission is controlled centrally; this function does not perform shutdown.
 func (a *App) startBackgroundServices(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	appCtx, appCancel := context.WithCancel(context.Background())
 	a.appCancel = appCancel
 
@@ -21,7 +24,7 @@ func (a *App) startBackgroundServices(ctx context.Context) error {
 		a.client.Dispatcher().SetRootContext(appCtx)
 	}
 	if a.runtime != nil {
-		if err := a.runtime.Start(appCtx); err != nil {
+		if err := a.runtime.Start(ctx); err != nil {
 			appCancel()
 			return fmt.Errorf("runtime: %w", err)
 		}

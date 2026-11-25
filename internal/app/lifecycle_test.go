@@ -64,3 +64,29 @@ func TestAppShutdown_CapturesRuntimeError(t *testing.T) {
 		t.Fatalf("expected context.Canceled wrapped in err, got %v", err)
 	}
 }
+
+func TestAppRun_StartupContextCancellationAbortsStartup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-canceled startup context
+
+	rt := runtime.New()
+	_ = rt.Register(&mockResourceComp{name: "comp"})
+
+	logger, _, _ := initLogger("error")
+	a := &App{
+		logger:       logger,
+		runtime:      rt,
+		shutdownDone: make(chan struct{}),
+	}
+
+	err := a.Run(ctx)
+	if err == nil {
+		t.Fatal("expected Run() to fail with cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled in error, got %v", err)
+	}
+	if a.LifecycleState() != "failed" {
+		t.Fatalf("lifecycle state = %s, want failed", a.LifecycleState())
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -48,6 +49,7 @@ type Runtime struct {
 	stateMachine *StateMachine
 	graph        *DependencyGraph
 	startedComps []Component
+	failedComps  map[string]error
 
 	rootCtx      context.Context
 	rootCancel   context.CancelFunc
@@ -66,6 +68,7 @@ func New() *Runtime {
 	return &Runtime{
 		stateMachine: NewStateMachine(),
 		graph:        NewDependencyGraph(),
+		failedComps:  make(map[string]error),
 		rootCtx:      ctx,
 		rootCancel:   cancel,
 		stopDone:     make(chan struct{}),
@@ -153,6 +156,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Unlock()
 
 	var started []Component
+	failed := make(map[string]error)
 	for _, comp := range order {
 		if err := ctx.Err(); err != nil {
 			return r.failStartAndRollback(fmt.Errorf("runtime startup cancelled: %w", err), started)
@@ -165,7 +169,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		if err != nil {
 			componentCancel()
 			if operationErr := ctx.Err(); operationErr != nil {
-				err = operationErr
+				return r.failStartAndRollback(fmt.Errorf("runtime startup cancelled: %w", operationErr), started)
 			}
 			isCritical := true
 			if cc, ok := comp.(CriticalComponent); ok {
@@ -175,13 +179,23 @@ func (r *Runtime) Start(ctx context.Context) error {
 			if isCritical {
 				return r.failStartAndRollback(fmt.Errorf("component %q failed to start: %w", comp.Name(), err), started)
 			}
+			failed[comp.Name()] = err
 		} else {
 			started = append(started, comp)
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return r.failStartAndRollback(fmt.Errorf("runtime startup cancelled: %w", err), started)
+	}
+
 	r.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		r.mu.Unlock()
+		return r.failStartAndRollback(fmt.Errorf("runtime startup cancelled: %w", err), started)
+	}
 	r.startedComps = append([]Component(nil), started...)
+	r.failedComps = failed
 	if err := r.stateMachine.Transition(StateRunning); err != nil {
 		r.stateMachine.SetFailed()
 		r.mu.Unlock()
@@ -191,6 +205,20 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.startTime = time.Now()
 	r.mu.Unlock()
 	return nil
+}
+
+// StartupFailures returns a copy of components that failed to start during Start.
+func (r *Runtime) StartupFailures() map[string]error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.failedComps) == 0 {
+		return nil
+	}
+	res := make(map[string]error, len(r.failedComps))
+	for k, v := range r.failedComps {
+		res[k] = v
+	}
+	return res
 }
 
 func (r *Runtime) failStartAndRollback(startErr error, started []Component) error {
@@ -410,6 +438,10 @@ func (r *Runtime) Health(ctx context.Context) AggregateHealth {
 	r.mu.Lock()
 	currentState := r.stateMachine.Current()
 	components := append([]Component(nil), r.startedComps...)
+	failedComps := make(map[string]error, len(r.failedComps))
+	for k, v := range r.failedComps {
+		failedComps[k] = v
+	}
 	r.mu.Unlock()
 
 	report := AggregateHealth{
@@ -449,6 +481,21 @@ func (r *Runtime) Health(ctx context.Context) AggregateHealth {
 			if h.Details != "" {
 				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", comp.Name(), h.Details))
 			}
+		}
+	}
+
+	if len(failedComps) > 0 {
+		failedNames := make([]string, 0, len(failedComps))
+		for name := range failedComps {
+			failedNames = append(failedNames, name)
+		}
+		sort.Strings(failedNames)
+		for _, name := range failedNames {
+			report.Components[name] = HealthDegraded
+			if report.Status != HealthUnhealthy {
+				report.Status = HealthDegraded
+			}
+			report.Reasons = append(report.Reasons, fmt.Sprintf("runtime:optional-component-failed:%s", name))
 		}
 	}
 

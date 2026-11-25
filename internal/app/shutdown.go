@@ -37,11 +37,6 @@ func (a *App) performShutdown() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), appShutdownTimeout)
 	defer shutdownCancel()
 
-	quiesceCtx, cancelQuiesce := context.WithTimeout(shutdownCtx, 5*time.Second)
-	if a.client != nil && a.client.Dispatcher() != nil {
-		_ = a.client.Dispatcher().Quiesce(quiesceCtx)
-	}
-	cancelQuiesce()
 	a.markStopping()
 	if a.savedDeepLinkRegistration != nil {
 		a.savedDeepLinkRegistration.Close()

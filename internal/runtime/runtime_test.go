@@ -517,3 +517,169 @@ func TestRuntime_StopWithinMakesOwnerContextAuthoritative(t *testing.T) {
 		t.Fatal("expected shutdown error after component stop deadline")
 	}
 }
+
+type optionalComponent struct {
+	mockComponent
+	isCritical bool
+}
+
+func (c *optionalComponent) IsCritical() bool {
+	return c.isCritical
+}
+
+func TestRuntime_OptionalComponentStartFailureDegradesHealthAndRecordsDiagnostics(t *testing.T) {
+	r := New()
+
+	db := &mockComponent{name: "db"}
+	assistant := &optionalComponent{
+		mockComponent: mockComponent{
+			name:     "assistant",
+			startErr: errors.New("bot token revoked"),
+		},
+		isCritical: false,
+	}
+
+	_ = r.Register(db)
+	_ = r.Register(assistant)
+
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("expected optional startup failure to permit runtime start, got %v", err)
+	}
+	if r.State() != StateRunning {
+		t.Fatalf("state = %s, want running", r.State())
+	}
+
+	failures := r.StartupFailures()
+	if len(failures) != 1 || failures["assistant"] == nil {
+		t.Fatalf("expected assistant in StartupFailures, got %+v", failures)
+	}
+
+	health := r.Health(context.Background())
+	if health.Status != HealthDegraded {
+		t.Fatalf("health status = %s, want degraded", health.Status)
+	}
+	if health.Components["assistant"] != HealthDegraded {
+		t.Fatalf("assistant component health = %s, want degraded", health.Components["assistant"])
+	}
+	if health.Components["db"] != HealthHealthy {
+		t.Fatalf("db component health = %s, want healthy", health.Components["db"])
+	}
+
+	foundReason := false
+	for _, reason := range health.Reasons {
+		if reason == "runtime:optional-component-failed:assistant" {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Fatalf("expected runtime:optional-component-failed:assistant in reasons, got %+v", health.Reasons)
+	}
+
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatalf("stop error = %v", err)
+	}
+	if assistant.stopCalled {
+		t.Fatal("component that failed start should not be invoked during shutdown")
+	}
+	if !db.stopCalled {
+		t.Fatal("started component db was not stopped during shutdown")
+	}
+}
+
+func TestRuntime_StartupCancellationByLastComponentRollsBackAndFails(t *testing.T) {
+	r := New()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var firstStopped bool
+	var secondStopped bool
+
+	first := &callbackComponent{
+		name: "first",
+		stopFn: func(context.Context) error {
+			firstStopped = true
+			return nil
+		},
+	}
+	// The second (and last) component cancels caller ctx from inside Start, but returns nil
+	second := &callbackComponent{
+		name: "second",
+		deps: []string{"first"},
+		startFn: func(context.Context) error {
+			cancel()
+			return nil
+		},
+		stopFn: func(context.Context) error {
+			secondStopped = true
+			return nil
+		},
+	}
+
+	_ = r.Register(first)
+	_ = r.Register(second)
+
+	err := r.Start(ctx)
+	if err == nil {
+		t.Fatal("expected Start() to fail when caller context is cancelled by component, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected error wrapping context.Canceled, got %v", err)
+	}
+
+	if r.State() == StateRunning {
+		t.Fatal("runtime must not transition to StateRunning after startup cancellation")
+	}
+	if r.State() != StateFailed {
+		t.Fatalf("runtime state = %s, want %s", r.State(), StateFailed)
+	}
+
+	if !firstStopped {
+		t.Fatal("previously started component 'first' was not rolled back")
+	}
+	if !secondStopped {
+		t.Fatal("last component 'second' which succeeded in Start was not rolled back")
+	}
+}
+
+func TestRuntime_StartupDeadlineExceededPostLoopRollsBack(t *testing.T) {
+	r := New()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	var firstStopped bool
+
+	first := &callbackComponent{
+		name: "first",
+		stopFn: func(context.Context) error {
+			firstStopped = true
+			return nil
+		},
+	}
+	// Component simulates taking long enough that caller deadline expires
+	second := &callbackComponent{
+		name: "second",
+		deps: []string{"first"},
+		startFn: func(context.Context) error {
+			time.Sleep(30 * time.Millisecond)
+			return nil
+		},
+	}
+
+	_ = r.Register(first)
+	_ = r.Register(second)
+
+	err := r.Start(ctx)
+	if err == nil {
+		t.Fatal("expected Start() to fail when caller deadline is exceeded, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected error wrapping context.DeadlineExceeded, got %v", err)
+	}
+	if r.State() != StateFailed {
+		t.Fatalf("runtime state = %s, want %s", r.State(), StateFailed)
+	}
+	if !firstStopped {
+		t.Fatal("component 'first' was not rolled back")
+	}
+}

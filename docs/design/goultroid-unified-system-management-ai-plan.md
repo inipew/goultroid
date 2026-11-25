@@ -1,8 +1,8 @@
 # Goultroid Unified System Management — AI Implementation Plan
 
-**Status:** DESIGN / READY FOR SOURCE-RECONCILIATION  
+**Status:** U1 COMPLETE / AWAITING U2 APPROVAL  
 **Target branch:** test-next  
-**Design baseline HEAD:** 5cabb8a38a67ab884bcbbda0bd98e95cb1201f40  
+**Design baseline HEAD:** 08dd3fc9809d02d232e07dd1ddc9d4453a64c071  
 **Design date:** 2026-11-24  
 **Scope:** Existing Runtime lifecycle/dependency graph, application composition and health, subsystem diagnostics, error/defer semantics, and bounded resource governance across TaskEngine, JobManager, Scheduler, Telegram RPCExecutor, persistence, and plugins.
 
@@ -41,7 +41,7 @@ The intended outcome is a system that is:
 
 ### 2.1 Existing management plane
 
-At baseline 5cabb8a38a67ab884bcbbda0bd98e95cb1201f40, source inspection confirms:
+At baseline 08dd3fc9809d02d232e07dd1ddc9d4453a64c071, source inspection confirms:
 
 | Existing area | Current responsibility | Design implication |
 |---|---|---|
@@ -479,6 +479,18 @@ Deliverables:
 
 **Acceptance:** no source change required; findings have exact file/function evidence and no speculative bug claims.
 
+**U0 Audit Outcome (Completed at baseline 08dd3fc9809d02d232e07dd1ddc9d4453a64c071):**
+- Component map & dependency graph inventoried across 18 components;
+- Duplicate/overridden dependency declarations identified between component implementations and `dependencyComponent` wrapper;
+- Double Quiesce identified on `dispatcher` during shutdown;
+- `dependencyComponent` does not implement `CriticalComponent`, dropping optional component behavior if wrapped;
+- Optional component startup failure silently excluded from `startedComps` in `runtime.Start`, masking failure in `runtime.Health`;
+- `App.HealthContext` health map overwritten by dummy `resourceComponent` health results;
+- Caller startup context discarded in `App.startBackgroundServices`;
+- Goroutine ownership verified: finite work strictly mapped to `TaskEngine`, long-lived loops bounded and lifecycle-owned;
+- Error semantics verified: Telegram RPC FloodWait typed deferral and separate deferral budget in `JobManager` are functioning correctly;
+- Full U0 report produced; awaiting user approval before proceeding to U1.
+
 ### Phase U1 — Lifecycle and dependency consistency
 
 **Goal:** make composition deterministic and auditable without changing domain owners.
@@ -501,6 +513,14 @@ Potential work, only where U0 proves a gap:
 - no duplicate registration;
 - quiesce/drain/stop deadline behavior;
 - repeated Stop and caller cancellation semantics.
+
+**U1 Implementation Outcome (Completed):**
+- **U1-A (F-02, F-05):** `Runtime` tracks startup failures separately in `failedComps` / `StartupFailures()`. Components that failed to start are never placed into `startedComps`, ensuring they are neither treated as running nor invoked during stop/drain. Optional component startup failure marks `Health()` as degraded and emits `runtime:optional-component-failed:<name>`. `dependencyComponent` now forwards `CriticalComponent` (`IsCritical() bool`).
+- **U1-B (F-03):** Startup context is propagated to `Runtime.Start(ctx)` in `App.startBackgroundServices(ctx)`, allowing caller startup deadlines/cancellations to be observed, while preserving `appCtx` for the dispatcher root and isolating graceful teardown to `appShutdownTimeout`.
+- **U1-C (F-04, F-06):** Duplicate manual `Dispatcher.Quiesce` removed from `App.performShutdown()`, restoring `Runtime` as the sole Quiesce authority. `dependencyComponent.Dependencies()` merges and deduplicates composition-level dependencies with intrinsic component dependencies, ensuring no required dependency is dropped.
+- **U1-D:** Architecture tests added in `internal/architecture/system_management_u1_test.go` asserting exactly one Runtime, one TaskEngine, one JobManager, one Scheduler, and one Telegram Client/Executor per application composition, and verifying absence of forbidden global managers.
+- **U1-E (Startup cancellation correctness):** `Runtime.Start()` now validates `ctx.Err()` both immediately after the component startup loop and within the critical section prior to `stateMachine.Transition(StateRunning)`. If the caller context expires or is cancelled during the last component's `Start()` (even when `comp.Start()` returns `nil`), all previously started components are rolled back, runtime transitions to `StateFailed` (never `StateRunning`), and the returned error preserves `errors.Is(err, context.Canceled)` or `errors.Is(err, context.DeadlineExceeded)`. Verified via `TestRuntime_StartupCancellationByLastComponentRollsBackAndFails` and `TestRuntime_StartupDeadlineExceededPostLoopRollsBack`.
+- **U1-F (Dependency contract consistency):** Re-audited all `Dependencies()` implementations and formally documented the Additive Dependency Contract in `internal/app/runtime_resources.go`. Clarified the boundary between intrinsic package requirements (functional dependencies needed for standalone execution) and composition-level wiring edges (application root lifecycle ordering). Verified deterministic resolution (composition edges first, unlisted intrinsic edges appended), whitespace trimming, and deduplication. Added unit test `TestDependencyComponent_AdditiveDependencyContractRetainsIntrinsicDependencies`. Full test suite and race checks pass cleanly.
 
 ### Phase U2 — Health/readiness unification
 
