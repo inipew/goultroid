@@ -14,35 +14,70 @@ import (
 	"go.uber.org/zap"
 )
 
-func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
+// ingressAdmission holds the lifecycle admission lease and the memory-only
+// transport deduplication claim for an incoming message update.
+type ingressAdmission struct {
+	releaseLease func()
+	ingressClaim ingressDedupeClaim
+}
+
+func (a *ingressAdmission) releaseIngressClaim() {
+	a.ingressClaim.Release()
+}
+
+// messageClassification encapsulates the syntactic and contextual properties
+// derived during initial message ingress before decision or command execution.
+type messageClassification struct {
+	chatID             int64
+	commandIdentity    string
+	hasCommandIdentity bool
+	parsed             *core.ParsedCommand
+	isCmd              bool
+	cmdName            string
+	cmd                core.Command
+	cmdExists          bool
+	origin             core.ExecutionSource
+	decision           *core.MessageDecision
+	envelope           *core.MessageEnvelope
+	decisionHandlers   []prioritizedHandler
+	eventHandlers      []prioritizedHandler
+}
+
+// Stage 1: admitMessage gates ingress admission against lifecycle shutdown and
+// acquires the bounded in-memory transport deduplication claim.
+func (d *Dispatcher) admitMessage(msg *tg.Message) (ingressAdmission, bool) {
 	release, accepted := d.admitIngress()
 	if !accepted {
-		return nil
+		return ingressAdmission{}, false
 	}
-	defer release()
 
-	// Telegram's updates manager already provides ordering/gap recovery, but the
-	// same update can still be delivered more than once around reconnects. Keep
-	// this transport-level guard memory-only and bounded: ordinary chat traffic
-	// must never require a durable database claim just to enter the dispatcher.
-	//
-	// Keep ownership of the exact ingress generation so a recognized command can
-	// make the update retryable again if it fails before TaskEngine admission.
-	var ingressClaim ingressDedupeClaim
+	var claim ingressDedupeClaim
 	if d.ingressDedupe != nil {
 		var ingressAccepted bool
-		ingressClaim, ingressAccepted = d.ingressDedupe.Begin(msg, time.Now())
+		claim, ingressAccepted = d.ingressDedupe.Begin(msg, time.Now())
 		if !ingressAccepted {
-			return nil
+			release()
+			return ingressAdmission{}, false
 		}
 	}
 
+	return ingressAdmission{
+		releaseLease: release,
+		ingressClaim: claim,
+	}, true
+}
+
+// Stage 2: classifyMessage validates sender consistency, parses command syntax,
+// looks up command registration, classifies bot origin, sets up the decision context,
+// and normalizes the message envelope.
+func (d *Dispatcher) classifyMessage(ctx context.Context, e tg.Entities, msg *tg.Message) (context.Context, *messageClassification, bool) {
 	if !privateMessageSenderConsistent(msg) {
 		// An incoming private message with explicit mismatched or non-user
 		// FromID cannot be trusted as an owner/sudo command or PM automation.
 		d.logger.Warn("dispatcher: inconsistent incoming private sender; update dropped")
-		return nil
+		return ctx, nil, false
 	}
+
 	chatID := extractChatIDFromPeer(msg.PeerID)
 	commandIdentity, hasCommandIdentity := telegramMessageIdentity(msg.PeerID, msg.ID)
 	parsed, isCmd, err := d.router.Parse(msg.Message)
@@ -97,30 +132,73 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	messageEnvelope := NormalizeMessageEnvelope(e, msg, isCmd, cmdName, d.getSelfID())
 	decisionHandlers, eventHandlers := d.messageHandlersForEnvelope(messageEnvelope)
 
-	if d.executeDecisionHandlersEnvelope(ctx, decisionHandlers, messageEnvelope, e, msg) {
-		return nil
+	return ctx, &messageClassification{
+		chatID:             chatID,
+		commandIdentity:    commandIdentity,
+		hasCommandIdentity: hasCommandIdentity,
+		parsed:             parsed,
+		isCmd:              isCmd,
+		cmdName:            cmdName,
+		cmd:                cmd,
+		cmdExists:          cmdExists,
+		origin:             origin,
+		decision:           decision,
+		envelope:           messageEnvelope,
+		decisionHandlers:   decisionHandlers,
+		eventHandlers:      eventHandlers,
+	}, true
+}
+
+// Stage 3: runMessageDecision executes synchronous interceptors/decision handlers
+// under the shared 5-second deadline. Returns true if the message was handled,
+// suppressed, or dropped by a security fail-closed decision.
+func (d *Dispatcher) runMessageDecision(ctx context.Context, e tg.Entities, msg *tg.Message, c *messageClassification) bool {
+	if d.executeDecisionHandlersEnvelope(ctx, c.decisionHandlers, c.envelope, e, msg) {
+		return true
 	}
-	if decision.IsHandled() || decision.IsSuppressedCommands() {
-		return nil
+	if c.decision.IsHandled() || c.decision.IsSuppressedCommands() {
+		return true
+	}
+	return false
+}
+
+type commandCandidate struct {
+	isExecutable bool
+	commandClaim dispatcherCommandClaim
+}
+
+func (c *commandCandidate) IsExecutable() bool {
+	return c != nil && c.isExecutable
+}
+
+// Stage 4: authorizeAndClaimCommand evaluates invocation policy before acquiring
+// durable idempotency claims in SQLite. Non-commands and unknown commands return
+// an non-executable candidate without touching durable storage.
+func (d *Dispatcher) authorizeAndClaimCommand(
+	ctx context.Context,
+	msg *tg.Message,
+	c *messageClassification,
+	admission *ingressAdmission,
+) (*commandCandidate, bool) {
+	if !c.cmdExists {
+		return &commandCandidate{isExecutable: false}, true
 	}
 
 	// Invocation is a cheap security admission gate and must run before durable
 	// idempotency, peer resolution, or TaskEngine submission. Permission remains
 	// a separate authorization check inside CommandExecutor.
-	if cmdExists {
-		if !hasCommandIdentity {
-			d.logger.Warn("dispatcher: command has no stable telegram message identity")
-			return nil
-		}
-		senderID := invocationSenderID(msg, d.getSelfID())
-		if !cmd.CanInvoke(core.ExecutionInteractive, senderID, msg.Out, d.perms) {
-			d.logger.Debug("dispatcher: command invocation denied",
-				zap.String("command", cmdName),
-				zap.Int64("sender_id", senderID),
-				zap.String("policy", cmd.EffectiveInvocation(core.ExecutionInteractive).String()),
-			)
-			return nil
-		}
+	if !c.hasCommandIdentity {
+		d.logger.Warn("dispatcher: command has no stable telegram message identity")
+		return nil, false
+	}
+	senderID := invocationSenderID(msg, d.getSelfID())
+	if !c.cmd.CanInvoke(core.ExecutionInteractive, senderID, msg.Out, d.perms) {
+		d.logger.Debug("dispatcher: command invocation denied",
+			zap.String("command", c.cmdName),
+			zap.Int64("sender_id", senderID),
+			zap.String("policy", c.cmd.EffectiveInvocation(core.ExecutionInteractive).String()),
+		)
+		return nil, false
 	}
 
 	// Durability belongs to execution candidates, not transport ingress. Only a
@@ -129,43 +207,59 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	// and suppressed commands off the SQLite write path while preserving the
 	// fail-closed guarantee before command/event side effects.
 	var commandClaim dispatcherCommandClaim
-	if cmdExists && d.idempotencyMgr != nil {
-		key := "msg:" + commandIdentity
-		legacyKey := fmt.Sprintf("msg:%d:%d", chatID, msg.ID)
+	if d.idempotencyMgr != nil {
+		key := "msg:" + c.commandIdentity
+		legacyKey := fmt.Sprintf("msg:%d:%d", c.chatID, msg.ID)
 		if key != legacyKey && time.Now().Before(d.legacyCommandIdentityUntil) {
 			legacyProcessed, legacyErr := d.idempotencyMgr.IsProcessedContext(ctx, legacyKey)
 			if legacyErr != nil {
-				ingressClaim.Release()
+				admission.releaseIngressClaim()
 				d.logger.Error("dispatcher: legacy command idempotency lookup failed",
 					zap.String("key", legacyKey),
-					zap.String("command", cmdName),
+					zap.String("command", c.cmdName),
 					zap.String("error_type", fmt.Sprintf("%T", legacyErr)),
 				)
-				return nil
+				return nil, false
 			}
 			if legacyProcessed {
 				d.logger.Debug("dispatcher: duplicate command matched legacy idempotency key", zap.String("key", legacyKey))
-				return nil
+				return nil, false
 			}
 		}
 		var isNew bool
 		var claimErr error
 		commandClaim, isNew, claimErr = d.beginCommandClaim(ctx, key)
 		if claimErr != nil {
-			ingressClaim.Release()
+			admission.releaseIngressClaim()
 			d.logger.Error("dispatcher: command idempotency claim failed",
 				zap.String("key", key),
-				zap.String("command", cmdName),
+				zap.String("command", c.cmdName),
 				zap.String("error_type", fmt.Sprintf("%T", claimErr)),
 			)
-			return nil
+			return nil, false
 		}
 		if !isNew {
 			d.logger.Debug("dispatcher: duplicate command dropped by idempotency manager", zap.String("key", key))
-			return nil
+			return nil, false
 		}
 	}
 
+	return &commandCandidate{
+		isExecutable: true,
+		commandClaim: commandClaim,
+	}, true
+}
+
+type preparedMessage struct {
+	coreMsg *core.Message
+}
+
+// Stage 5: prepareMessageEffects checks EventBus subscribers, conditionally
+// materializes core.Message, buffers albums, and publishes the MessageCreated event.
+func (d *Dispatcher) prepareMessageEffects(
+	msg *tg.Message,
+	c *messageClassification,
+) *preparedMessage {
 	bus := d.getEventBus()
 	publishMessageEvent := bus != nil &&
 		bus.HasSubscribersAtPriority(core.EventTypeMessageCreated, core.PriorityNormal)
@@ -173,7 +267,7 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	// core.Message performs media extraction and is materially heavier than the
 	// ingress envelope. Build it only when a command, album aggregation, or an
 	// actual EventBus subscriber needs it.
-	needsCoreMessage := cmdExists || msg.GroupedID != 0 || publishMessageEvent
+	needsCoreMessage := c.cmdExists || msg.GroupedID != 0 || publishMessageEvent
 	var coreMsg *core.Message
 	if needsCoreMessage {
 		coreMsg = extractCoreMessage(msg)
@@ -187,21 +281,45 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		}
 	}
 
-	if !isCmd {
-		d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)
-		return nil
+	return &preparedMessage{
+		coreMsg: coreMsg,
 	}
+}
 
-	if !cmdExists {
-		d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)
-		return nil
-	}
-	if coreMsg == nil {
-		// Defensive fallback: recognized commands are included in
-		// needsCoreMessage above, so this should be unreachable.
-		coreMsg = extractCoreMessage(msg)
-	}
+// dispatchObservers dispatches event hooks asynchronously via TaskEngine.
+func (d *Dispatcher) dispatchObservers(
+	ctx context.Context,
+	e tg.Entities,
+	msg *tg.Message,
+	c *messageClassification,
+) {
+	d.dispatchEventHandlersEnvelope(ctx, c.eventHandlers, c.envelope, e, msg)
+}
 
+type preparedCommand struct {
+	execCtx       context.Context
+	cancel        context.CancelFunc
+	coreCtx       *core.Context
+	cmd           core.Command
+	cmdName       string
+	taskID        string
+	taskOwner     string
+	correlationID string
+	commandClaim  dispatcherCommandClaim
+	chatID        int64
+}
+
+// Stage 6: prepareCommandContext resolves peer and chat entities, sets up sender
+// and localizer metadata, constructs core.Context, and derives stable task/correlation IDs.
+func (d *Dispatcher) prepareCommandContext(
+	ctx context.Context,
+	e tg.Entities,
+	msg *tg.Message,
+	classified *messageClassification,
+	candidate *commandCandidate,
+	prepared *preparedMessage,
+	admission *ingressAdmission,
+) (*preparedCommand, bool) {
 	peerInput := d.resolveDispatchPeer(ctx, e, msg)
 	chat := d.resolveDispatchChat(e, msg)
 	d.logger.Debug("dispatch: peer resolved",
@@ -209,19 +327,19 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 		zap.String("chatType", chat.Type),
 		zap.Int64("chatID", chat.ID),
 		zap.Bool("msgOut", msg.Out),
-		zap.String("command", cmdName),
+		zap.String("command", classified.cmdName),
 	)
 	if peerInput == nil && msg.Out {
 		peerInput = &tg.InputPeerSelf{}
 	}
 	if peerInput == nil && msg.PeerID != nil {
-		d.releaseCommandClaim(ctx, cmdName, commandClaim)
-		ingressClaim.Release()
+		d.releaseCommandClaim(ctx, classified.cmdName, candidate.commandClaim)
+		admission.releaseIngressClaim()
 		d.logger.Warn("dispatch: peer unresolvable without access hash, command execution skipped",
 			zap.Int64("chatID", chat.ID),
-			zap.String("command", cmdName),
+			zap.String("command", classified.cmdName),
 		)
-		return nil
+		return nil, false
 	}
 
 	sender := &core.User{}
@@ -237,6 +355,10 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 				sender.IsBot = ue.Bot
 			}
 		}
+	}
+	coreMsg := prepared.coreMsg
+	if coreMsg == nil {
+		coreMsg = extractCoreMessage(msg)
 	}
 	coreMsg.SenderID = sender.ID
 
@@ -258,9 +380,9 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	}
 	coreCtx := &core.Context{
 		Ctx:       execCtx,
-		Command:   parsed.Name,
-		Args:      parsed.Args,
-		RawArgs:   parsed.RawArgs,
+		Command:   classified.parsed.Name,
+		Args:      classified.parsed.Args,
+		RawArgs:   classified.parsed.RawArgs,
 		Message:   coreMsg,
 		Album:     album,
 		Chat:      chat,
@@ -277,29 +399,91 @@ func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Messag
 	if sender.ID == 0 {
 		taskOwner = "telegram:unknown"
 	}
-	taskID := "cmd:" + commandIdentity
-	correlationID := "msg:" + commandIdentity
+	taskID := "cmd:" + classified.commandIdentity
+	correlationID := "msg:" + classified.commandIdentity
+
+	return &preparedCommand{
+		execCtx:       execCtx,
+		cancel:        cancel,
+		coreCtx:       coreCtx,
+		cmd:           classified.cmd,
+		cmdName:       classified.cmdName,
+		taskID:        taskID,
+		taskOwner:     taskOwner,
+		correlationID: correlationID,
+		commandClaim:  candidate.commandClaim,
+		chatID:        chat.ID,
+	}, true
+}
+
+// Stage 7: submitCommand submits the prepared command context to TaskEngine,
+// committing the durable claim upon admission or releasing claims upon failure.
+func (d *Dispatcher) submitCommand(
+	ctx context.Context,
+	command *preparedCommand,
+	admission *ingressAdmission,
+) error {
 	if err := d.submitInteractiveCommandWithAdmission(
-		execCtx,
-		cancel,
-		coreCtx,
-		cmd,
-		taskID,
-		taskOwner,
-		correlationID,
-		func() error { return d.acceptCommandClaim(ctx, cmdName, commandClaim) },
+		command.execCtx,
+		command.cancel,
+		command.coreCtx,
+		command.cmd,
+		command.taskID,
+		command.taskOwner,
+		command.correlationID,
+		func() error { return d.acceptCommandClaim(ctx, command.cmdName, command.commandClaim) },
 	); err != nil {
-		d.releaseCommandClaim(ctx, cmdName, commandClaim)
-		ingressClaim.Release()
+		d.releaseCommandClaim(ctx, command.cmdName, command.commandClaim)
+		admission.releaseIngressClaim()
 		d.logger.Warn("interactive command admission rejected",
-			zap.String("command", cmdName),
-			zap.Int64("chat_id", chat.ID),
+			zap.String("command", command.cmdName),
+			zap.Int64("chat_id", command.chatID),
 			zap.String("error_type", fmt.Sprintf("%T", err)),
 		)
+		return err
+	}
+	return nil
+}
+
+// dispatch is the linear pipeline coordinator for incoming Telegram message updates.
+func (d *Dispatcher) dispatch(ctx context.Context, e tg.Entities, msg *tg.Message) error {
+	admission, ok := d.admitMessage(msg)
+	if !ok {
+		return nil
+	}
+	defer admission.releaseLease()
+
+	ctx, classified, ok := d.classifyMessage(ctx, e, msg)
+	if !ok {
 		return nil
 	}
 
-	d.dispatchEventHandlersEnvelope(ctx, eventHandlers, messageEnvelope, e, msg)
+	if d.runMessageDecision(ctx, e, msg, classified) {
+		return nil
+	}
+
+	candidate, ok := d.authorizeAndClaimCommand(ctx, msg, classified, &admission)
+	if !ok {
+		return nil
+	}
+
+	prepared := d.prepareMessageEffects(msg, classified)
+
+	if !candidate.IsExecutable() {
+		d.dispatchObservers(ctx, e, msg, classified)
+		return nil
+	}
+
+	command, ok := d.prepareCommandContext(ctx, e, msg, classified, candidate, prepared, &admission)
+	if !ok {
+		return nil
+	}
+
+	if err := d.submitCommand(ctx, command, &admission); err != nil {
+		return nil
+	}
+
+	d.dispatchObservers(ctx, e, msg, classified)
 	return nil
 }
 
