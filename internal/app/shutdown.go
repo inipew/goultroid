@@ -90,6 +90,14 @@ func (a *App) performShutdown() {
 			errs = append(errs, fmt.Errorf("logger: %w", err))
 		}
 	}
+	if a.resources != nil {
+		if cleanupErrs := a.resources.ForceCleanupAllContext(shutdownCtx); len(cleanupErrs) > 0 {
+			errs = append(errs, fmt.Errorf("resource cleanup: %w", errors.Join(cleanupErrs...)))
+		}
+		if leakErr := a.resources.VerifyShutdownClean(); leakErr != nil {
+			errs = append(errs, leakErr)
+		}
+	}
 	var shutdownErr error
 	if len(errs) > 0 {
 		shutdownErr = fmt.Errorf("shutdown completed with errors: %w", errors.Join(errs...))

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,18 +24,35 @@ import (
 
 type mockTelegram struct {
 	core.MockTelegramServicer
+	mu       sync.Mutex
 	sentText string
 	edited   string
 }
 
 func (m *mockTelegram) SendMessage(ctx context.Context, peer tg.InputPeerClass, text string) (*tg.Message, error) {
+	m.mu.Lock()
 	m.sentText = text
+	m.mu.Unlock()
 	return &tg.Message{ID: 1, Message: text}, nil
 }
 
 func (m *mockTelegram) EditMessage(ctx context.Context, peer tg.InputPeerClass, msgID int, text string) error {
+	m.mu.Lock()
 	m.edited = text
+	m.mu.Unlock()
 	return nil
+}
+
+func (m *mockTelegram) getSentText() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sentText
+}
+
+func (m *mockTelegram) getEdited() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.edited
 }
 
 func (m *mockTelegram) GetMessage(ctx context.Context, peer tg.InputPeerClass, msgID int) (*tg.Message, error) {
@@ -111,8 +129,8 @@ func TestBroadcastPlugin(t *testing.T) {
 		t.Fatalf("handleBroadcast failed: %v", err)
 	}
 
-	if !strings.Contains(mockTG.edited, "Broadcast Completed") {
-		t.Errorf("expected completion edit, got %s", mockTG.edited)
+	if !strings.Contains(mockTG.getEdited(), "Broadcast Completed") {
+		t.Errorf("expected completion edit, got %s", mockTG.getEdited())
 	}
 
 	// 2. Cancel when no job running
@@ -125,8 +143,8 @@ func TestBroadcastPlugin(t *testing.T) {
 	if err := cmds[1].Handler(cancelCtx); err != nil {
 		t.Fatalf("handleCancelBroadcast failed: %v", err)
 	}
-	if !strings.Contains(mockTG.edited, "No active broadcast") {
-		t.Errorf("expected no active broadcast notice, got %s", mockTG.edited)
+	if !strings.Contains(mockTG.getEdited(), "No active broadcast") {
+		t.Errorf("expected no active broadcast notice, got %s", mockTG.getEdited())
 	}
 }
 
@@ -146,8 +164,8 @@ func TestBroadcastPlugin_EmptyArgs(t *testing.T) {
 	if err := cmds[0].Handler(ctx); err != nil {
 		t.Fatalf("handler error: %v", err)
 	}
-	if !strings.Contains(mockTG.edited, "Usage:") {
-		t.Errorf("expected usage guide, got %s", mockTG.edited)
+	if !strings.Contains(mockTG.getEdited(), "Usage:") {
+		t.Errorf("expected usage guide, got %s", mockTG.getEdited())
 	}
 }
 
@@ -165,8 +183,8 @@ func TestBroadcastPlugin_RepliedTextUsesPlainSavedResponse(t *testing.T) {
 	if err := p.Commands()[0].Handler(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if mockTG.sentText != "&lt;b&gt;literal reply&lt;/b&gt;" {
-		t.Fatalf("replied plain text broadcast=%q", mockTG.sentText)
+	if mockTG.getSentText() != "&lt;b&gt;literal reply&lt;/b&gt;" {
+		t.Fatalf("replied plain text broadcast=%q", mockTG.getSentText())
 	}
 }
 

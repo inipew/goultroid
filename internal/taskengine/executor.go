@@ -10,7 +10,7 @@ import (
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
-func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, onStarted func(time.Time)) (result tasks.TaskResult) {
+func executeAssignment(taskCtx, engineCtx context.Context, spec tasks.WorkSpec, grant *permit, onStarted func(time.Time)) (result tasks.TaskResult) {
 	defer grant.release()
 	result.TaskID = spec.ID
 	if spec.Job != nil {
@@ -33,11 +33,15 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		result.Failure = tasks.FailureInfo{Code: "lease_lost", Message: err.Error()}
 		return result
 	}
-	if err := ctx.Err(); err != nil {
+	if err := taskCtx.Err(); err != nil {
 		result.Outcome = tasks.OutcomeCancelled
-		result.Cause = tasks.CauseShutdown
+		if engineCtx != nil && engineCtx.Err() != nil {
+			result.Cause = tasks.CauseShutdown
+		} else {
+			result.Cause = tasks.CauseUserCancel
+		}
 		result.Disposition = execution.DispositionCancelled
-		result.Failure = tasks.FailureInfo{Code: "shutdown", Message: err.Error()}
+		result.Failure = tasks.FailureInfo{Code: string(result.Cause), Message: err.Error()}
 		return result
 	}
 	if !spec.QueueDeadline.IsZero() && !time.Now().Before(spec.QueueDeadline) {
@@ -54,10 +58,10 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		return result
 	}
 
-	runCtx := ctx
+	runCtx := taskCtx
 	if spec.ExecutionTimeout > 0 {
 		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(ctx, spec.ExecutionTimeout)
+		runCtx, cancel = context.WithTimeout(taskCtx, spec.ExecutionTimeout)
 		defer cancel()
 	}
 	if spec.Job != nil {
@@ -85,6 +89,19 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		result.Outcome = tasks.OutcomeCompleted
 		result.Cause = tasks.CauseNone
 		result.Disposition = execution.DispositionHandled
+	case errors.Is(err, context.Canceled):
+		result.Outcome = tasks.OutcomeCancelled
+		if engineCtx != nil && engineCtx.Err() != nil {
+			result.Cause = tasks.CauseShutdown
+		} else {
+			result.Cause = tasks.CauseUserCancel
+		}
+		result.Disposition = execution.DispositionCancelled
+		code := semantics.Code
+		if code == "" || code == "unclassified_error" {
+			code = string(result.Cause)
+		}
+		result.Failure = tasks.FailureInfo{Code: code, Message: err.Error()}
 	case errors.As(err, &rateLimit):
 		wait := rateLimit.RateLimitWait()
 		if wait < 0 {
@@ -95,15 +112,16 @@ func executeAssignment(ctx context.Context, spec tasks.WorkSpec, grant *permit, 
 		result.Disposition = execution.DispositionRetryable
 		result.RetryAfter = wait
 		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
+	case semantics.Disposition == execution.DispositionRetryable && semantics.RetryAfter > 0:
+		result.Outcome = tasks.OutcomeFailed
+		result.Cause = tasks.CauseRateLimited
+		result.Disposition = execution.DispositionRetryable
+		result.RetryAfter = semantics.RetryAfter
+		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
 		result.Outcome = tasks.OutcomeTimedOut
 		result.Cause = tasks.CauseTimeout
 		result.Disposition = semantics.Disposition
-		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
-	case errors.Is(err, context.Canceled):
-		result.Outcome = tasks.OutcomeCancelled
-		result.Cause = tasks.CauseUserCancel
-		result.Disposition = execution.DispositionCancelled
 		result.Failure = tasks.FailureInfo{Code: semantics.Code, Message: err.Error()}
 	default:
 		result.Outcome = tasks.OutcomeFailed

@@ -792,3 +792,89 @@ func TestRecoverFinalizesPersistedPermanentFailureWithoutRedrive(t *testing.T) {
 		t.Fatalf("attempts=%d, want 1", n)
 	}
 }
+
+func TestAdmissionRejectionDoesNotExhaustRetryBudgetOrFinalizeOccurrence(t *testing.T) {
+	var handlerCalls atomic.Int32
+	manager, store, _ := engineBackedManager(t,
+		func(context.Context, jobs.JobDefinition) error {
+			handlerCalls.Add(1)
+			return nil
+		},
+		jobs.JobRetryPolicy{MaxAttempts: 1},
+	)
+	ctx := context.Background()
+	occ := &jobs.JobOccurrence{
+		ID:            "occ-admission-reject",
+		JobID:         "job-retry",
+		OccurrenceKey: "manual:admission-reject",
+		State:         jobs.OccurrenceReady,
+		ReadyAt:       time.Now().UTC(),
+	}
+	if err := store.MaterializeOccurrence(ctx, occ); err != nil {
+		t.Fatal(err)
+	}
+
+	// First attempt is created and aborted before start due to admission rejection (e.g. pool backlog full).
+	attempt, err := store.PrepareAttemptLease(ctx, occ.ID, "task:occ-admission-reject:1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admErr := tasks.NewAdmissionError(tasks.ReasonPoolBacklogFull, tasks.ErrPoolBacklogFull)
+	abortMetadata := []byte(`{"disposition":"retryable","code":"` + admErr.Reason + `"}`)
+	if err := store.CommitAttemptResult(ctx, attempt.ID, attempt.LeaseEpoch, jobs.AttemptAbortedBeforeStart, abortMetadata, admErr.Error()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify retry budget uses at store layer: must be 0 despite 1 aborted attempt.
+	retryUses, err := store.CountRetryBudgetUses(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryUses != 0 {
+		t.Fatalf("CountRetryBudgetUses = %d, want 0", retryUses)
+	}
+
+	summary, err := store.AttemptSummary(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RetryBudgetUses != 0 {
+		t.Fatalf("AttemptSummary.RetryBudgetUses = %d, want 0", summary.RetryBudgetUses)
+	}
+	if summary.AttemptCount != 1 {
+		t.Fatalf("AttemptSummary.AttemptCount = %d, want 1", summary.AttemptCount)
+	}
+
+	// Recovery should NOT finalize the occurrence as failed even with MaxAttempts: 1,
+	// because admission rejection did not consume execution retry budget.
+	report, err := manager.Recover(ctx, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Finalized != 0 {
+		t.Fatalf("report.Finalized = %d, want 0", report.Finalized)
+	}
+	if report.Redriven != 1 {
+		t.Fatalf("report.Redriven = %d, want 1", report.Redriven)
+	}
+
+	// Wait for redriven attempt to complete.
+	pollOccurrenceState(t, store, occ.ID, jobs.OccurrenceCompleted, 5*time.Second)
+
+	if got := handlerCalls.Load(); got != 1 {
+		t.Fatalf("handler calls = %d, want 1", got)
+	}
+
+	// Final verification: total attempts = 2 (1 aborted_before_start + 1 completed),
+	// retry budget uses = 1 (the completed attempt).
+	summaryAfter, err := store.AttemptSummary(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summaryAfter.AttemptCount != 2 {
+		t.Fatalf("after completion AttemptCount = %d, want 2", summaryAfter.AttemptCount)
+	}
+	if summaryAfter.RetryBudgetUses != 1 {
+		t.Fatalf("after completion RetryBudgetUses = %d, want 1", summaryAfter.RetryBudgetUses)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -304,10 +305,8 @@ func (m *Manager) cleanupResource(ctx context.Context, id string) error {
 	}
 	cleanup := m.cleanups[id]
 	if cleanup == nil {
-		delete(m.resources, id)
-		delete(m.cleanups, id)
 		m.mu.Unlock()
-		return nil
+		return fmt.Errorf("resource %q has no cleanup function", id)
 	}
 	executor := m.cleanupExecutor
 	if executor == nil {
@@ -351,8 +350,9 @@ func (m *Manager) cleanupResource(ctx context.Context, id string) error {
 }
 
 // ForceCleanupOwner executes cleanup functions for all tracked resources belonging
-// to owner. A resource is removed only after its cleanup completes successfully;
-// timed-out or failed resources stay tracked as leaked for diagnostics/retry.
+// to owner that have a registered cleanup function. A resource is removed only after
+// its cleanup completes successfully; timed-out or failed resources stay tracked as
+// leaked for diagnostics/retry.
 func (m *Manager) ForceCleanupOwner(owner string) []error {
 	return m.ForceCleanupOwnerContext(context.Background(), owner)
 }
@@ -365,11 +365,13 @@ func (m *Manager) ForceCleanupOwnerContext(ctx context.Context, owner string) []
 	m.mu.RLock()
 	ids := make([]string, 0)
 	for id, resource := range m.resources {
-		if resource.Owner == owner {
+		if resource.Owner == owner && m.cleanups[id] != nil {
 			ids = append(ids, id)
 		}
 	}
 	m.mu.RUnlock()
+
+	sort.Strings(ids)
 
 	var errs []error
 	for _, id := range ids {
@@ -385,6 +387,95 @@ func (m *Manager) ForceCleanupOwnerContext(ctx context.Context, owner string) []
 		}
 	}
 	return errs
+}
+
+// ForceCleanupAllContext executes cleanup functions for all tracked resources across
+// all owners under the provided context. Cleaned resources are released on success.
+// If a resource has no cleanup function or its cleanup fails, it remains tracked.
+func (m *Manager) ForceCleanupAllContext(ctx context.Context) []error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.RLock()
+	ids := make([]string, 0, len(m.resources))
+	for id := range m.resources {
+		if m.cleanups[id] != nil {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.RUnlock()
+
+	sort.Strings(ids)
+
+	var errs []error
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if err := m.cleanupResource(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup %s: %w", id, err))
+			if ctx.Err() != nil {
+				break
+			}
+		}
+	}
+	return errs
+}
+
+// VerifyShutdownClean inspects all tracked resources after shutdown.
+// If any resources remain active or leaked, it returns an error summarizing
+// the remaining unreleased resources deterministically by owner and type.
+func (m *Manager) VerifyShutdownClean() error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.resources) == 0 {
+		return nil
+	}
+
+	type ownerData struct {
+		counts map[string]int
+		total  int
+	}
+	owners := make(map[string]*ownerData)
+	for _, r := range m.resources {
+		od, ok := owners[r.Owner]
+		if !ok {
+			od = &ownerData{
+				counts: make(map[string]int),
+			}
+			owners[r.Owner] = od
+		}
+		od.counts[r.Type]++
+		od.total++
+	}
+
+	sortedOwners := make([]string, 0, len(owners))
+	for owner := range owners {
+		sortedOwners = append(sortedOwners, owner)
+	}
+	sort.Strings(sortedOwners)
+
+	var summaries []string
+	totalRemaining := len(m.resources)
+	for _, owner := range sortedOwners {
+		od := owners[owner]
+		types := make([]string, 0, len(od.counts))
+		for t := range od.counts {
+			types = append(types, t)
+		}
+		sort.Strings(types)
+
+		var typeSummaries []string
+		for _, t := range types {
+			typeSummaries = append(typeSummaries, fmt.Sprintf("%s=%d", t, od.counts[t]))
+		}
+		summaries = append(summaries, fmt.Sprintf("%s:[%s]", owner, strings.Join(typeSummaries, ", ")))
+	}
+
+	return fmt.Errorf("resource leaks detected after shutdown: %d unreleased resource(s): %s",
+		totalRemaining, strings.Join(summaries, "; "))
 }
 
 // HandleLeaks checks if owner has active resources, marks them leaked, and applies the LeakPolicy.

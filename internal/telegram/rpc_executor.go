@@ -155,6 +155,9 @@ func (f *RPCFailure) ExecutionSemantics() execution.Semantics {
 		// effect. Treat it as terminal for automatic retry policy.
 		return execution.Semantics{Disposition: execution.DispositionPermanent, Code: "rpc_ambiguous"}
 	}
+	if errors.Is(f.Err, context.Canceled) {
+		return execution.Semantics{Disposition: execution.DispositionCancelled, Code: "context_cancelled"}
+	}
 	switch f.Class {
 	case RPCFloodWait:
 		wait := f.RetryAfter

@@ -335,7 +335,7 @@ func (e *Engine) physicalWorker(pool tasks.PoolID, slotID int, mailbox <-chan wo
 			if !ok {
 				return
 			}
-			res := executeAssignment(assignment.taskCtx, assignment.spec, assignment.permit, func(startedAt time.Time) {
+			res := executeAssignment(assignment.taskCtx, ctx, assignment.spec, assignment.permit, func(startedAt time.Time) {
 				e.sendInternal(engineRequest{op: opWorkerStarted, taskID: assignment.spec.ID, permit: assignment.permit, started: startedAt})
 			})
 			// Completion and return-to-idle are one control-loop transition so

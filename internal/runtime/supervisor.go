@@ -74,7 +74,7 @@ const (
 
 // Supervisor coordinates lifecycle-owned workers, enforcing panic recovery,
 // exponential backoff with jitter, restart budgets, and bounded shutdown.
-// It implements runtime.Component and runtime.Quiescer.
+// It implements runtime.Component, runtime.Quiescer, and runtime.ForcedStopper.
 type Supervisor struct {
 	name        string
 	maxWorkers  int
@@ -92,6 +92,12 @@ type Supervisor struct {
 	stopOnce sync.Once
 	stopDone chan struct{}
 }
+
+var (
+	_ Component     = (*Supervisor)(nil)
+	_ Quiescer      = (*Supervisor)(nil)
+	_ ForcedStopper = (*Supervisor)(nil)
+)
 
 // SupervisorOption configures a Supervisor.
 type SupervisorOption func(*Supervisor)
@@ -173,6 +179,9 @@ func (s *Supervisor) Register(spec WorkerSpec) error {
 		return errors.New("supervisor is stopping or quiesced")
 	}
 	if len(s.workers) >= s.maxWorkers {
+		s.pruneStoppedLocked()
+	}
+	if len(s.workers) >= s.maxWorkers {
 		return fmt.Errorf("supervisor worker limit exceeded (%d/%d)", len(s.workers), s.maxWorkers)
 	}
 	if _, exists := s.workers[spec.Name]; exists {
@@ -193,6 +202,65 @@ func (s *Supervisor) Register(spec WorkerSpec) error {
 	return nil
 }
 
+// Deregister removes a stopped worker from the supervisor, freeing its registration slot.
+// A worker that is currently running cannot be deregistered.
+func (s *Supervisor) Deregister(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.workers[name]
+	if !exists {
+		return fmt.Errorf("worker %q is not registered", name)
+	}
+
+	entry.mu.Lock()
+	st := entry.state
+	entry.mu.Unlock()
+
+	if st == WorkerStateRunning {
+		return fmt.Errorf("cannot deregister running worker %q", name)
+	}
+
+	delete(s.workers, name)
+	newOrder := make([]string, 0, len(s.order)-1)
+	for _, n := range s.order {
+		if n != name {
+			newOrder = append(newOrder, n)
+		}
+	}
+	s.order = newOrder
+	return nil
+}
+
+// PruneStopped removes all stopped one-shot workers (Restart == NeverRestart) that
+// finished cleanly without errors. Lifecycle workers (with restart policies) or workers
+// that degraded/failed are retained for diagnostics. Returns the count of pruned workers.
+func (s *Supervisor) PruneStopped() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pruneStoppedLocked()
+}
+
+func (s *Supervisor) pruneStoppedLocked() int {
+	pruned := 0
+	newOrder := make([]string, 0, len(s.order))
+	for _, name := range s.order {
+		w := s.workers[name]
+		w.mu.Lock()
+		canPrune := w.spec.Restart == NeverRestart && w.state == WorkerStateStopped && w.lastError == nil
+		w.mu.Unlock()
+
+		if canPrune {
+			delete(s.workers, name)
+			pruned++
+		} else {
+			newOrder = append(newOrder, name)
+		}
+	}
+	s.order = newOrder
+	return pruned
+}
+
 // Go registers and runs a one-shot or non-restarting worker task.
 func (s *Supervisor) Go(name string, fn func(context.Context) error) error {
 	return s.Register(WorkerSpec{
@@ -200,6 +268,13 @@ func (s *Supervisor) Go(name string, fn func(context.Context) error) error {
 		Restart: NeverRestart,
 		Run:     fn,
 	})
+}
+
+// State returns the current lifecycle state of the supervisor.
+func (s *Supervisor) State() State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state
 }
 
 // Start transitions the supervisor to StateRunning and launches all registered workers.
@@ -234,14 +309,16 @@ func (s *Supervisor) Quiesce(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully cancels all workers and waits for them to join.
-func (s *Supervisor) Stop(ctx context.Context) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
+func (s *Supervisor) beginStop() {
 	s.stopOnce.Do(func() {
 		s.mu.Lock()
+		if s.state == StateCreated {
+			s.state = StateStopped
+			s.quiesced = true
+			s.mu.Unlock()
+			close(s.stopDone)
+			return
+		}
 		s.state = StateStopping
 		s.quiesced = true
 		cancel := s.cancel
@@ -257,6 +334,14 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 			close(s.stopDone)
 		}()
 	})
+}
+
+// Stop gracefully cancels all workers and waits for them to join.
+func (s *Supervisor) Stop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.beginStop()
 
 	select {
 	case <-s.stopDone:
@@ -264,6 +349,40 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// ForceStop enforces bounded cancellation and emergency shutdown on all workers.
+// If workers do not join before ctx deadline, it returns an error reporting the active
+// workers and does NOT claim StateStopped until workers actually finish.
+func (s *Supervisor) ForceStop(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.beginStop()
+
+	select {
+	case <-s.stopDone:
+		return nil
+	case <-ctx.Done():
+		active := s.activeWorkerNames()
+		return fmt.Errorf("supervisor force-stop timed out with %d worker(s) still running: %w", len(active), ctx.Err())
+	}
+}
+
+func (s *Supervisor) activeWorkerNames() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var active []string
+	for _, name := range s.order {
+		w := s.workers[name]
+		w.mu.Lock()
+		st := w.state
+		w.mu.Unlock()
+		if st == WorkerStateRunning {
+			active = append(active, name)
+		}
+	}
+	return active
 }
 
 // Health evaluates the health of the supervisor and all registered workers.

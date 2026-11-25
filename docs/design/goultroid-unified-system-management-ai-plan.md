@@ -1,6 +1,6 @@
 # Goultroid Unified System Management — AI Implementation Plan
 
-**Status:** U1 COMPLETE / AWAITING U2 APPROVAL  
+**Status:** U5 COMPLETED  
 **Target branch:** test-next  
 **Design baseline HEAD:** 08dd3fc9809d02d232e07dd1ddc9d4453a64c071  
 **Design date:** 2026-11-24  
@@ -686,8 +686,42 @@ Audit and, if confirmed, fix:
 - unknown effect remains fenced;
 - no extra retry loop or worker is created.
 
+- **U4 Implementation & Semantic Integrity Outcome (Completed):**
+  - **F-U4-01 — TaskEngine Admission Rejection & Retry Budget Integrity:**
+    - Audited all SQLite retry budget accounting queries: `CountRetryBudgetUses`, `AttemptSummary`, and `ListRecoveryCandidates`.
+    - Updated query filters across all three locations to `state NOT IN ('deferred', 'aborted_before_start')` instead of `state != 'deferred'`.
+    - Admission rejection (e.g. `ReasonPoolBacklogFull`, `ReasonOwnerQueueFull`) records the attempt as `AttemptAbortedBeforeStart` for audit trails and lease fencing, but does NOT count as an execution retry attempt or consume the retry budget.
+    - Occurrences whose previous attempt was aborted before start remain eligible for automatic recovery re-drive without premature occurrence failure.
+    - Verified via store unit tests (`TestStore_AdmissionRejectionDoesNotConsumeRetryBudget`) and manager end-to-end recovery tests (`TestAdmissionRejectionDoesNotExhaustRetryBudgetOrFinalizeOccurrence`).
+  - **F-U4-02 — RPC Cancellation Precedence Over Error Class:**
+    - Audited `RPCFailure.ExecutionSemantics()`.
+    - Prioritized context cancellation (`errors.Is(f.Err, context.Canceled)`) immediately after ambiguous failure evaluation and strictly *before* error class checks (`RPCFloodWait` / `RPCTransient`).
+    - Context cancellation during an RPC call returns `execution.DispositionCancelled` (`code: "context_cancelled"`), ensuring caller cancellation is never misclassified as a retryable flood wait or transient error.
+    - Verified via `TestRPCFailureExecutionSemantics`.
+  - **F-U4-03 — Shutdown vs Caller Cancellation Distinction:**
+    - Updated TaskEngine worker execution signature: `executeAssignment(taskCtx, engineCtx, spec, grant, onStarted)`.
+    - Passing engine context (`workerCtx`) enables deterministic discrimination between caller/user cancellation (`tasks.CauseUserCancel`) and engine shutdown/drain (`tasks.CauseShutdown`).
+    - Interrupted attempts during shutdown preserve lease-expiry quarantine instead of being prematurely marked user-cancelled.
+    - Verified via `TestEngine_ExecutionShutdownVsUserCancel`.
+  - **F-U4-04 — Semantic RetryAfter & Disposition Integrity:**
+    - In TaskEngine `executeAssignment`, ensured that semantic `RetryAfter` is evaluated only for retryable results (`semantics.Disposition == execution.DispositionRetryable && semantics.RetryAfter > 0`).
+    - Permanent failure results (`execution.DispositionPermanent`) or non-retryable results carrying `RetryAfter` metadata retain their permanent disposition and metadata, without entering rate limited / deferral flow (`CauseRateLimited`).
+    - Verified via `TestEngine_SemanticRetryAfterClassification`.
+  - **F-U4-05 — Context Cancellation Precedence in TaskEngine:**
+    - In TaskEngine `executeAssignment`, placed `case errors.Is(err, context.Canceled)` strictly before `errors.As(err, &rateLimit)` and `case errors.Is(err, context.DeadlineExceeded)`.
+    - Guaranteed that true context cancellations are immediately classified as `OutcomeCancelled` with `DispositionCancelled`, and never deferred or scheduled for rate limit retry.
+    - Verified via `TestEngine_CancellationPrecedesRateLimit`.
+  - **Verification Results:**
+    - Targeted race tests on `./internal/telegram`, `./internal/taskengine`, `./internal/jobs`, `./internal/jobs/sqlite`: PASS.
+    - Full repository race test suite (`go test -race ./...`): PASS (100% across all packages).
+    - `go vet ./...`: PASS (0 warnings).
+    - `gofmt -l .`: PASS (0 unformatted files).
+
+
 ### Phase U5 — Resource and lifecycle conformance
 
+**Status:** COMPLETED  
+**Final Accepted Implementation Baseline:** `505d400322baf75bcc0613f4f1a2110bedd938dd`  
 **Goal:** prove every long-lived resource has one bounded owner.
 
 Potential work:
@@ -705,6 +739,79 @@ Potential work:
 - idle memory/worker baseline;
 - repeated lifecycle start/stop tests;
 - resource snapshot returns to zero after cleanup.
+
+- **Implementation Details (U5-B):**
+  - **Supervisor Forced Shutdown (U5-B1):**
+    - Implemented `runtime.ForcedStopper` on `Supervisor` (`ForceStop(ctx context.Context) error`).
+    - Cancels all workers via context cancellation, bounds worker join wait with caller context/deadline without blocking indefinitely.
+    - If forced join deadline expires with active workers, `Supervisor` accurately reports `StateStopping` (never falsely claiming `StateStopped`), returns a context deadline error, and lists active workers.
+    - Safe background reaper joins exiting workers and transitions state to `StateStopped` once all workers finish.
+  - **Worker Registration Semantics & Retention (U5-B2):**
+    - Added `Deregister(name string) error` allowing explicit deregistration of stopped workers while rejecting running workers.
+    - Added bounded capacity protection with automatic pruning (`PruneStopped()` and `pruneStoppedLocked()`) for clean one-shot workers (`NeverRestart && WorkerStateStopped && lastError == nil`) when worker capacity is reached.
+    - Preserved diagnostic health history for lifecycle workers (`RestartTransient`) and failed/degraded workers.
+  - **Voice Persistence Ownership (U5-B3):**
+    - Eliminated all unmanaged background goroutines (`go func() { ... }()`) using `context.Background()` across `internal/voice/queue.go` and `internal/voice/player.go`.
+    - Made `Enqueue`, `Dequeue`, `Clear`, and `persistSession` synchronous with explicit context propagation and bounded timeouts.
+    - Guaranteed in-memory consistency: DB operations precede memory modifications so persistence errors abort changes cleanly without desynchronization.
+  - **Resource Snapshot Verification on Shutdown (U5-B4):**
+    - Added `ForceCleanupAllContext(ctx context.Context) []error` to `resource.Manager` to clean up eligible resources across all owners under bounded shutdown context.
+    - Added `VerifyShutdownClean() error` to `resource.Manager` to inspect remaining active or leaked resources and format deterministic, sensitive-data-safe summaries (`owner:[type=count]`).
+    - Integrated force-cleanup and leak verification into `App.performShutdown()`, deterministically combining cleanup errors and resource leaks into the final shutdown error.
+    - Disallowed deleting untracked resources without cleanup callbacks during force cleanup to prevent false-clean snapshots.
+  - **Repeated Lifecycle & Architecture Conformance Tests (U5-B5):**
+    - Added `TestRepeatedLifecycle_StartStopRounds`, `TestRepeatedLifecycle_WorkerPanicAndRestart`, `TestRepeatedLifecycle_CancellationWhileWorkerActive`, `TestRepeatedLifecycle_ForceStopUncooperativeWorker`, and `TestRepeatedLifecycle_VoicePersistenceLifecycle` in `internal/app/repeated_lifecycle_test.go`.
+    - Added architecture enforcement tests in `internal/architecture/system_management_u5_test.go` ensuring `internal/voice` contains zero detached `go` statements and `Supervisor` implements `ForcedStopper`.
+  - **Verification & Closure Details (U5-C):**
+    - **Voice Context & Persistence Integrity (U5-C1):**
+      - Removed all fallback `context.Background()` instances across `internal/voice/queue.go` and `internal/voice/player.go`.
+      - Enforced non-nil caller context across all queue and player operational methods (`NewQueue`, `Enqueue`, `Dequeue`, `Clear`, `Play`, `Pause`, `Resume`, `Skip`, `Stop`, `Leave`, `SetVolume`, `SetRepeatMode`, `GetOrCreateSession`, `Shutdown`), immediately returning `ErrNilContext` or `ctx.Err()`.
+      - Guarded against post-shutdown operations via `s.stopped` and `s.stopCh`, ensuring no new backend calls or database queries can execute after `Shutdown()`.
+      - Guaranteed honest error reporting: operations that succeeded on the Telegram/backend layer (e.g. `Play`, `Pause`, `Resume`, `SetVolume`) do not falsely claim rollback if persistence fails, but honestly report the persistence failure to the caller.
+      - Updated `Service.Shutdown()` to capture and deterministically aggregate backend and persistence errors via `errors.Join`.
+      - Added deterministic unit tests for nil/canceled contexts, repository errors, post-shutdown rejection, and state consistency.
+    - **Strengthened Full App Lifecycle Tests (U5-C2):**
+      - Added `TestRepeatedLifecycle_RealAppCompositionStartShutdownRounds` testing repeated startup/shutdown on full `App` composition roots built via `New(cfg)` with verified resource cleanup and settling.
+      - Added `TestRepeatedLifecycle_LateCleanupCallbackDetected` confirming delayed cleanup callbacks are reliably trapped and reported without falsely reporting clean state.
+      - Added `TestRepeatedLifecycle_VoiceShutdownNoLingeringOperations` ensuring all database queries finish before `Shutdown()` returns and in-flight operations drop to zero.
+      - Added AST architecture test `TestU5_VoiceQueueAndPlayerHaveNoBackgroundContextFallbacks` ensuring zero `context.Background()` fallbacks in `queue.go` and `player.go`.
+    - **In-flight Operation Coordination & Atomic Admission Control (U5-C Correction):**
+      - Integrated atomic admission control (`beginOp(ctx)` / `release()`) in `voice.Service`.
+      - Guarded all public operational methods (`Play`, `Pause`, `Resume`, `Skip`, `Stop`, `Leave`, `SetVolume`, `SetRepeatMode`, `GetOrCreateSession`) with atomic admission under `s.mu.Lock()`, atomically verifying `!s.stopped` and incrementing `s.activeOps`.
+      - Immediate fail-closed admission rejection: new operations attempting admission after shutdown has begun are rejected immediately with `ErrServiceStopped`.
+      - Graceful coordinated shutdown: `Shutdown(ctx)` sets `s.stopped = true`, signals `s.stopCh`, releases `s.mu`, and deterministically awaits completion of active operations bounded by caller context/deadline.
+      - Honest timeout reporting: if shutdown deadline expires with operations still active, returns an error wrapping `context.DeadlineExceeded` with remaining active operation counts, without corrupted state.
+      - Teardown synchronization: backend disconnection (`Stop`, `Leave`), in-memory session cleanup, and final session persistence execute strictly after all in-flight operations complete, guarded against concurrent shutdown calls via `s.shutdownMu`.
+      - Added deterministic concurrency tests (`TestPlayerService_ShutdownWaitsForInFlightOperation`, `TestPlayerService_ShutdownDeadlineExceededOnStuckOperation`, and `TestRepeatedLifecycle_VoiceShutdownConcurrentInFlightOperationCoordination`).
+    - **Retryable Voice Teardown & Shutdown Result Integrity (U5-C5):**
+      - Differentiated lifecycle shutdown phases: shutdown initiated (`stopped`), active operations drained, and teardown completed (`drained`).
+      - Preserved session teardown snapshot in `s.pendingTeardown` tracking granular progress per session (`stopped`, `left`, `persisted`).
+      - Enforced strict teardown ordering (F-U5-C5-01): `backend.Stop()` must complete successfully before `backend.Leave()` is invoked. If `Stop()` fails, teardown for that session aborts without calling `Leave()` or persisting idle state, leaving the connection intact for `Stop()` retry.
+      - Retried only uncompleted teardown steps upon subsequent `Shutdown()` invocations without duplicating previously completed side effects; `backend.Leave()` and idle state persistence execute strictly after `Stop()` succeeds.
+      - Guaranteed `s.drained` is set to `true` strictly when all sessions have completely and successfully torn down.
+      - Documented lifecycle boundary: `voice.Service.Shutdown()` is individually retryable, while the top-level `App.performShutdown()` and `Runtime` execution remain single-cycle bounded shutdowns (`stopOnce`).
+      - Added `StopCh() <-chan struct{}` to provide explicit synchronization that shutdown admission has closed, eliminating timing jitter in concurrency tests.
+      - Added deterministic unit tests for backend `Stop` retry without calling `Leave` on failure, backend `Leave` retry, idle session persistence retry, multiple sessions partial failure, and post-success idempotency.
+  - **Verification Results:**
+    - Targeted race tests on `./internal/runtime`, `./internal/voice/...`, `./plugins/voice/...`, `./internal/resource`, `./internal/app`, `./internal/architecture`: PASS.
+    - Full repository race test suite (`go test -race ./...`): PASS.
+    - `go vet ./...`: PASS (0 warnings).
+    - `gofmt -l .`: PASS (0 unformatted files).
+  - **U5 Closure & Lifecycle Boundary Summary:**
+    - **U5-A — Read-only audit:** All lifecycle findings and resource risks investigated and confirmed resolved.
+    - **U5-B — Initial hardening:** Implemented `runtime.ForcedStopper` on `Supervisor`, worker registration pruning, synchronous voice persistence with explicit context propagation, `resource.Manager` force cleanup & leak verification, and repeated lifecycle tests.
+    - **U5-C — Conformance correction:** Eliminated `context.Background()` fallbacks, enforced persistence integrity, integrated atomic operation admission (`beginOp`/`release`), and bounded in-flight shutdown coordination.
+    - **U5-C5 — Retryable teardown:** Granular teardown progress tracking (`sessionTeardownProgress`) and retry for `Stop`, `Leave`, and idle session persistence.
+    - **F-U5-C5-01 — Strict teardown ordering:** `backend.Stop()` must succeed before `backend.Leave()` is invoked; failure of `Stop()` inhibits `Leave()` and idle persistence, keeping the voice connection intact for `Stop()` retry.
+    - **Explicit Lifecycle Boundaries:**
+      - Voice domain shutdown (`voice.Service.Shutdown`) features an individually retryable teardown mechanism.
+      - Top-level `App.performShutdown()` and `Runtime` shutdown remain single-cycle bounded shutdowns via `stopOnce`. Retryable teardown in Voice does not mean the entire App or Runtime shutdown can be re-run or retried from scratch.
+      - App lifecycle tests verify the real `New(cfg)` composition root, DAG components, and background services, but do not invoke full Telegram `Run()` involving live network connections or external authentication.
+    - **Closure Decision:**
+      - All audited U5 findings are accepted, fully covered by deterministic unit/concurrency tests, and verified under race detection.
+      - No technical blockers remain for U5. Phase U5 is officially **COMPLETED**.
+      - Final accepted implementation baseline: `505d400322baf75bcc0613f4f1a2110bedd938dd`.
+      - Handoff to Phase U6: Ready for planning and failure acceptance matrix specification.
 
 ### Phase U6 — End-to-end management acceptance
 

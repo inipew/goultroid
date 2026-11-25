@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -36,12 +37,31 @@ func TestRPCFailureExecutionSemantics(t *testing.T) {
 			failure:     &RPCFailure{Method: "x", Class: RPCTransient, Ambiguous: true, Err: errors.New("unknown effect")},
 			disposition: execution.DispositionPermanent,
 		},
+		{
+			name:        "cancellation during transient",
+			failure:     &RPCFailure{Method: "x", Class: RPCTransient, Err: context.Canceled},
+			disposition: execution.DispositionCancelled,
+		},
+		{
+			name:        "cancellation during flood wait",
+			failure:     &RPCFailure{Method: "x", Class: RPCFloodWait, RetryAfter: 10 * time.Second, Err: context.Canceled},
+			disposition: execution.DispositionCancelled,
+		},
+		{
+			name:        "cancellation during ambiguous stays permanent",
+			failure:     &RPCFailure{Method: "x", Class: RPCTransient, Ambiguous: true, Err: context.Canceled},
+			disposition: execution.DispositionPermanent,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.failure.ExecutionSemantics()
 			if got.Disposition != tc.disposition || got.RetryAfter != tc.retryAfter {
 				t.Fatalf("semantics=%+v, want disposition=%q retry_after=%v", got, tc.disposition, tc.retryAfter)
+			}
+			// Verify that execution.ExplicitSemantics also extracts the correct disposition
+			if explicit, ok := execution.ExplicitSemantics(tc.failure); !ok || explicit.Disposition != tc.disposition {
+				t.Fatalf("ExplicitSemantics=%+v, want disposition=%q", explicit, tc.disposition)
 			}
 		})
 	}

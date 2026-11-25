@@ -562,3 +562,108 @@ func TestStorePrepareNextAttemptLeasePreservesActiveAttemptFencing(t *testing.T)
 		t.Fatalf("terminal predecessor did not allow next lease: %v", err)
 	}
 }
+
+func TestStore_AdmissionRejectionDoesNotConsumeRetryBudget(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+
+	def := &jobs.JobDefinition{
+		ID:          "job-abort-budget",
+		ScopeOwner:  "system",
+		QuotaOwner:  "system",
+		HandlerType: "test.abort",
+		Enabled:     true,
+	}
+	if err := s.SaveDefinition(ctx, def); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	occ := &jobs.JobOccurrence{
+		ID:            "occ-abort-budget",
+		JobID:         def.ID,
+		ScheduledFor:  now,
+		OccurrenceKey: "abort-budget-key",
+		State:         jobs.OccurrenceReady,
+		ReadyAt:       now,
+	}
+	if err := s.MaterializeOccurrence(ctx, occ); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. First attempt aborted before start (e.g. TaskEngine admission rejected)
+	first, err := s.PrepareNextAttemptLease(ctx, occ.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptResult(ctx, first.ID, first.LeaseEpoch, jobs.AttemptAbortedBeforeStart, nil, "admission rejected: queue full"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify that CountRetryBudgetUses is 0
+	retryUses, err := s.CountRetryBudgetUses(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryUses != 0 {
+		t.Fatalf("CountRetryBudgetUses = %d, want 0 for aborted_before_start", retryUses)
+	}
+
+	// Verify that AttemptSummary reflects AttemptCount=1 but RetryBudgetUses=0
+	summary, err := s.AttemptSummary(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.AttemptCount != 1 {
+		t.Fatalf("summary.AttemptCount = %d, want 1 (audit retained)", summary.AttemptCount)
+	}
+	if summary.RetryBudgetUses != 0 {
+		t.Fatalf("summary.RetryBudgetUses = %d, want 0", summary.RetryBudgetUses)
+	}
+	if summary.Latest.State != jobs.AttemptAbortedBeforeStart {
+		t.Fatalf("summary.Latest.State = %s, want aborted_before_start", summary.Latest.State)
+	}
+
+	// Verify ListRecoveryCandidates also reports RetryBudgetUses=0
+	candidates, err := s.ListRecoveryCandidates(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %d, want 1", len(candidates))
+	}
+	if candidates[0].Summary.RetryBudgetUses != 0 {
+		t.Fatalf("candidate.Summary.RetryBudgetUses = %d, want 0", candidates[0].Summary.RetryBudgetUses)
+	}
+
+	// 2. Second attempt actually runs and fails
+	second, err := s.PrepareNextAttemptLease(ctx, occ.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptResult(ctx, second.ID, second.LeaseEpoch, jobs.AttemptFailed, nil, "handler execution error"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now CountRetryBudgetUses must be exactly 1 (only the real execution failure counted)
+	retryUses2, err := s.CountRetryBudgetUses(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retryUses2 != 1 {
+		t.Fatalf("CountRetryBudgetUses = %d, want 1 (only failed attempt counted)", retryUses2)
+	}
+
+	summary2, err := s.AttemptSummary(ctx, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary2.AttemptCount != 2 {
+		t.Fatalf("summary2.AttemptCount = %d, want 2", summary2.AttemptCount)
+	}
+	if summary2.RetryBudgetUses != 1 {
+		t.Fatalf("summary2.RetryBudgetUses = %d, want 1", summary2.RetryBudgetUses)
+	}
+}

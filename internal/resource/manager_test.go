@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -236,4 +237,69 @@ func TestResourceCleanupUsesSharedCallbackBudget(t *testing.T) {
 		t.Fatal("resource cleanup started despite exhausted shared callback budget")
 	}
 	close(release)
+}
+
+func TestResourceManager_ForceCleanupAllContext_And_VerifyShutdownClean(t *testing.T) {
+	mgr := NewManager()
+
+	r1Cleaned := false
+	if err := mgr.RegisterWithCleanup(Resource{ID: "r1", Owner: "ownerA", Type: TypeTempFile}, func() error {
+		r1Cleaned = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.RegisterWithCleanup(Resource{ID: "r2", Owner: "ownerB", Type: TypeProcess}, func() error {
+		return errors.New("cannot kill process")
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.Register(Resource{ID: "r3", Owner: "ownerA", Type: TypeGoroutine}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	errs := mgr.ForceCleanupAllContext(ctx)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 cleanup error, got %d: %v", len(errs), errs)
+	}
+	if !r1Cleaned {
+		t.Fatal("expected r1 to be cleaned")
+	}
+	if _, found := mgr.Get("r1"); found {
+		t.Fatal("expected r1 to be removed after successful cleanup")
+	}
+	if _, found := mgr.Get("r2"); !found {
+		t.Fatal("expected r2 to be retained after failed cleanup")
+	}
+	if _, found := mgr.Get("r3"); !found {
+		t.Fatal("expected r3 to be retained because it has no cleanup function")
+	}
+
+	leakErr := mgr.VerifyShutdownClean()
+	if leakErr == nil {
+		t.Fatal("expected leakErr from VerifyShutdownClean, got nil")
+	}
+	errMsg := leakErr.Error()
+	// Should report 2 unreleased resources and deterministic summary
+	if !strings.Contains(errMsg, "2 unreleased resource(s)") {
+		t.Errorf("expected 2 unreleased resources in error, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "ownerA:[goroutine=1]") {
+		t.Errorf("expected ownerA:[goroutine=1] in error, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "ownerB:[process=1]") {
+		t.Errorf("expected ownerB:[process=1] in error, got: %s", errMsg)
+	}
+
+	// Now release remaining resources and verify it is clean
+	_ = mgr.Release("r2")
+	_ = mgr.Release("r3")
+	if err := mgr.VerifyShutdownClean(); err != nil {
+		t.Fatalf("expected nil after all resources released, got: %v", err)
+	}
 }

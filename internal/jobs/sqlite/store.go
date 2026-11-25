@@ -288,12 +288,12 @@ func (s *Store) CountAttempts(ctx context.Context, occurrenceID string) (int, er
 }
 
 // CountRetryBudgetUses returns physical attempts that consume the ordinary
-// retry budget. Explicit durable deferrals remain part of the immutable
-// physical attempt sequence but do not consume MaxAttempts.
+// retry budget. Explicit durable deferrals and admission rejections (aborted before start)
+// remain part of the immutable physical attempt sequence for audit/fencing but do not consume MaxAttempts (ADR 0006 §7.4).
 func (s *Store) CountRetryBudgetUses(ctx context.Context, occurrenceID string) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM job_attempts WHERE occurrence_id = ? AND state <> 'deferred'`,
+		`SELECT COUNT(*) FROM job_attempts WHERE occurrence_id = ? AND state NOT IN ('deferred', 'aborted_before_start')`,
 		occurrenceID,
 	).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count job retry budget uses: %w", err)
@@ -364,7 +364,7 @@ func (s *Store) AttemptSummary(ctx context.Context, occurrenceID string) (*jobs.
 	WITH stats AS (
 		SELECT occurrence_id,
 		       COUNT(*) AS attempt_count,
-		       SUM(CASE WHEN state <> 'deferred' THEN 1 ELSE 0 END) AS retry_budget_uses,
+		       SUM(CASE WHEN state NOT IN ('deferred', 'aborted_before_start') THEN 1 ELSE 0 END) AS retry_budget_uses,
 		       SUM(CASE WHEN state = 'deferred' THEN 1 ELSE 0 END) AS deferrals,
 		       MAX(attempt_no) AS latest_attempt_no
 		FROM job_attempts
@@ -587,7 +587,7 @@ func (s *Store) ListRecoveryCandidates(ctx context.Context, limit int) ([]jobs.R
 	stats AS (
 		SELECT a.occurrence_id,
 		       COUNT(*) AS attempt_count,
-		       SUM(CASE WHEN a.state <> 'deferred' THEN 1 ELSE 0 END) AS retry_budget_uses,
+		       SUM(CASE WHEN a.state NOT IN ('deferred', 'aborted_before_start') THEN 1 ELSE 0 END) AS retry_budget_uses,
 		       SUM(CASE WHEN a.state = 'deferred' THEN 1 ELSE 0 END) AS deferrals,
 		       MAX(a.attempt_no) AS latest_attempt_no
 		FROM job_attempts a

@@ -58,4 +58,6 @@ var (
 	ErrBackendFailed          = errors.New("voice backend operation failed")
 	ErrUnsupportedMedia       = errors.New("unsupported voice media format")
 	ErrVoiceChatNotFound      = errors.New("no active voice chat found in group")
+	ErrServiceStopped         = errors.New("voice service is stopped")
+	ErrNilContext             = errors.New("voice operation requires non-nil context")
 )
