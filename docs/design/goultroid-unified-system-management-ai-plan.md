@@ -830,6 +830,15 @@ Scenarios:
 10. Shutdown deadline expires and explicit forced fences run.
 11. Repeated startup/shutdown does not grow goroutines or retained memory.
 12. Health remains bounded while a subsystem probe is slow.
+13. Supervisor crash loop, panic isolation, and restart backoff (U6-S13 extension).
+
+- **U6 Closure & Acceptance Summary:**
+  - **Status:** **COMPLETED** (test-only acceptance conformance; zero production code or API changes required).
+  - **U6-A / U6-A1 — Read-only Audit & Failure Acceptance Matrix:** Mapped cross-subsystem ownership boundaries and finalized measurable acceptance criteria for `U6-S01` through `U6-S13`.
+  - **U6-B1 — Deterministic Fixtures (`dd86d28f211bf5a981121dd6066b9238c8c3cae7`):** Added barrier synchronization (`u6ExecutionGate`), concurrency-safe sequential fault store wrapper (`u6FaultAttemptStore` with pre-write/post-write modes and epoch-scoped `WaitNextFault`), and external SQLite exclusive lock helper (`u6SQLiteLockHolder` verifying `SQLITE_BUSY`/`SQLITE_LOCKED`).
+  - **U6-B2 — App Lifecycle, Health, & Resource Acceptance (`04c53ea9710cf73c23cc32cdb66dd984ef4589b5`):** Verified `U6-S01`, `U6-S02`, `U6-S08`, `U6-S09`, `U6-S10A`/`U6-S10B`, `U6-S11` (5 full App rounds with fixed goroutine tolerance), `U6-S12` (50 concurrent health probes bounded to 1 active `fsProbeSlot`), and `U6-S13` under `-race`.
+  - **U6-B3 — TaskEngine, Scheduler, FloodWait, & Recovery Acceptance (`74324fce94a259ee27d99c223a088439f588e8b6`):** Verified `U6-S03A`/`U6-S03B` (pool backlog & retained-byte budget rejections), `U6-S04` (durable recovery & expired running lease quarantine), `U6-S05` (`MisfireRunOnce` no-storm handoff), `U6-S06` (`FloodWait` durable deferral, cancellation precedence, ambiguous permanent stop), and `U6-S07` (SQLite contention & `PersistencePump` backpressure) under `-race`.
+  - **U6-B4 Verification Note:** All U6 acceptance packages (`internal/taskengine`, `internal/scheduler`, `internal/jobs`, `internal/jobs/sqlite`, `internal/runtime`, `internal/resource`, `internal/telegram`, `internal/architecture`) passed `go test -race` and `go vet`. `internal/app` passed `go test -race` (`49.596s`) prior to an unrelated `plugins/myxl/module.go` build error (`missing method GetTokenMaintenanceConfig`) present in the workspace during the final `./...` run.
 
 Final output must include measured before/after data where performance is claimed. Do not claim performance improvement from architecture diagrams or code inspection alone.
 
