@@ -93,9 +93,9 @@ func (p *ExtractorProvider) Name() string {
 	return "extractor"
 }
 
-// Match checks if rawURL points to a supported streaming/media platform.
+// Match checks if rawURL points to a supported streaming/media platform over HTTP(S).
 func (p *ExtractorProvider) Match(rawURL string) bool {
-	u, err := url.Parse(rawURL)
+	u, err := ValidateURL(rawURL)
 	if err != nil {
 		return false
 	}

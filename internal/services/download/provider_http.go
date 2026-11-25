@@ -123,6 +123,9 @@ func (p *DirectHTTPProvider) Download(ctx context.Context, rawURL string, store 
 		return nil, fmt.Errorf("%w: content length %d exceeds max allowed %d", core.ErrResourceLimit, resp.ContentLength, maxBytes)
 	}
 
+	// Determine MIME type before filename fallback so extensionless URLs get a typed filename.
+	mimeType := normalizeHTTPMIME(resp.Header.Get("Content-Type"))
+
 	// Resolve filename
 	fileName := opts.TargetFilename
 	if fileName == "" {
@@ -145,14 +148,11 @@ func (p *DirectHTTPProvider) Download(ctx context.Context, rawURL string, store 
 		}
 	}
 	if fileName == "" {
-		fileName = "downloaded_file.bin"
+		fileName = defaultHTTPFilename(mimeType)
 	}
 	fileName = core.SanitizeFileName(fileName)
-
-	// Determine MIME type
-	mimeType := resp.Header.Get("Content-Type")
-	if mimeType == "" {
-		mimeType = "application/octet-stream"
+	if fileName == "" || fileName == "." {
+		fileName = defaultHTTPFilename(mimeType)
 	}
 
 	// Bounded limit reader to prevent streaming beyond quota
@@ -181,4 +181,52 @@ func (p *DirectHTTPProvider) Download(ctx context.Context, rawURL string, store 
 	}
 
 	return asset, nil
+}
+
+func normalizeHTTPMIME(contentType string) string {
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" {
+		return "application/octet-stream"
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentType); err == nil && mediaType != "" {
+		return strings.ToLower(mediaType)
+	}
+	if semi := strings.IndexByte(contentType, ';'); semi >= 0 {
+		contentType = strings.TrimSpace(contentType[:semi])
+	}
+	if contentType == "" {
+		return "application/octet-stream"
+	}
+	return strings.ToLower(contentType)
+}
+
+func defaultHTTPFilename(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "video/mp4":
+		return "downloaded_file.mp4"
+	case "video/webm":
+		return "downloaded_file.webm"
+	case "audio/mpeg":
+		return "downloaded_file.mp3"
+	case "audio/mp4":
+		return "downloaded_file.m4a"
+	case "audio/ogg":
+		return "downloaded_file.ogg"
+	case "image/jpeg":
+		return "downloaded_file.jpg"
+	case "image/png":
+		return "downloaded_file.png"
+	case "image/webp":
+		return "downloaded_file.webp"
+	case "image/gif":
+		return "downloaded_file.gif"
+	case "application/pdf":
+		return "downloaded_file.pdf"
+	case "application/zip":
+		return "downloaded_file.zip"
+	}
+	if exts, err := mime.ExtensionsByType(mimeType); err == nil && len(exts) > 0 {
+		return "downloaded_file" + exts[0]
+	}
+	return "downloaded_file.bin"
 }

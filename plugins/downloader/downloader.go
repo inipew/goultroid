@@ -136,6 +136,17 @@ func (p *Plugin) Commands() []core.Command {
 			// Resource ownership belongs to the continuation task that performs I/O.
 			Handler: p.handleDownload,
 		},
+		{
+			Name:        "yt",
+			Description: "Search YouTube or download a YouTube URL",
+			Usage:       ".yt <query|youtube-url>",
+			Category:    "Media",
+			Permission:  core.PermissionSudo,
+			ReplyOnly:   false,
+			Cooldown:    3 * time.Second,
+			Timeout:     downloaderExecutionTimeout,
+			Handler:     p.handleYouTubeCommand,
+		},
 	}
 }
 
@@ -226,11 +237,8 @@ func (p *Plugin) urlResources(rawURL string) []tasks.ResourceRequirement {
 
 func (p *Plugin) handleDownload(ctx *core.Context) error {
 	// 1. Check if a URL was provided as an argument.
-	if len(ctx.Args) > 0 {
-		targetURL := strings.TrimSpace(ctx.Args[0])
-		if strings.HasPrefix(targetURL, "http://") || strings.HasPrefix(targetURL, "https://") {
-			return p.handleURLDownload(ctx, targetURL)
-		}
+	if targetURL := strings.TrimSpace(strings.Join(ctx.Args, " ")); targetURL != "" {
+		return p.handleURLDownload(ctx, targetURL)
 	}
 
 	// 2. Otherwise, check for media in replied or current message.

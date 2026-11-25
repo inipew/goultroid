@@ -48,10 +48,13 @@ flowchart LR
 flowchart LR
     Y["@bot yt <query> or .yt <query-or-url>"] --> D{"Query or YouTube URL?"}
     D -->|"Query"| S["TaskEngine youtube-search (3s) -> Registry.Search('extractor')"]
-    S --> F["Filter Source == 'youtube' -> yt_<SourceID> View"]
-    F --> C["a2 Action: select_audio / select_video / format / quality"]
-    D -->|"YouTube URL"| C
+    S --> F["Filter Source == 'youtube' -> yt_<SourceID> / Native List"]
+    F -->|"Inline a2"| C["a2 Action: select_audio / select_video / format / quality"]
+    D -->|"YouTube URL (renderer available)"| IR["openInteractiveURLDownload ('dl <url>') -> a2 Flow"]
+    IR --> C
+    D -->|"YouTube URL (renderer unavailable / fallback)"| ND["startNativeURLDownload (default format)"]
     C --> P["Shared submitURLPipeline (pool: download) -> Registry.Download(..., targetStore)"]
+    ND --> P
     P --> ST["registerRetainedAsset (LifecycleRetained)"]
     ST -->|"OnComplete (success)"| DEL["Shared submitRetainedDelivery (pool: general)"]
     DEL --> RPC["Delivery Callback / Service.SendMedia (RPCExecutor)"]
@@ -89,7 +92,9 @@ flowchart LR
 
 ### 4.1 Explicit `.yt` Semantics (`DL-D`)
 - **`.yt <query>`:** Runs YouTube search via `searchYouTube` (`Registry.Search("extractor", query)`) and presents YouTube result selection (`Source == "youtube"`).
-- **`.yt <youtube-url>`:** Validates that the URL host is a YouTube domain (`youtube.com`, `youtu.be`) and enters the YouTube media/format selection flow directly, executing through the **shared** `submitURLPipeline` → `submitRetainedDelivery`.
+- **`.yt <youtube-url>`:** Validates that the URL host is a YouTube domain (`youtube.com`, `www.youtube.com`, `m.youtube.com`, `youtu.be`) and routes through `handleURLDownload`:
+  - **Self-inline renderer available:** opens the interactive format/quality selection flow (`dl <url>`).
+  - **Self-inline renderer unavailable (or fallback-safe error):** falls back to `startNativeURLDownload` (default format) through the **shared** `submitURLPipeline` → `registerRetainedAsset` → `submitRetainedDelivery`.
 - **`.yt <non-youtube-url>`:** Rejected with a clear user-facing message directing the user to `.dl <url>` for non-YouTube URLs.
 - **`.dl <youtube-url>` / `.download <youtube-url>`:** Remains fully supported through General Downloader and the shared `ExtractorProvider` + `submitURLPipeline` (no duplicate pipeline implementation).
 
@@ -123,8 +128,8 @@ flowchart LR
 - **DL-H — Documentation Closure:** Update roadmap and close Downloader domain separation.
 
 ### 6.1 Expanded Test Matrix & Acceptance Criteria
-1. **Happy paths:** `.dl <http-url>`, `.dl <non-yt-extractor-url>`, `.dl <youtube-url>`, `.dl` reply-to-media, `@bot yt <query>`, `.yt <query>`, `.yt <youtube-url>`.
-2. **`.yt` rejection:** `.yt <non-youtube-url>` rejected cleanly with guidance to use `.dl`.
+1. **Happy paths:** `.dl <http-url>`, `.dl <non-yt-extractor-url>`, `.dl <youtube-url>`, `.dl` reply-to-media, `@bot yt <query>`, `.yt <query>`, `.yt <youtube-url>` (both interactive renderer-available and native default-format fallback when renderer is unavailable).
+2. **`.yt` rejection:** `.yt <non-youtube-url>` and malformed/scheme-less URL-like inputs (e.g., `youtube.com`, `youtube.com?list=...`, `//youtube.com/...`, `youtube.com.evil.example`) rejected cleanly as URLs with guidance to use `.dl`, without falling back to search.
 3. **Backward compatibility:** Decoding legacy `interactiveState` JSON fixtures; executing callbacks with existing `interactiveActions`; active inline/a2 sessions; stale, expired, cancel, and retry transitions.
 4. **Failure & cancellation paths:** Extractor failure/timeout, HTTP failure/SSRF/oversize, cancellation during download (stops task & joins progress reporter), FloodWait during Telegram delivery (`RPCExecutor` handling), `FileStorage.Put` failure, `registerRetainedAsset` conflict rollback (`store.Delete`), delivery failure preserving retained asset, and resource bounds (`download`/`process`/`media` grants released).
 5. **Verification gates:** `gofmt`, `go vet`, `go test -race ./plugins/downloader/... ./internal/services/download/...`, `go test ./internal/architecture/...`.
