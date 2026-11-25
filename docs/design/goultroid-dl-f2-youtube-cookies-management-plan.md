@@ -2,7 +2,7 @@
 
 ## Status
 
-- Status: DL-F2-A CLOSED / APPROVED; DL-F2-B CLOSED / APPROVED; DL-F2-C CLOSED / APPROVED; DL-F2-D implemented and awaiting review (yt-dlp integration).
+- Status: CLOSED / APPROVED (DL-F2-A..E complete; no further implementation phases open).
 - Repository: inipew/goultroid
 - Target branch: test-next
 - Planning baseline HEAD: ed1dac7b4502463c9c24c3d3b2f9530cf571528b
@@ -302,14 +302,16 @@ The feature is complete only when all applicable conditions are demonstrated:
 16. Resource use remains bounded; no new runtime/worker/retry subsystem is introduced.
 17. Deployment instructions explain key creation, provisioning, backup, rotation, and restore.
 
-## 10. Operational considerations
+## 10. Operational considerations & deployment key management
 
-- Owner exports cookies from a browser session they control. Prefer a dedicated browser profile used only for YouTube to minimize unrelated session data.
-- Treat Telegram upload as transmission of a bearer-like session credential through Telegram. Use only the intended private conversation and never forward the file.
-- Cookie exports expire and may be invalidated. Local validation cannot guarantee remote authentication.
-- Key rotation must explicitly decrypt with the old key, encrypt with the new key, atomically replace, then update deployment secret. Changing the key alone makes old ciphertext unreadable.
-- Backups must include encrypted data and a separately protected key backup. Ciphertext-only backup cannot restore authentication.
-- If Telegram deletion cannot be confirmed, surface that fact and advise the owner to remove the message manually; never imply remote attachment erasure.
+- **Key generation & provisioning:** Generate a 32-byte key (`openssl rand -base64 32`) and provide it via deployment secret `GOULTROID_YTDLP_COOKIES_KEY` (base64 or 64-char hex). Never commit the key to Git or `.env` files in source control.
+- **Owner cookie export:** Owner exports cookies from a browser session they control. Prefer a dedicated browser profile used only for YouTube to minimize unrelated session data.
+- **Telegram transport caveat:** Treat Telegram upload as transmission of a bearer-like session credential through Telegram. Use only Saved Messages and never forward the file.
+- **No write-back & expiry:** Cookie exports expire and may be invalidated by YouTube. Local validation checks syntax and auth cookie pairs only; it cannot guarantee remote authentication. Because per-operation snapshots are never written back to `yt_cookies.enc`, the owner must re-upload a fresh `cookies.txt` if YouTube invalidates the session.
+- **Key rotation:** Decrypt/re-export fresh cookies, update `GOULTROID_YTDLP_COOKIES_KEY` in the deployment secret manager, restart Goultroid, and re-upload `cookies.txt` via `.ytcookies` in Saved Messages (or run `.ytcookies delete` before rotating). Changing `GOULTROID_YTDLP_COOKIES_KEY` without re-uploading renders existing `yt_cookies.enc` unreadable (`status_key_unavailable` / `corrupt`).
+- **Backup, restore & recovery:** Back up both `data/plugins/downloader/yt_cookies.enc` and the separately managed `GOULTROID_YTDLP_COOKIES_KEY`. Ciphertext-only backups cannot be decrypted without the matching key. If `yt_cookies.enc` becomes corrupt, run `.ytcookies delete` and upload a fresh `cookies.txt`. If `.ytcookies` reports `dir_sync_unconfirmed`, the replacement is already active; verify with `.ytcookies status`.
+- **Telegram deletion failure:** If Telegram deletion cannot be confirmed, surface that fact honestly and advise the owner to remove the message manually; never imply remote attachment erasure.
+- **Residual risks:** `Dockerfile` currently fetches `yt-dlp` from `releases/latest/download/yt-dlp`; pinning an explicit release tag in `Dockerfile` is recommended for reproducible container builds.
 - Do not retry authentication failures indefinitely. Classify sign-in challenges as requiring owner action.
 
 ## 11. Progress register
@@ -319,11 +321,9 @@ The feature is complete only when all applicable conditions are demonstrated:
 | DL-F2-A — Source audit and detailed design | CLOSED / APPROVED | `docs/design/goultroid-dl-f2-a-youtube-cookies-audit-and-design.md` (commit `74c6d4e59351f9199f31c6fe9b6361f90a7270da`) |
 | DL-F2-B — Telegram ingestion | CLOSED / APPROVED | `plugins/downloader/youtube_cookies.go`, `youtube_cookies_test.go`, `module.go`, `downloader.go` (commit `4bf5553af849f26b377e321390a0964036040e4a`) |
 | DL-F2-C — Encrypted storage | CLOSED / APPROVED | `plugins/downloader/youtube_cookies_store.go`, `youtube_cookies_store_test.go`, `downloader.go` (commit `9a518403fcd4ef120e46b00095ea92e6c48a6081`) |
-| DL-F2-D — yt-dlp integration | READY FOR REVIEW | `docs/design/goultroid-dl-f2-d-ytdlp-integration-plan.md`, `internal/services/download/*`, `plugins/downloader/youtube_cookies_snapshot.go`, `youtube_cookies_integration_test.go` |
-| DL-F2-E — UX/security/closure | NOT STARTED | Waiting for DL-F2-D review & approval |
+| DL-F2-D — yt-dlp integration | CLOSED / APPROVED | `docs/design/goultroid-dl-f2-d-ytdlp-integration-plan.md`, `internal/services/download/*`, `plugins/downloader/youtube_cookies_snapshot.go`, `youtube_cookies_integration_test.go` (commit `c8afe980ef2a253f10400a176348aa6a1d4393ff`) |
+| DL-F2-E — UX/security/closure | CLOSED / APPROVED | `.ytcookies status`/`delete`/replace EN+ID UX, sanitized logs, E1 `Delete()` `(bool, error)` + `Status()` `unavailable` semantics, E2 Saved Messages outgoing dispatch audit & `dispatcher_saved_messages_test.go`, `.env.example`, and security audit tests (commits `009346c7907123bf86d3700cd2f1855203d63a74`, `607fc6690b3a82bfe105d76dbedd8a6e353c1082`, `1945e5bc3b56be6c362a16dcae8a97ca432ca068`) |
 
-## 12. Immediate next step
+## 12. Closure
 
-Review **DL-F2-D — yt-dlp integration** (`internal/services/download` `CookiesFile` option and `plugins/downloader` per-operation ephemeral `0600` cookie snapshots without write-back). Once DL-F2-D is approved and closed, proceed to **DL-F2-E — Management UX, security verification, and closure**.
-
-Do not implement DL-F2-E UX/closure until DL-F2-D is reviewed and approved.
+All phases **DL-F2-A through DL-F2-E** are **CLOSED / APPROVED**. No new implementation phase is open. Operational deployment requires setting `OWNER_ID` to the logged-in userbot account ID and provisioning `GOULTROID_YTDLP_COOKIES_KEY` in deployment secrets.

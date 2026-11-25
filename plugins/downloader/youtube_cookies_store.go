@@ -30,13 +30,14 @@ const (
 )
 
 var (
-	errCookieKeyMissing         = errors.New("youtube cookies encryption key is not configured")
-	errCookieKeyInvalid         = errors.New("youtube cookies encryption key is invalid")
-	errCookieDecryptFail        = errors.New("youtube cookies decryption failed")
-	errCookieCorrupt            = errors.New("youtube cookies ciphertext is corrupt or invalid")
-	errCookieNotFound           = errors.New("youtube cookies are not configured")
-	errCookieStoreMissing       = errors.New("youtube cookies filesystem scope is unavailable")
-	errCookieDirSyncUnconfirmed = errors.New("youtube cookies replaced, but directory sync could not be confirmed")
+	errCookieKeyMissing               = errors.New("youtube cookies encryption key is not configured")
+	errCookieKeyInvalid               = errors.New("youtube cookies encryption key is invalid")
+	errCookieDecryptFail              = errors.New("youtube cookies decryption failed")
+	errCookieCorrupt                  = errors.New("youtube cookies ciphertext is corrupt or invalid")
+	errCookieNotFound                 = errors.New("youtube cookies are not configured")
+	errCookieStoreMissing             = errors.New("youtube cookies filesystem scope is unavailable")
+	errCookieDirSyncUnconfirmed       = errors.New("youtube cookies replaced, but directory sync could not be confirmed")
+	errCookieDeleteDirSyncUnconfirmed = errors.New("youtube cookies deleted, but directory sync could not be confirmed")
 )
 
 type cookieStoreStatus string
@@ -46,6 +47,7 @@ const (
 	cookieStatusConfigured     cookieStoreStatus = "configured"
 	cookieStatusKeyUnavailable cookieStoreStatus = "key_unavailable"
 	cookieStatusCorrupt        cookieStoreStatus = "corrupt"
+	cookieStatusUnavailable    cookieStoreStatus = "unavailable"
 )
 
 // youtubeCookieStore manages encrypted-at-rest persistence for validated
@@ -343,7 +345,9 @@ func (s *youtubeCookieStore) LoadDecryptedCookies(ctx context.Context) ([]byte, 
 }
 
 // Status checks the local health state of the encrypted cookie store without
-// exposing any secret material.
+// exposing any secret material. Non-integrity errors (cancelled/timed-out
+// context, missing scope, or filesystem I/O/permission errors) map to
+// cookieStatusUnavailable rather than cookieStatusCorrupt.
 func (s *youtubeCookieStore) Status(ctx context.Context) cookieStoreStatus {
 	plaintext, err := s.LoadDecryptedCookies(ctx)
 	if plaintext != nil {
@@ -356,32 +360,41 @@ func (s *youtubeCookieStore) Status(ctx context.Context) cookieStoreStatus {
 		return cookieStatusNotConfigured
 	case errors.Is(err, errCookieKeyMissing), errors.Is(err, errCookieKeyInvalid):
 		return cookieStatusKeyUnavailable
-	default:
+	case errors.Is(err, errCookieCorrupt), errors.Is(err, errCookieDecryptFail):
 		return cookieStatusCorrupt
+	default:
+		return cookieStatusUnavailable
 	}
 }
 
-// Delete explicitly removes the active encrypted cookie file.
-// Calling Delete when no credential file exists succeeds idempotently.
-func (s *youtubeCookieStore) Delete(ctx context.Context) error {
+// Delete explicitly removes the active encrypted cookie file and reports
+// whether a file was actually removed.
+// If the file does not exist (os.ErrNotExist), Delete returns (false, nil)
+// without syncing the directory.
+// If os.Remove succeeds and directory metadata sync fails afterward, Delete
+// returns (true, errCookieDeleteDirSyncUnconfirmed).
+func (s *youtubeCookieStore) Delete(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
 	dataDir, targetPath, err := s.ciphertextPath()
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := os.Remove(targetPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove ciphertext: %w", err)
+	if err := os.Remove(targetPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("remove ciphertext: %w", err)
 	}
 	if err := s.syncDirPath(dataDir); err != nil {
-		return fmt.Errorf("sync cookie directory after delete: %w", err)
+		return true, fmt.Errorf("%w: %v", errCookieDeleteDirSyncUnconfirmed, err)
 	}
-	return nil
+	return true, nil
 }
 
 func syncDir(dir string) error {

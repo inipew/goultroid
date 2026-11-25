@@ -173,6 +173,9 @@ func loadConfig(path string) (*config.Config, error) {
 		}
 		values = map[string]string{}
 	}
+	if v := strings.TrimSpace(values["GOULTROID_YTDLP_COOKIES_KEY"]); v != "" && os.Getenv("GOULTROID_YTDLP_COOKIES_KEY") == "" {
+		_ = os.Setenv("GOULTROID_YTDLP_COOKIES_KEY", v)
+	}
 	return config.LoadFrom(func(key string) string { return values[key] })
 }
 

@@ -512,6 +512,11 @@ func normalizeReplyMessage(msg *tg.Message) *Message {
 		if u, ok := msg.FromID.(*tg.PeerUser); ok {
 			res.SenderID = u.UserID
 		}
+	} else if !msg.Out {
+		// In 1-on-1 private dialogs (including Saved Messages), Telegram may omit FromID.
+		if p, ok := msg.PeerID.(*tg.PeerUser); ok && p != nil {
+			res.SenderID = p.UserID
+		}
 	}
 
 	if msg.ReplyTo != nil {

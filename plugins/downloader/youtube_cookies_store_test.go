@@ -271,8 +271,9 @@ func TestYouTubeCookieStorePermissionsAndDelete(t *testing.T) {
 	}
 
 	// Explicit delete removes ciphertext and returns Status to not_configured.
-	if err := store.Delete(context.Background()); err != nil {
-		t.Fatalf("Delete() error = %v", err)
+	deleted, err := store.Delete(context.Background())
+	if err != nil || !deleted {
+		t.Fatalf("Delete() = (%v, %v), want (true, nil)", deleted, err)
 	}
 	if _, err := os.Stat(filePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected %s to be removed, stat err = %v", filePath, err)
@@ -280,9 +281,10 @@ func TestYouTubeCookieStorePermissionsAndDelete(t *testing.T) {
 	if got := store.Status(context.Background()); got != cookieStatusNotConfigured {
 		t.Fatalf("Status() after Delete = %q, want %q", got, cookieStatusNotConfigured)
 	}
-	// Idempotent delete succeeds.
-	if err := store.Delete(context.Background()); err != nil {
-		t.Fatalf("second Delete() error = %v", err)
+	// Idempotent delete succeeds with deleted=false.
+	deleted2, err := store.Delete(context.Background())
+	if err != nil || deleted2 {
+		t.Fatalf("second Delete() = (%v, %v), want (false, nil)", deleted2, err)
 	}
 }
 
@@ -457,6 +459,81 @@ func TestYouTubeCookieStoreDirectorySyncFailureSemantics(t *testing.T) {
 	loaded, loadErr := store.LoadDecryptedCookies(context.Background())
 	if loadErr != nil || !bytes.Equal(loaded, replacement) {
 		t.Fatalf("expected committed replacement to be readable, err=%v", loadErr)
+	}
+}
+
+func TestYouTubeCookieStoreDeleteDirSyncFailureSemantics(t *testing.T) {
+	key := newTestCookieKeyBase64(t)
+	scope := newTestCookieScope(t)
+	store := newYouTubeCookieStore(scope, func(string) string { return key })
+	if err := store.SaveValidatedCookies(context.Background(), validNetscapeCookiesFixture(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir, _ := scope.DataDir()
+	cipherPath := filepath.Join(dataDir, cookieCipherFile)
+
+	// Simulate directory sync failure after os.Remove succeeds.
+	store.syncDirFn = func(string) error {
+		return errors.New("dir fsync EIO after remove")
+	}
+	deleted, err := store.Delete(context.Background())
+	if !deleted || !errors.Is(err, errCookieDeleteDirSyncUnconfirmed) {
+		t.Fatalf("Delete() = (%v, %v), want (true, errCookieDeleteDirSyncUnconfirmed)", deleted, err)
+	}
+	if _, statErr := os.Stat(cipherPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected %s to be removed despite sync failure, stat err = %v", cipherPath, statErr)
+	}
+	if got := store.Status(context.Background()); got != cookieStatusNotConfigured {
+		t.Fatalf("Status() after delete = %q, want %q", got, cookieStatusNotConfigured)
+	}
+
+	// File already absent + syncDirFn fails must NOT return errCookieDeleteDirSyncUnconfirmed.
+	deletedAbsent, errAbsent := store.Delete(context.Background())
+	if deletedAbsent || errAbsent != nil {
+		t.Fatalf("Delete(absent with syncDir error) = (%v, %v), want (false, nil)", deletedAbsent, errAbsent)
+	}
+}
+
+func TestYouTubeCookieStoreStatusNonIntegrityErrors(t *testing.T) {
+	key := newTestCookieKeyBase64(t)
+	scope := newTestCookieScope(t)
+	store := newYouTubeCookieStore(scope, func(string) string { return key })
+	if err := store.SaveValidatedCookies(context.Background(), validNetscapeCookiesFixture(time.Now())); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Cancelled context -> cookieStatusUnavailable (not corrupt).
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := store.Status(cancelledCtx); got != cookieStatusUnavailable {
+		t.Fatalf("Status(cancelled) = %q, want %q", got, cookieStatusUnavailable)
+	}
+
+	// 2. Timed-out context -> cookieStatusUnavailable (not corrupt).
+	timeoutCtx, cancelTimeout := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelTimeout()
+	if got := store.Status(timeoutCtx); got != cookieStatusUnavailable {
+		t.Fatalf("Status(timeout) = %q, want %q", got, cookieStatusUnavailable)
+	}
+
+	// 3. Missing filesystem scope -> cookieStatusUnavailable (not corrupt).
+	nilScopeStore := newYouTubeCookieStore(nil, func(string) string { return key })
+	if got := nilScopeStore.Status(context.Background()); got != cookieStatusUnavailable {
+		t.Fatalf("Status(nil scope) = %q, want %q", got, cookieStatusUnavailable)
+	}
+
+	// 4. Unreadable file (permission denied) -> cookieStatusUnavailable (not corrupt).
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		dataDir, _ := scope.DataDir()
+		cipherPath := filepath.Join(dataDir, cookieCipherFile)
+		if err := os.Chmod(cipherPath, 0000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(cipherPath, 0600) })
+		if got := store.Status(context.Background()); got != cookieStatusUnavailable {
+			t.Fatalf("Status(permission denied) = %q, want %q", got, cookieStatusUnavailable)
+		}
 	}
 }
 

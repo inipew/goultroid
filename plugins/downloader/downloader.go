@@ -176,7 +176,7 @@ func (p *Plugin) Commands() []core.Command {
 		{
 			Name:        "ytcookies",
 			Description: "Upload or manage YouTube cookies in Saved Messages (Owner Only)",
-			Usage:       ".ytcookies [set] (with document or reply to document in Saved Messages)",
+			Usage:       ".ytcookies [set|status|delete] (Saved Messages only)",
 			Category:    "Media",
 			Permission:  core.PermissionOwner,
 			PrivateOnly: true,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,8 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/services/localization"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 const testCookiesOwnerID int64 = 589287392
@@ -288,6 +291,28 @@ func TestYouTubeCookiesReplySenderVerification(t *testing.T) {
 		attachDownloaderTestFilesystem(t, p)
 
 		ctx := newCookiesTestContext(svc, testCookiesOwnerID, testCookiesOwnerID, "private", &tg.InputPeerUser{UserID: testCookiesOwnerID}, true)
+		ctx.Message.ReplyToID = 55
+
+		if err := p.handleYouTubeCookiesCommand(ctx); err != nil {
+			t.Fatalf("handleYouTubeCookiesCommand() error = %v", err)
+		}
+		if len(sink.saved) != 1 {
+			t.Fatalf("sink.saved = %d, want 1", len(sink.saved))
+		}
+		assertTempDirClean(t, p)
+	})
+
+	t.Run("saved_messages_reply_out_false_from_nil_with_self_peer_accepted", func(t *testing.T) {
+		svc := newCookiesTestTelegramService(validData)
+		msg := replyTGDocument(0, false, int64(len(validData)))
+		msg.PeerID = &tg.PeerUser{UserID: testCookiesOwnerID}
+		svc.replyMessage = msg
+		sink := &recordingCookieSink{}
+		p := New()
+		p.cookieSink = sink
+		attachDownloaderTestFilesystem(t, p)
+
+		ctx := newCookiesTestContext(svc, testCookiesOwnerID, testCookiesOwnerID, "private", &tg.InputPeerSelf{}, false)
 		ctx.Message.ReplyToID = 55
 
 		if err := p.handleYouTubeCookiesCommand(ctx); err != nil {
@@ -761,8 +786,16 @@ func TestYouTubeCookiesLocalizationENAndID(t *testing.T) {
 		"downloader.cookies.download_failed",
 		"downloader.cookies.accepted",
 		"downloader.cookies.accepted_delete_unconfirmed",
+		"downloader.cookies.accepted_dir_sync_unconfirmed",
 		"downloader.cookies.delete_unconfirmed_suffix",
-		"downloader.cookies.management_pending",
+		"downloader.cookies.status_not_configured",
+		"downloader.cookies.status_configured",
+		"downloader.cookies.status_key_unavailable",
+		"downloader.cookies.status_corrupt",
+		"downloader.cookies.deleted",
+		"downloader.cookies.deleted_dir_sync_unconfirmed",
+		"downloader.cookies.delete_not_configured",
+		"downloader.cookies.delete_failed",
 	}
 	for _, key := range keys {
 		en := downloaderTR(localization.LocaleEnglish, key)
@@ -774,4 +807,168 @@ func TestYouTubeCookiesLocalizationENAndID(t *testing.T) {
 			t.Fatalf("expected distinct EN and ID translations for %s, both=%q", key, en)
 		}
 	}
+}
+
+func TestYouTubeCookiesStatusDeleteReplaceAndSecurityAudit(t *testing.T) {
+	key := newTestCookieKeyBase64(t)
+	scope := newTestCookieScope(t)
+	currentKey := key
+	store := newYouTubeCookieStore(scope, func(k string) string {
+		if k == cookieSecretEnvVar {
+			return currentKey
+		}
+		return ""
+	})
+
+	coreObs, logs := observer.New(zap.WarnLevel)
+	p := New()
+	p.SetLogger(zap.New(coreObs))
+	p.files = scope
+	p.cookieStore = store
+	p.cookieSink = store
+
+	runCmd := func(args []string, media *core.MediaInfo, data []byte) (*cookiesTestTelegramService, error) {
+		svc := newCookiesTestTelegramService(data)
+		ctx := newCookiesTestContext(svc, testCookiesOwnerID, testCookiesOwnerID, "private", &tg.InputPeerSelf{}, true)
+		ctx.Args = args
+		ctx.Message.Media = media
+		return svc, p.handleYouTubeCookiesCommand(ctx)
+	}
+
+	// 1. Status when not configured.
+	svc, err := runCmd([]string{"status"}, nil, nil)
+	if err != nil || !strings.Contains(svc.lastEdit, "not configured") {
+		t.Fatalf("status (not configured) = (%q, %v)", svc.lastEdit, err)
+	}
+
+	// 2. Delete when not configured (idempotent).
+	svc, err = runCmd([]string{"delete"}, nil, nil)
+	if err != nil || !strings.Contains(svc.lastEdit, "No stored YouTube cookies") {
+		t.Fatalf("delete (not configured) = (%q, %v)", svc.lastEdit, err)
+	}
+
+	// 3. Upload & verify status configured.
+	validData := validNetscapeCookiesFixture(time.Now())
+	svc, err = runCmd([]string{"set"}, dummyDocumentMedia(int64(len(validData)), "document"), validData)
+	if err != nil || !strings.Contains(svc.lastEdit, "validated and accepted") {
+		t.Fatalf("upload = (%q, %v)", svc.lastEdit, err)
+	}
+	svc, err = runCmd([]string{"status"}, nil, nil)
+	if err != nil || !strings.Contains(svc.lastEdit, "configured and decryptable") {
+		t.Fatalf("status (configured) = (%q, %v)", svc.lastEdit, err)
+	}
+
+	// 4. Status when key is missing.
+	currentKey = ""
+	svc, err = runCmd([]string{"status"}, nil, nil)
+	if err != nil || !strings.Contains(svc.lastEdit, "encryption key is missing or invalid") {
+		t.Fatalf("status (key unavailable) = (%q, %v)", svc.lastEdit, err)
+	}
+
+	// 5. Status when ciphertext is corrupt.
+	currentKey = key
+	dataDir, _ := scope.DataDir()
+	cipherPath := filepath.Join(dataDir, cookieCipherFile)
+	if writeErr := os.WriteFile(cipherPath, []byte("GLTCK1corrupt"), 0600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	svc, err = runCmd([]string{"status"}, nil, nil)
+	if err != nil || !strings.Contains(svc.lastEdit, "unreadable or corrupt") {
+		t.Fatalf("status (corrupt) = (%q, %v)", svc.lastEdit, err)
+	}
+
+	// 6. Replace with unconfirmed dir sync reports active replacement honestly (not "old preserved") and deletes message.
+	store.syncDirFn = func(string) error { return errors.New("dir sync EIO") }
+	svc, err = runCmd(nil, dummyDocumentMedia(int64(len(validData)), "document"), validData)
+	if err != nil {
+		t.Fatalf("replace with dir sync unconfirmed err = %v", err)
+	}
+	if !strings.Contains(svc.lastEdit, "replaced and active") || strings.Contains(svc.lastEdit, "not modified") {
+		t.Fatalf("dir sync unconfirmed response = %q, must report replacement active", svc.lastEdit)
+	}
+	if len(svc.deleteCalls) != 1 {
+		t.Fatalf("deleteCalls = %d, want 1 after committed replacement", len(svc.deleteCalls))
+	}
+	store.syncDirFn = syncDir
+
+	// 7. Delete when configured succeeds and status returns to not configured.
+	svc, err = runCmd([]string{"delete"}, nil, nil)
+	if err != nil || !strings.Contains(svc.lastEdit, "deleted") {
+		t.Fatalf("delete (configured) = (%q, %v)", svc.lastEdit, err)
+	}
+	svc, err = runCmd([]string{"status"}, nil, nil)
+	if err != nil || !strings.Contains(svc.lastEdit, "not configured") {
+		t.Fatalf("status after delete = (%q, %v)", svc.lastEdit, err)
+	}
+
+	// 7b. Delete with dir sync failure reports deleted_dir_sync_unconfirmed (NOT delete_failed).
+	svc, err = runCmd(nil, dummyDocumentMedia(int64(len(validData)), "document"), validData)
+	if err != nil {
+		t.Fatalf("re-upload err = %v", err)
+	}
+	store.syncDirFn = func(string) error { return errors.New("dir sync EIO on delete") }
+	svc, err = runCmd([]string{"delete"}, nil, nil)
+	if err != nil {
+		t.Fatalf("delete with dir sync failure err = %v", err)
+	}
+	if !strings.Contains(svc.lastEdit, "deleted") || !strings.Contains(svc.lastEdit, "durability sync could not be confirmed") || strings.Contains(svc.lastEdit, "Failed to delete") {
+		t.Fatalf("delete dir sync unconfirmed response = %q", svc.lastEdit)
+	}
+
+	// 7b2. Delete when file is already absent + syncDirFn fails must report delete_not_configured (NOT deleted_dir_sync_unconfirmed).
+	svc, err = runCmd([]string{"delete"}, nil, nil)
+	if err != nil {
+		t.Fatalf("delete (absent with syncDir error) err = %v", err)
+	}
+	if !strings.Contains(svc.lastEdit, "No stored YouTube cookies") || strings.Contains(svc.lastEdit, "durability sync") {
+		t.Fatalf("delete (absent with syncDir error) response = %q, want delete_not_configured", svc.lastEdit)
+	}
+	store.syncDirFn = syncDir
+
+	// 7c. Status with cancelled context reports storage_unavailable (NOT corrupt).
+	cancelSvc := newCookiesTestTelegramService(nil)
+	cancelCtx := newCookiesTestContext(cancelSvc, testCookiesOwnerID, testCookiesOwnerID, "private", &tg.InputPeerSelf{}, true)
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelCtx.Ctx = cctx
+	cancelCtx.Args = []string{"status"}
+	if err := p.handleYouTubeCookiesCommand(cancelCtx); err != nil {
+		t.Fatalf("status (cancelled) err = %v", err)
+	}
+	if !strings.Contains(cancelSvc.lastEdit, "unavailable") || strings.Contains(cancelSvc.lastEdit, "corrupt") {
+		t.Fatalf("status (cancelled) response = %q, want unavailable (not corrupt)", cancelSvc.lastEdit)
+	}
+
+	// 8. Unauthorized chat cannot run status or delete.
+	badSvc := newCookiesTestTelegramService(nil)
+	badCtx := newCookiesTestContext(badSvc, testCookiesOwnerID, 999888, "private", &tg.InputPeerUser{UserID: 999888}, true)
+	badCtx.Args = []string{"status"}
+	if err := p.handleYouTubeCookiesCommand(badCtx); !errors.Is(err, core.ErrPermissionDenied) {
+		t.Fatalf("unauthorized status err = %v, want ErrPermissionDenied", err)
+	}
+	badCtx.Args = []string{"delete"}
+	if err := p.handleYouTubeCookiesCommand(badCtx); !errors.Is(err, core.ErrPermissionDenied) {
+		t.Fatalf("unauthorized delete err = %v, want ErrPermissionDenied", err)
+	}
+
+	// 9. Security audit: no keys, paths, or cookie secrets in logs or responses.
+	tempDir, _ := scope.TempDir()
+	forbidden := []string{key, dataDir, tempDir, "yt_cookies.enc", "ytcookies-ingest-", "secret_login_token_value", "secret_psid_value", "LOGIN_INFO", "__Secure-1PSID"}
+	for _, entry := range logs.All() {
+		msgAndFields := entry.Message
+		for _, f := range entry.Context {
+			msgAndFields += " " + f.Key + "=" + f.String
+		}
+		for _, bad := range forbidden {
+			if strings.Contains(msgAndFields, bad) {
+				t.Fatalf("log leaked %q: %s", bad, msgAndFields)
+			}
+		}
+	}
+	for _, bad := range forbidden {
+		if strings.Contains(svc.lastEdit, bad) {
+			t.Fatalf("user message leaked %q: %s", bad, svc.lastEdit)
+		}
+	}
+	assertTempDirClean(t, p)
 }

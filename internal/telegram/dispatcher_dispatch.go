@@ -355,6 +355,17 @@ func (d *Dispatcher) prepareCommandContext(
 				sender.IsBot = ue.Bot
 			}
 		}
+	} else if p, ok := msg.PeerID.(*tg.PeerUser); ok && p != nil {
+		// In 1-on-1 private dialogs (including Saved Messages), Telegram may omit FromID
+		// and deliver Out: false; privateMessageSenderConsistent(msg) already verified
+		// there is no conflicting sender.
+		sender.ID = p.UserID
+		if ue, ok := e.Users[p.UserID]; ok {
+			sender.FirstName = ue.FirstName
+			sender.LastName = ue.LastName
+			sender.Username = ue.Username
+			sender.IsBot = ue.Bot
+		}
 	}
 	coreMsg := prepared.coreMsg
 	if coreMsg == nil {

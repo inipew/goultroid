@@ -79,8 +79,10 @@ func (p *Plugin) handleYouTubeCookiesCommand(ctx *core.Context) error {
 		subcmd = strings.ToLower(strings.TrimSpace(ctx.Args[0]))
 	}
 	switch subcmd {
-	case "status", "delete":
-		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.management_pending"))
+	case "status":
+		return p.handleYouTubeCookiesStatus(ctx, locale)
+	case "delete":
+		return p.handleYouTubeCookiesDelete(ctx, locale)
 	case "", "set":
 	default:
 		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.usage"))
@@ -133,23 +135,26 @@ func (p *Plugin) handleYouTubeCookiesCommand(ctx *core.Context) error {
 	// 4. Download into scoped temp dir with unconditional defer cleanup.
 	tmpDir, err := p.files.CreateTempDir("ytcookies-ingest-*")
 	if err != nil {
-		p.getLogger().Warn("downloader: create ytcookies temp dir failed", zap.Error(err))
+		p.getLogger().Warn("downloader: create ytcookies temp dir failed", zap.String("category", "temp_dir_create"))
 		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.storage_unavailable"))
 	}
 	defer func() {
 		if rmErr := p.files.RemoveTempDir(tmpDir); rmErr != nil {
-			p.getLogger().Warn("downloader: remove ytcookies temp dir failed", zap.Error(rmErr))
+			p.getLogger().Warn("downloader: remove ytcookies temp dir failed", zap.String("category", "temp_dir_cleanup"))
 		}
 	}()
 
 	downloadedPath, err := ctx.DownloadMedia(tmpDir)
 	if err != nil {
-		p.getLogger().Warn("downloader: download ytcookies document failed", zap.Error(err))
+		p.getLogger().Warn("downloader: download ytcookies document failed", zap.String("category", "telegram_download"))
 		// Do not delete upload source on transient download failure so the owner can retry.
 		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.download_failed"))
 	}
 
 	raw, readErr := readBoundedCookieFile(downloadedPath)
+	if raw != nil {
+		defer clear(raw)
+	}
 	if readErr != nil {
 		deleted := p.deleteCookieMessages(ctx, msgIDsToDelete)
 		key := cookieValidationErrorKey(readErr)
@@ -173,17 +178,70 @@ func (p *Plugin) handleYouTubeCookiesCommand(ctx *core.Context) error {
 	if saveCtx == nil {
 		saveCtx = context.Background()
 	}
-	if err := p.cookieSink.SaveValidatedCookies(saveCtx, raw); err != nil {
-		p.getLogger().Warn("downloader: save validated cookies failed", zap.Error(err))
+	saveErr := p.cookieSink.SaveValidatedCookies(saveCtx, raw)
+	dirSyncUnconfirmed := errors.Is(saveErr, errCookieDirSyncUnconfirmed)
+	if saveErr != nil && !dirSyncUnconfirmed {
+		p.getLogger().Warn("downloader: save validated cookies failed",
+			zap.String("category", cookieSnapshotErrorCategory(saveErr)),
+		)
 		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.storage_unavailable"))
 	}
 
-	// 6. Only after durable save succeeds, attempt Telegram message deletion.
+	// 6. Only after replacement is committed, attempt Telegram message deletion.
 	deleted := p.deleteCookieMessages(ctx, msgIDsToDelete)
+	if dirSyncUnconfirmed {
+		p.getLogger().Warn("downloader: ytcookies replaced with unconfirmed dir sync")
+		return replyCookieResult(ctx, locale, "downloader.cookies.accepted_dir_sync_unconfirmed", deleted)
+	}
 	if deleted {
 		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.accepted"))
 	}
 	return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.accepted_delete_unconfirmed"))
+}
+
+func (p *Plugin) handleYouTubeCookiesStatus(ctx *core.Context, locale string) error {
+	if p.cookieStore == nil {
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.storage_unavailable"))
+	}
+	opCtx := ctx.Ctx
+	if opCtx == nil {
+		opCtx = context.Background()
+	}
+	switch p.cookieStore.Status(opCtx) {
+	case cookieStatusConfigured:
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.status_configured"))
+	case cookieStatusKeyUnavailable:
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.status_key_unavailable"))
+	case cookieStatusCorrupt:
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.status_corrupt"))
+	case cookieStatusUnavailable:
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.storage_unavailable"))
+	default:
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.status_not_configured"))
+	}
+}
+
+func (p *Plugin) handleYouTubeCookiesDelete(ctx *core.Context, locale string) error {
+	if p.cookieStore == nil {
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.storage_unavailable"))
+	}
+	opCtx := ctx.Ctx
+	if opCtx == nil {
+		opCtx = context.Background()
+	}
+	deleted, err := p.cookieStore.Delete(opCtx)
+	if err != nil {
+		if errors.Is(err, errCookieDeleteDirSyncUnconfirmed) {
+			p.getLogger().Warn("downloader: ytcookies deleted with unconfirmed dir sync")
+			return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.deleted_dir_sync_unconfirmed"))
+		}
+		p.getLogger().Warn("downloader: delete ytcookies failed", zap.String("category", "delete_failed"))
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.delete_failed"))
+	}
+	if !deleted {
+		return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.delete_not_configured"))
+	}
+	return ctx.EditOrReply(downloaderTR(locale, "downloader.cookies.deleted"))
 }
 
 func replyCookieResult(ctx *core.Context, locale, key string, deleted bool) error {
@@ -201,7 +259,7 @@ func (p *Plugin) deleteCookieMessages(ctx *core.Context, msgIDs []int) bool {
 	delCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := ctx.Telegram.MessageActions.DeleteMessage(delCtx, ctx.PeerID, msgIDs); err != nil {
-		p.getLogger().Warn("downloader: failed to delete uploaded cookie messages", zap.Int("count", len(msgIDs)), zap.Error(err))
+		p.getLogger().Warn("downloader: failed to delete uploaded cookie messages", zap.Int("count", len(msgIDs)))
 		return false
 	}
 	return true
