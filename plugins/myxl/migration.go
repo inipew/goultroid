@@ -294,7 +294,70 @@ func (migration007) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+var _ database.SchemaInvariantMigration = migration008{}
+
+type migration008 struct{}
+
+func (migration008) ID() string { return "myxl.008" }
+func (migration008) Description() string {
+	return "Persistent token maintenance configuration and bounded run history"
+}
+func (migration008) Checksum() string {
+	return "a4e8c1b9d2f0473586e1c2a9b4d7f8e0123456789abcdef0123456789abcdef0"
+}
+func (migration008) LegacyVersions() []int { return nil }
+
+func (migration008) Up(ctx context.Context, tx database.SQLExecutor) error {
+	_, err := tx.ExecContext(ctx, `
+		CREATE TABLE IF NOT EXISTS myxl_token_maintenance_config (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			enabled INTEGER NOT NULL DEFAULT 0,
+			interval_seconds INTEGER NOT NULL DEFAULT 21600,
+			anchor_time TEXT NOT NULL DEFAULT '03:00',
+			timezone TEXT NOT NULL DEFAULT 'Asia/Jakarta',
+			refresh_window_seconds INTEGER NOT NULL DEFAULT 1800,
+			account_scope TEXT NOT NULL DEFAULT 'all',
+			selected_msisdns_json TEXT NOT NULL DEFAULT '[]',
+			notify_on_completion INTEGER NOT NULL DEFAULT 0,
+			notify_on_failure INTEGER NOT NULL DEFAULT 1,
+			updated_at DATETIME NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS myxl_token_maintenance_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			trigger_source TEXT NOT NULL,
+			status TEXT NOT NULL,
+			started_at DATETIME NOT NULL,
+			completed_at DATETIME NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			total_accounts INTEGER NOT NULL,
+			refreshed_count INTEGER NOT NULL,
+			already_fresh_count INTEGER NOT NULL,
+			skipped_count INTEGER NOT NULL,
+			failed_count INTEGER NOT NULL,
+			cancelled_count INTEGER NOT NULL,
+			error_summary TEXT NOT NULL DEFAULT ''
+		);
+		CREATE INDEX IF NOT EXISTS idx_myxl_token_maintenance_runs_started
+		ON myxl_token_maintenance_runs(started_at DESC, id DESC);
+	`)
+	return err
+}
+
+func (migration008) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	for _, table := range []string{"myxl_token_maintenance_config", "myxl_token_maintenance_runs"} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("required table %s does not exist", table)
+		}
+	}
+	return nil
+}
+
 // Migrations returns the database migrations for the myxl plugin.
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}, migration006{}, migration007{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}, migration006{}, migration007{}, migration008{}}
 }

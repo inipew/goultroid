@@ -150,7 +150,61 @@ func (m *MenuManager) BuildDashboardScreen(ctx context.Context, mask bool) (*ui.
 		newMenuButton("🔍 Cari / Pilih Paket", "myxl:store"),
 		newMenuButton("⭐ Paket Favorit", "myxl:saved"),
 	)
+	screen.AddRow(newMenuButton("🕒 Token Maintenance", "myxl:maintenance"))
 	screen.AddRow(newMenuButton("❌ Tutup Menu", "assistant:close"))
+	return screen, nil
+}
+
+func (m *MenuManager) BuildMaintenanceScreen(ctx context.Context) (*ui.Screen, error) {
+	if m == nil || m.plugin == nil {
+		return nil, fmt.Errorf("myxl plugin unavailable")
+	}
+	view, err := m.plugin.maintenanceService().GetStatus(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load maintenance status: %w", err)
+	}
+
+	screen := ui.NewScreen("myxl:maintenance", "", formatMaintenanceStatusHTML(view))
+	toggleLabel := "▶️ Aktifkan Jadwal"
+	if view.Config.Enabled {
+		toggleLabel = "⏸️ Nonaktifkan Jadwal"
+	}
+	screen.AddRow(
+		newMenuButton(toggleLabel, "myxl:maint_toggle"),
+		newMenuButton("▶️ Jalankan Sekarang", "myxl:maint_run"),
+	)
+	screen.AddRow(
+		newMenuButton("⏱️ Atur Interval", "myxl:maint_interval"),
+		newMenuButton("🕒 Atur Waktu", "myxl:maint_time"),
+	)
+	screen.AddRow(
+		newMenuButton("🌍 Atur Timezone", "myxl:maint_tz"),
+		newMenuButton("🪟 Jendela Refresh", "myxl:maint_window"),
+	)
+	screen.AddRow(
+		newMenuButton("👥 Scope Akun", "myxl:maint_scope"),
+		newMenuButton("📜 Riwayat", "myxl:maint_history"),
+	)
+	screen.AddRow(
+		newMenuButton("🔄 Muat Ulang", "myxl:maintenance"),
+		newMenuButton("🔙 Kembali", "myxl:home"),
+	)
+	return screen, nil
+}
+
+func (m *MenuManager) BuildMaintenanceHistoryScreen(ctx context.Context) (*ui.Screen, error) {
+	if m == nil || m.plugin == nil {
+		return nil, fmt.Errorf("myxl plugin unavailable")
+	}
+	runs, err := m.plugin.maintenanceService().GetHistory(ctx, 10)
+	if err != nil {
+		return nil, fmt.Errorf("load maintenance history: %w", err)
+	}
+	screen := ui.NewScreen("myxl:maint_history", "", formatMaintenanceHistoryHTML(runs))
+	screen.AddRow(
+		newMenuButton("🔄 Muat Ulang", "myxl:maint_history"),
+		newMenuButton("🔙 Kembali", "myxl:maintenance"),
+	)
 	return screen, nil
 }
 

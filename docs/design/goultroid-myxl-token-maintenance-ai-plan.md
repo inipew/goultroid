@@ -6,7 +6,7 @@
 - Branch: `test-next`
 - Feature: MyXL Scheduled Token Maintenance
 - Target: Telegram Userbot
-- Status: M1 & M2 Complete (Design & Contract Ready for M3 Implementation)
+- Status: M1–M8 Complete (Closed & Verified on `test-next`)
 - Scope: MyXL token lifecycle, scheduled maintenance, Telegram configuration, observability, persistence, dan resource management.
 
 Dokumen ini menjadi acuan utama perencanaan, implementasi, pengujian, dan evaluasi fitur refresh token otomatis MyXL.
@@ -955,6 +955,9 @@ Tidak boleh mengimplementasikan production code sebelum kontrak disetujui.
 
 ## Phase M3 — Token Maintenance Core
 
+**Status: Complete.** Commit `caf2d7dfa20f8e5b2c2dde4f13078c16fc8a4e66` (`feat(myxl): implement M3 token maintenance persistence and core`).
+Output: `plugins/myxl/migration.go` (`myxl.008`), `plugins/myxl/maintenance_types.go`, `plugins/myxl/maintenance_repo.go`, `plugins/myxl/maintenance_core.go`, `plugins/myxl/client.go` (`EnsureFreshTokenWithin` + classified refresh errors), `plugins/myxl/maintenance_core_test.go`.
+
 Tujuan:
 
 Membangun logika maintenance tanpa Telegram interface terlebih dahulu.
@@ -980,6 +983,27 @@ Testing:
 - Persistence tests.
 
 ## Phase M4 — Scheduler Integration
+
+**Status: Complete.** Commit `8a01ed78ccd748c6261020893de6f61ebbceeb27` (`feat(myxl): integrate token maintenance with scheduler`). Integrasi dengan `plugin.JobClient` (`CapJobs`) dan `plugin.ScheduleClient` (`CapScheduler`) selesai dan terverifikasi.
+
+Implementasi & Keputusan Lifecycle:
+
+- `plugins/myxl/module.go`: mendeklarasikan `plugin.CapJobs` dan `plugin.CapScheduler`.
+- `plugins/myxl/myxl.go` & `plugins/myxl/maintenance_scheduler.go`: `InitPlugin(pctx)` mendaftarkan handler `"token_maintenance"` dan `JobDefinition` (`ID: "token_maintenance"`, scoped `plugin:myxl:token_maintenance`, `Pool: "scheduler"`, `Class: tasks.PriorityMaintenance`, `Timeout: 10m`, `RetryPolicy: MaxAttempts: 1`).
+- Restart tidak menimpa `next_due_at` pada `job_schedules` ketika `Enabled == true` (menjaga `MisfireRunOnce` dan `OverlapForbid`). Jika `Enabled == false`, `InitPlugin` memanggil `DisableSchedule` secara defensif.
+- `ApplyMaintenanceConfig` memvalidasi dan menyimpan konfigurasi lalu menyinkronkan ke `ScheduleClient.SaveSchedule` / `DisableSchedule` dengan rollback best-effort jika sinkronisasi jadwal gagal.
+- `TriggerMaintenanceNow` memicu eksekusi melalui `JobClient.Trigger` -> `JobManager` -> `TaskEngine` dengan guard `maintRunning`.
+- Handler meneruskan `ctx` job ke `runTokenMaintenanceCycle()` dan mengembalikan `ctx.Err()` / error persistensi tanpa menyamarkannya sebagai sukses.
+- Verifikasi: `gofmt -l plugins/myxl/` bersih, `go vet ./plugins/myxl/...` lulus, `go test -race ./plugins/myxl/...` lulus, `go test ./internal/architecture/...` lulus, `git diff --check` bersih.
+- Temuan terbuka untuk M5/M7: antarmuka `.myxl schedule` + menu a2 (`MaintenanceService` UI), serta perbaikan masking MSISDN & redaksi token pada `.myxl refresh` (`handleRefreshToken`).
+
+Acceptance Criteria M4:
+
+- [x] Job & handler terdaftar melalui `pctx.Jobs()` (`plugin:myxl:token_maintenance`).
+- [x] Schedule dikelola melalui `pctx.Schedules()` (`Recurrence: "interval"`, `MisfireRunOnce`, `OverlapForbid`).
+- [x] Restart tidak mereset `next_due_at` pada `job_schedules`.
+- [x] Enable/disable, update config, cancellation, dan partial failure teruji deterministik.
+- [x] Tidak ada scheduler, ticker, worker pool, atau retry engine baru.
 
 Tujuan:
 
@@ -1008,6 +1032,25 @@ Tidak boleh:
 
 ## Phase M5 — Telegram Schedule Management
 
+**Status: Complete.** Commit `585607c0c4e2420c975b6d33dee885329aab39b6` (`feat(myxl): add Telegram token maintenance management`). Pengelolaan jadwal maintenance melalui Telegram command (`.myxl schedule ...`) dan menu a2 (`MenuManager` + `assistant_interaction.go`) selesai dengan satu jalur `MaintenanceService`.
+
+Output & Implementasi M5:
+
+- `plugins/myxl/maintenance_service.go`: `MaintenanceService` (otoritas tunggal read/mutate/trigger/history, diserialisasi oleh `maintConfigMu`, memanggil `ApplyMaintenanceConfig` & `TriggerMaintenanceNow`, serta menangani `ErrScheduleSyncRollbackFailed`).
+- `plugins/myxl/maintenance_telegram.go` & `plugins/myxl/myxl.go`: subcommand `.myxl schedule [status|enable|disable|interval|time|timezone|window|accounts|run|history]` dengan `PermissionOwner` dan format output jujur tanpa mengklaim `next_due_at`.
+- `plugins/myxl/menu.go` & `plugins/myxl/assistant_interaction.go`: tombol dashboard `myxl:maintenance`, `BuildMaintenanceScreen`, `BuildMaintenanceHistoryScreen`, dan wizard input a2 (`maint_interval`, `maint_time`, `maint_tz`, `maint_window`, `maint_scope`).
+- Security Fix: `handleRefreshToken` (`plugins/myxl/myxl.go`) tidak lagi menampilkan prefix `AccessToken`/`IDToken`/`RefreshToken` dan selalu me-masking MSISDN (`MaskMSISDN`). `token_refresh_all` (`plugins/myxl/assistant_interaction.go`) juga me-masking MSISDN.
+- Verifikasi: `gofmt -l plugins/myxl/` bersih, `go vet ./plugins/myxl/...` lulus, `go test -race ./plugins/myxl/...` lulus (`13.981s`), `go test ./internal/architecture/...` lulus (`1.605s`), `git diff --check` bersih.
+- Temuan terbuka untuk M6: structured logging, diagnostics counters, serta notifikasi owner opsional (`NotifyOnCompletion` / `NotifyOnFailure`).
+
+Acceptance Criteria M5:
+
+- [x] Command dan menu berbagi satu `MaintenanceService` melalui `ApplyMaintenanceConfig` dan `TriggerMaintenanceNow`.
+- [x] `PermissionOwner` ditegakkan pada command dan sesi a2.
+- [x] `.myxl refresh` dan `token_refresh_all` bebas kebocoran token dan me-masking MSISDN.
+- [x] Tidak ada scheduler, runtime, atau protokol callback/session baru.
+- [x] Seluruh test M3/M4/M5 dan architecture tests lulus.
+
 Tujuan:
 
 Membuat pengguna dapat mengatur fitur dari Telegram.
@@ -1033,6 +1076,16 @@ Tidak boleh membuat callback protocol atau state registry kedua.
 
 ## Phase M6 — Observability & Diagnostics
 
+**Status: Complete.** Commit `880f368e63efdefc8b7b02c506f28b5f09b3a7b5` (`feat(myxl): add token maintenance diagnostics`). Observability, structured logging, bounded diagnostics counters, dan best-effort owner notification selesai tanpa migration baru dan tanpa perubahan arsitektur.
+
+Temuan Audit & Implementasi M6:
+
+- **Structured Logging (`go.uber.org/zap`):** `rt.Logger` disuntikkan via `SetLogger` di `Module.Register`. Event lifecycle (`started`, `completed`, `partially failed`, `failed`, `cancelled`, `notification sent/failed`) menggunakan field terstruktur (`plugin`, `job_id`, `run_id`, `duration`, `account_count`, `processed_count`, `success_count`, `failure_count`, `skipped_count`, `outcome`, `error_class`, `notification_status`) tanpa raw error, token, atau MSISDN.
+- **Diagnostics Counters (`MaintenanceDiagnostics`):** Counter atomik low-cardinality (`RunsTotal`, `RunsSucceeded`, `RunsPartialFailure`, `RunsFailed`, `RunsCancelled`, `RunsNoOp`, `AccountsExamined`, `AccountsRefreshed`, `AccountsFailed`, `AccountsSkipped`, `NotificationsAttempted`, `NotificationsSucceeded`, `NotificationsFailed`) diekspos melalui `Plugin.MaintenanceDiagnostics()`, tanpa label MSISDN/runID dan tanpa registry kedua.
+- **Notification Preferences & Best-Effort Delivery:** Memanfaatkan kolom `notify_on_completion` (default `false`) dan `notify_on_failure` (default `true` sesuai kontrak M2/M3) di `myxl_token_maintenance_config` (tanpa migration baru), ditambah `.myxl schedule notify <completion|failure> <on|off>`. Notifikasi dikirim sinkron-terbatas (`5s` timeout) via `rt.MessageService` ke `rt.OwnerID` setelah run summary dipersistenkan; kegagalan notifikasi tidak mengubah outcome maintenance.
+- **Resource & Security:** Nol goroutine baru, nol ticker/queue baru, sentinel credential & MSISDN terverifikasi tidak bocor di log maupun notifikasi.
+- **Verifikasi:** `gofmt -l plugins/myxl/` bersih, `go vet ./plugins/myxl/...` lulus, `go test -race ./plugins/myxl/...` lulus (`15.540s`), `go test ./internal/architecture/...` lulus (`1.823s`), `git diff --check` bersih.
+
 Tujuan:
 
 Memberikan gambaran yang jelas mengenai kondisi maintenance.
@@ -1053,6 +1106,21 @@ Hindari log berlebihan.
 
 ## Phase M7 — Hardening & Performance
 
+**Status: Complete.** Commit `ec6b10cd00ddadf812a436ed80f3e06f9fe2bcbd` (`test(myxl): harden token maintenance lifecycle`). Hardening konkurensi, SQLite contention, token rotation, scheduler lifecycle, dan verifikasi benchmark/race selesai.
+
+Temuan & Perbaikan M7:
+
+- **SQLite WAL Snapshot Contention (`plugins/myxl/repository.go`):** `SQLiteRepository.Save` sebelumnya memulai transaksi `DEFERRED` lalu `SELECT` sebelum `UPDATE`, yang dapat memicu `SQLITE_BUSY_SNAPSHOT (517)` saat concurrent writers berjalan. Diperbaiki dengan write-intent `UPDATE myxl_accounts SET updated_at = updated_at WHERE 0` di awal transaksi agar `busy_timeout(5000)` menserialisasi writer secara bersih.
+- **Konkurensi, Rotasi & Lifecycle (`plugins/myxl/maintenance_hardening_test.go`):**
+  - `TestM7_SQLiteContention_ConfigRunsAndTokens`: 6 worker paralel × 10 iterasi pada file-backed SQLite WAL DB lulus tanpa error lock, retensi riwayat tetap `<= 20`.
+  - `TestM7_TokenRotationAndSharedSingleflightAcrossNormalAndMaintenance`: rotasi penuh `AccessToken`/`IDToken`/`RefreshToken`/`TokenExpiresAt` + shared singleflight lintas `EnsureFreshToken` dan `EnsureFreshTokenWithin`.
+  - `TestM7_ConcurrentTriggerGuardAndConfigChangeDuringRun`: guard `ErrMaintenanceAlreadyRunning`, perubahan config mid-flight aman, dan `runtime.NumGoroutine()` kembali ke baseline.
+- **Benchmark (`go test -bench=BenchmarkMaintenanceCycle -benchmem ./plugins/myxl/...`):**
+  - `1Account`: `577,996 ns/op`, `29,440 B/op`, `462 allocs/op`
+  - `10Accounts` (5 due): `2,185,039 ns/op`, `135,632 B/op`, `2,072 allocs/op`
+  - `50Accounts` (10 due, 40 fresh): `4,486,936 ns/op`, `288,677 B/op`, `4,429 allocs/op`
+- **Verifikasi Penuh:** `go test -race ./...` (seluruh package repo lulus), `go vet ./...` lulus, `go test ./internal/architecture/...` lulus, `gofmt -l plugins/myxl/` bersih, `git diff --check` bersih.
+
 Tujuan:
 
 Memastikan fitur aman untuk penggunaan jangka panjang.
@@ -1071,6 +1139,24 @@ Pekerjaan:
 10. Regression testing.
 
 ## Phase M8 — Documentation Closure
+
+**Status: Complete.** Seluruh fase M1–M8 telah selesai, diaudit terhadap implementasi aktual di `plugins/myxl/`, dan diverifikasi. Tidak ada pekerjaan lanjutan yang tertunda.
+
+Ringkasan Commit Fase:
+
+- **M1 (Audit & Plan):** `83498855f45b055433b21d54f8bf4a0873741686`, `da6b6e083b40a1b9b8ec6c1e3536a156c8b0f347`, `e8312f1bd70e30a336d19c835c2df553b862ca35`
+- **M2 (Design & Contract):** `f9170fbbccd835f136fa7df86d2b968963c699cb`
+- **M3 (Persistence & Core):** `caf2d7dfa20f8e5b2c2dde4f13078c16fc8a4e66`
+- **M4 (Scheduler Integration):** `8a01ed78ccd748c6261020893de6f61ebbceeb27`
+- **M5 (Telegram Management):** `585607c0c4e2420c975b6d33dee885329aab39b6`
+- **M6 (Observability & Diagnostics):** `880f368e63efdefc8b7b02c506f28b5f09b3a7b5`
+- **M7 (Hardening & Performance):** `ec6b10cd00ddadf812a436ed80f3e06f9fe2bcbd`
+
+Keputusan Arsitektur Final:
+
+- `jobs.JobSchedule` (`job_schedules`) adalah satu-satunya otoritas `next_due_at`, `MisfireRunOnce`, dan `OverlapForbid`; tidak ada `next_run_at` duplikat di `myxl_token_maintenance_config`.
+- Eksekusi berjalan melalui `JobManager` dan `TaskEngine` (pool `"scheduler"`, `PriorityMaintenance`), menggunakan `Client.EnsureFreshTokenWithin` dengan shared `refreshGroup` singleflight dan write-intent SQLite di `SQLiteRepository.Save`.
+- Pemrosesan bersifat sequential (maks `50` akun/siklus), riwayat bounded maks `20` baris, notifikasi owner best-effort (`NotifyOnCompletion=false`, `NotifyOnFailure=true`), dan nol goroutine/ticker/worker pool milik MyXL.
 
 Tujuan:
 
@@ -1193,70 +1279,70 @@ Fitur dianggap selesai hanya apabila seluruh kriteria berikut terpenuhi.
 
 ### Functional
 
-- [ ] Scheduled maintenance dapat diaktifkan dari Telegram.
-- [ ] Scheduled maintenance dapat dinonaktifkan dari Telegram.
-- [ ] Interval dapat diubah.
-- [ ] Waktu harian dapat diubah.
-- [ ] Timezone dapat diatur.
-- [ ] Refresh window dapat diatur.
-- [ ] Account scope dapat diatur.
-- [ ] Manual run tersedia.
-- [ ] Status dan riwayat tersedia.
-- [ ] Maintenance hanya memperbarui token yang membutuhkan refresh.
-- [ ] Akun gagal tidak menghentikan seluruh batch.
-- [ ] Konfigurasi tetap tersedia setelah restart.
+- [x] Scheduled maintenance dapat diaktifkan dari Telegram.
+- [x] Scheduled maintenance dapat dinonaktifkan dari Telegram.
+- [x] Interval dapat diubah.
+- [x] Waktu harian dapat diubah.
+- [x] Timezone dapat diatur.
+- [x] Refresh window dapat diatur.
+- [x] Account scope dapat diatur.
+- [x] Manual run tersedia.
+- [x] Status dan riwayat tersedia.
+- [x] Maintenance hanya memperbarui token yang membutuhkan refresh.
+- [x] Akun gagal tidak menghentikan seluruh batch.
+- [x] Konfigurasi tetap tersedia setelah restart.
 
 ### Architecture
 
-- [ ] Tidak ada scheduler baru.
-- [ ] Tidak ada TaskEngine baru.
-- [ ] Tidak ada JobManager baru.
-- [ ] Tidak ada worker permanen khusus MyXL.
-- [ ] Tidak ada refresh goroutine per akun.
-- [ ] Menggunakan existing singleflight.
-- [ ] Menggunakan existing token persistence.
-- [ ] Menggunakan canonical interaction/session architecture.
-- [ ] Mengikuti lifecycle runtime.
+- [x] Tidak ada scheduler baru.
+- [x] Tidak ada TaskEngine baru.
+- [x] Tidak ada JobManager baru.
+- [x] Tidak ada worker permanen khusus MyXL.
+- [x] Tidak ada refresh goroutine per akun.
+- [x] Menggunakan existing singleflight.
+- [x] Menggunakan existing token persistence.
+- [x] Menggunakan canonical interaction/session architecture.
+- [x] Mengikuti lifecycle runtime.
 
 ### Reliability
 
-- [ ] Tidak ada overlapping maintenance cycle.
-- [ ] Cancellation berfungsi.
-- [ ] Restart recovery berfungsi.
-- [ ] Token lama tidak terhapus ketika refresh gagal.
-- [ ] Token baru tidak tertimpa hasil refresh stale.
-- [ ] HTTP failure diklasifikasikan dengan benar.
-- [ ] SQLite contention ditangani.
+- [x] Tidak ada overlapping maintenance cycle.
+- [x] Cancellation berfungsi.
+- [x] Restart recovery berfungsi.
+- [x] Token lama tidak terhapus ketika refresh gagal.
+- [x] Token baru tidak tertimpa hasil refresh stale.
+- [x] HTTP failure diklasifikasikan dengan benar.
+- [x] SQLite contention ditangani.
 
 ### Performance
 
-- [ ] Disabled state tidak menghasilkan periodic work.
-- [ ] Idle network activity tidak bertambah.
-- [ ] Goroutine tetap bounded.
-- [ ] Memory tetap bounded.
-- [ ] Concurrency dibatasi.
-- [ ] Database access efisien.
-- [ ] Tidak ada retry storm.
+- [x] Disabled state tidak menghasilkan periodic work.
+- [x] Idle network activity tidak bertambah.
+- [x] Goroutine tetap bounded.
+- [x] Memory tetap bounded.
+- [x] Concurrency dibatasi.
+- [x] Database access efisien.
+- [x] Tidak ada retry storm.
 
 ### Security
 
-- [ ] Token tidak masuk log.
-- [ ] Token tidak masuk job payload.
-- [ ] Token tidak ditampilkan lengkap di Telegram.
-- [ ] Authorization Telegram benar.
-- [ ] MSISDN dilindungi pada group chat.
+- [x] Token tidak masuk log.
+- [x] Token tidak masuk job payload.
+- [x] Token tidak ditampilkan lengkap di Telegram.
+- [x] Authorization Telegram benar.
+- [x] MSISDN dilindungi pada group chat.
 
 ### Verification
 
-- [ ] Unit tests lulus.
-- [ ] Integration tests lulus.
-- [ ] Lifecycle tests lulus.
-- [ ] Concurrency tests lulus.
-- [ ] Race tests lulus.
-- [ ] Full `go test -race ./...` lulus.
-- [ ] Seluruh file Go sudah diformat.
-- [ ] Dokumentasi diperbarui.
-- [ ] Implementasi di-commit.
+- [x] Unit tests lulus.
+- [x] Integration tests lulus.
+- [x] Lifecycle tests lulus.
+- [x] Concurrency tests lulus.
+- [x] Race tests lulus.
+- [x] Full `go test -race ./...` lulus.
+- [x] Seluruh file Go sudah diformat.
+- [x] Dokumentasi diperbarui.
+- [x] Implementasi di-commit.
 
 ---
 

@@ -4,7 +4,7 @@
 **Branch:** `test-next`  
 **Verified HEAD:** `c5d84e539ad103b49254bc9e7e84d8e001d7408d`  
 **Date:** 2026-11-25  
-**Status:** Phase M2 Complete (Design & Contract — No production code or migrations modified)
+**Status:** Implemented & Verified (M1–M8 Complete)
 
 ---
 
@@ -402,3 +402,15 @@ const (
 ## 18. Open Decisions
 
 1. **Tampilan `NextDueAt` di `.myxl schedule status`:** Karena `plugin.ScheduleClient` saat ini sengaja hanya mengekspos `SaveSchedule` dan `DisableSchedule` tanpa read API, status Telegram pada implementasi awal menampilkan konfigurasi aktif (`Interval`, `AnchorTime`, `Timezone`) dan hasil run terakhir tanpa menduplikasi `NextRunAt` di tabel MyXL. Penambahan read-only `GetSchedule` pada `ScheduleClient` hanya dipertimbangkan jika dibutuhkan dan disetujui terpisah.
+
+---
+
+## 19. Implementation Closure Notes (M7/M8)
+
+Seluruh kontrak pada dokumen ini telah diimplementasikan dan diverifikasi pada `plugins/myxl/` (lihat `docs/design/goultroid-myxl-token-maintenance-ai-plan.md` untuk daftar commit M1–M8 dan hasil benchmark M7):
+
+- `jobs.JobSchedule` adalah satu-satunya otoritas `next_due_at`; tidak ada `next_run_at` duplikat di `myxl_token_maintenance_config`.
+- MyXL tidak memiliki scheduler, ticker, worker pool, atau retry engine sendiri; seluruh eksekusi melalui `JobManager` + `TaskEngine` dan shared `refreshGroup` singleflight.
+- Pemrosesan dibatasi sequential maksimal `50` akun per siklus dan riwayat dibatasi maksimal `20` run di `myxl_token_maintenance_runs`.
+- `SQLiteRepository.Save` menggunakan write-intent (`UPDATE myxl_accounts SET updated_at = updated_at WHERE 0`) di awal transaksi untuk mencegah `SQLITE_BUSY_SNAPSHOT` pada mode WAL.
+- Preferensi notifikasi terverifikasi (`NotifyOnCompletion=false`, `NotifyOnFailure=true`); kegagalan notifikasi tidak mengubah status run maupun log/token redaction.

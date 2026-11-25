@@ -25,6 +25,8 @@ func (ModuleType) Manifest() module.Manifest {
 			plugin.CapSecretRead,
 			plugin.CapFilesystemTemp,
 			plugin.CapTasks,
+			plugin.CapJobs,
+			plugin.CapScheduler,
 		},
 	}
 }
@@ -39,6 +41,8 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	repo := NewSQLiteRepository(rt.DB)
 	client := NewClient(DefaultClientConfig(), repo, nil)
 	p := New(repo, client)
+	p.SetLogger(rt.Logger)
+	p.SetOwnerNotifier(rt.OwnerID, rt.MessageService)
 
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }

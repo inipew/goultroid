@@ -40,6 +40,12 @@ type Repository interface {
 	GetPendingQRIS(ctx context.Context, msisdn string) (*PendingQRIS, error)
 	DeletePendingQRIS(ctx context.Context, transactionCode string) error
 	PruneExpiredQRIS(ctx context.Context) (int64, error)
+
+	// Token maintenance configuration & bounded run history
+	GetTokenMaintenanceConfig(ctx context.Context) (*TokenMaintenanceConfig, error)
+	SaveTokenMaintenanceConfig(ctx context.Context, cfg *TokenMaintenanceConfig) error
+	RecordTokenMaintenanceRun(ctx context.Context, run *MaintenanceRunSummary) error
+	ListTokenMaintenanceRuns(ctx context.Context, limit int) ([]*MaintenanceRunSummary, error)
 }
 
 // ReservePurchase atomically reserves an idempotency key. It returns false if
@@ -213,6 +219,12 @@ func (r *SQLiteRepository) Save(ctx context.Context, acc *Account) error {
 		return fmt.Errorf("begin save account transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	// Acquire a RESERVED write lock before reading so SQLite WAL concurrent writers
+	// wait on busy_timeout instead of failing with SQLITE_BUSY_SNAPSHOT on upgrade.
+	if _, err := tx.ExecContext(ctx, "UPDATE myxl_accounts SET updated_at = updated_at WHERE 0"); err != nil {
+		return fmt.Errorf("acquire account write intent: %w", err)
+	}
 
 	// Resolve the default-active decision in the same write transaction as the
 	// upsert. The partial unique index remains the final concurrency backstop.

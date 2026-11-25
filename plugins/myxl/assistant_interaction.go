@@ -621,11 +621,12 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		} else {
 			success := 0
 			for _, result := range results {
+				masked := MaskMSISDN(result.MSISDN)
 				if result.Err == nil {
 					success++
-					fmt.Fprintf(&body, "✅ <code>%s</code> berhasil\n", html.EscapeString(result.MSISDN))
+					fmt.Fprintf(&body, "✅ <code>%s</code> berhasil\n", html.EscapeString(masked))
 				} else {
-					fmt.Fprintf(&body, "❌ <code>%s</code> gagal; coba login ulang jika sesi kedaluwarsa\n", html.EscapeString(result.MSISDN))
+					fmt.Fprintf(&body, "❌ <code>%s</code> gagal; coba login ulang jika sesi kedaluwarsa\n", html.EscapeString(masked))
 				}
 			}
 			fmt.Fprintf(&body, "\n<b>Berhasil: %d/%d</b>", success, len(results))
@@ -633,6 +634,97 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		screen := ui.NewScreen("myxl:token_refresh_all_result", "", body.String())
 		screen.AddRow(newMenuButton("🔙 Kembali ke Kelola Akun", "myxl:accounts"))
 		return p.assistantTransition(ctx, state, screen)
+
+	case "maintenance":
+		screen, err := p.menuMgr.BuildMaintenanceScreen(ctx.Context())
+		if err != nil {
+			return err
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_toggle":
+		svc := p.maintenanceService()
+		view, err := svc.GetStatus(ctx.Context())
+		if err != nil {
+			return ctx.Answer("Gagal memuat status jadwal", true)
+		}
+		if _, err := svc.SetEnabled(ctx.Context(), !view.Config.Enabled); err != nil {
+			if errors.Is(err, ErrScheduleSyncRollbackFailed) {
+				return ctx.Answer("⚠️ Gagal memperbarui jadwal & rollback gagal. Periksa status jadwal.", true)
+			}
+			return ctx.Answer("⚠️ Gagal memperbarui jadwal maintenance.", true)
+		}
+		if !view.Config.Enabled {
+			_ = ctx.Answer("🟢 Jadwal maintenance diaktifkan", false)
+		} else {
+			_ = ctx.Answer("⏸️ Jadwal maintenance dinonaktifkan", false)
+		}
+		screen, err := p.menuMgr.BuildMaintenanceScreen(ctx.Context())
+		if err != nil {
+			return err
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_run":
+		if err := p.maintenanceService().TriggerRun(ctx.Context()); err != nil {
+			if errors.Is(err, ErrMaintenanceAlreadyRunning) {
+				return ctx.Answer("⏳ Maintenance sedang berjalan", true)
+			}
+			return ctx.Answer("⚠️ Gagal menjalankan maintenance.", true)
+		}
+		_ = ctx.Answer("▶️ Maintenance dikirim ke JobManager", false)
+		screen, err := p.menuMgr.BuildMaintenanceScreen(ctx.Context())
+		if err != nil {
+			return err
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_history":
+		screen, err := p.menuMgr.BuildMaintenanceHistoryScreen(ctx.Context())
+		if err != nil {
+			return err
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_interval":
+		state.Wizard = "maint_interval"
+		prompt := "⏱️ <b>Atur Interval Maintenance</b>\n\nKirim durasi antara <code>1h</code> sampai <code>24h</code> (contoh: <code>6h</code>, <code>12h</code>).\n\n<i>Ketik <code>/cancel</code> atau tekan Batal di bawah.</i>"
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
+			return err
+		}
+		return ctx.Answer("Kirim interval baru…", false)
+
+	case "maint_time":
+		state.Wizard = "maint_time"
+		prompt := "🕒 <b>Atur Waktu Anchor Maintenance</b>\n\nKirim jam dalam format 24-jam <code>HH:MM</code> (contoh: <code>03:00</code>).\n\n<i>Ketik <code>/cancel</code> atau tekan Batal di bawah.</i>"
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
+			return err
+		}
+		return ctx.Answer("Kirim waktu anchor baru…", false)
+
+	case "maint_tz":
+		state.Wizard = "maint_tz"
+		prompt := "🌍 <b>Atur Timezone Maintenance</b>\n\nKirim nama IANA timezone (contoh: <code>Asia/Jakarta</code>, <code>Asia/Makassar</code>).\n\n<i>Ketik <code>/cancel</code> atau tekan Batal di bawah.</i>"
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
+			return err
+		}
+		return ctx.Answer("Kirim timezone baru…", false)
+
+	case "maint_window":
+		state.Wizard = "maint_window"
+		prompt := "🪟 <b>Atur Jendela Refresh</b>\n\nKirim durasi sebelum expiry antara <code>5m</code> sampai <code>120m</code> (contoh: <code>30m</code>).\n\n<i>Ketik <code>/cancel</code> atau tekan Batal di bawah.</i>"
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
+			return err
+		}
+		return ctx.Answer("Kirim jendela refresh baru…", false)
+
+	case "maint_scope":
+		state.Wizard = "maint_scope"
+		prompt := "👥 <b>Atur Scope Akun Maintenance</b>\n\nKirim salah satu:\n• <code>all</code>\n• <code>active</code>\n• <code>selected 62819...,62818...</code>\n\n<i>Ketik <code>/cancel</code> atau tekan Batal di bawah.</i>"
+		if err := p.assistantAwait(ctx, state, prompt); err != nil {
+			return err
+		}
+		return ctx.Answer("Kirim scope akun baru…", false)
 
 	case "login_req":
 		state.Wizard = "login_msisdn"
@@ -972,6 +1064,8 @@ func (p *Plugin) HandleAssistantInput(ctx *orchestration.Context, text string) e
 		return p.assistantInputCustomPrice(ctx, state, input)
 	case "family":
 		return p.assistantInputFamily(ctx, state, input)
+	case "maint_interval", "maint_time", "maint_tz", "maint_window", "maint_scope":
+		return p.assistantInputMaintenance(ctx, state, input)
 	default:
 		return fmt.Errorf("myxl: no assistant input wizard is active")
 	}
@@ -1174,6 +1268,60 @@ func (p *Plugin) confirmAssistantPurchase(ctx *orchestration.Context, state assi
 	default:
 		return ctx.Answer("❌ Pembelian selesai dengan status gagal.", true)
 	}
+}
+
+func (p *Plugin) assistantInputMaintenance(ctx *orchestration.Context, state assistantState, input string) error {
+	svc := p.maintenanceService()
+	cCtx, cancel := context.WithTimeout(ctx.Context(), 15*time.Second)
+	defer cancel()
+
+	var err error
+	switch state.Wizard {
+	case "maint_interval":
+		var dur time.Duration
+		dur, err = time.ParseDuration(strings.TrimSpace(input))
+		if err == nil {
+			_, err = svc.SetInterval(cCtx, dur)
+		}
+	case "maint_time":
+		_, err = svc.SetAnchorTime(cCtx, input)
+	case "maint_tz":
+		_, err = svc.SetTimezone(cCtx, input)
+	case "maint_window":
+		var dur time.Duration
+		dur, err = time.ParseDuration(strings.TrimSpace(input))
+		if err == nil {
+			_, err = svc.SetRefreshWindow(cCtx, dur)
+		}
+	case "maint_scope":
+		fields := strings.Fields(strings.TrimSpace(input))
+		if len(fields) == 0 {
+			err = errors.New("scope tidak boleh kosong")
+		} else {
+			scope := AccountScope(strings.ToLower(fields[0]))
+			var selected []string
+			if scope == AccountScopeSelected && len(fields) > 1 {
+				for _, part := range strings.Split(strings.Join(fields[1:], ","), ",") {
+					if trimmed := strings.TrimSpace(part); trimmed != "" {
+						selected = append(selected, trimmed)
+					}
+				}
+			}
+			_, err = svc.SetAccountScope(cCtx, scope, selected)
+		}
+	default:
+		return fmt.Errorf("myxl: unknown maintenance wizard %q", state.Wizard)
+	}
+	if err != nil {
+		return p.assistantRearm(ctx, state, formatMaintenanceMutationError("memperbarui jadwal", err))
+	}
+
+	state.Wizard = ""
+	screen, err := p.menuMgr.BuildMaintenanceScreen(cCtx)
+	if err != nil {
+		return err
+	}
+	return p.assistantTransition(ctx, state, screen)
 }
 
 var _ assistantinteraction.FeatureDriver = (*Plugin)(nil)

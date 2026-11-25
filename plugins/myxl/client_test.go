@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/jobs"
+	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
 	"github.com/inipew/goultroid/internal/platform/secret"
@@ -68,6 +71,15 @@ func TestPluginInitLoadsCapabilityGatedSecrets(t *testing.T) {
 	scope := platformPlugin.NewScope(context.Background(), "myxl")
 	defer func() { _ = scope.Close(context.Background()) }()
 	taskClient := &immediateMyXLTaskClient{}
+	jobDB, err := database.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open test job db: %v", err)
+	}
+	defer func() { _ = jobDB.Close() }()
+	if err := jobsqlite.InitSchema(context.Background(), jobDB.DB); err != nil {
+		t.Fatalf("init job schema: %v", err)
+	}
+	jobsMgr := jobs.NewManagerWithPorts(taskClient, jobsqlite.Ports(jobsqlite.NewStore(jobDB.DB)), nil)
 	newContext := func() platformPlugin.PluginContext {
 		return platformPlugin.NewPluginContext(context.Background(), platformPlugin.ContextConfig{
 			Scope:      scope,
@@ -76,6 +88,7 @@ func TestPluginInitLoadsCapabilityGatedSecrets(t *testing.T) {
 			Network:    network.NewService(nil, nil),
 			Secrets:    secrets,
 			Files:      files,
+			Jobs:       jobsMgr,
 			TaskClient: taskClient,
 		})
 	}
@@ -182,6 +195,19 @@ func (m *mockRepo) DeletePendingQRIS(ctx context.Context, transactionCode string
 }
 func (m *mockRepo) PruneExpiredQRIS(ctx context.Context) (int64, error) {
 	return 0, nil
+}
+func (m *mockRepo) GetTokenMaintenanceConfig(ctx context.Context) (*TokenMaintenanceConfig, error) {
+	def := DefaultTokenMaintenanceConfig()
+	return &def, nil
+}
+func (m *mockRepo) SaveTokenMaintenanceConfig(ctx context.Context, cfg *TokenMaintenanceConfig) error {
+	return nil
+}
+func (m *mockRepo) RecordTokenMaintenanceRun(ctx context.Context, run *MaintenanceRunSummary) error {
+	return nil
+}
+func (m *mockRepo) ListTokenMaintenanceRuns(ctx context.Context, limit int) ([]*MaintenanceRunSummary, error) {
+	return nil, nil
 }
 
 func TestNormalizeMSISDNRejectsNonDigitsAndEmbeddedPlus(t *testing.T) {

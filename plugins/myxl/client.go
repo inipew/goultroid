@@ -331,7 +331,28 @@ func applyTokensToAccount(acc *Account, tokens *Tokens) {
 	acc.UpdatedAt = time.Now().UTC()
 }
 
+// Classified token refresh errors for maintenance diagnostics.
+var (
+	ErrRefreshMissingToken = errors.New("missing refresh token")
+	ErrRefreshAuthRejected = errors.New("refresh authentication rejected")
+	ErrRefreshRateLimited  = errors.New("refresh rate limited")
+	ErrRefreshNetwork      = errors.New("refresh network error")
+	ErrRefreshPersistence  = errors.New("refresh persistence error")
+)
+
+func classifyHTTPStatusError(status int, op string) error {
+	switch {
+	case status == network.StatusTooManyRequests:
+		return fmt.Errorf("%w: %s (HTTP %d)", ErrRefreshRateLimited, op, status)
+	case status == network.StatusBadRequest || status == network.StatusUnauthorized || status == network.StatusForbidden:
+		return fmt.Errorf("%w: %s (HTTP %d)", ErrRefreshAuthRejected, op, status)
+	default:
+		return fmt.Errorf("%w: %s (HTTP %d)", ErrRefreshNetwork, op, status)
+	}
+}
+
 func (c *Client) doRefreshToken(ctx context.Context, acc *Account) (*Tokens, error) {
+	var refreshErr error
 	if acc.RefreshToken != "" {
 		reqURL := fmt.Sprintf("%s/realms/xl-ciam/protocol/openid-connect/token", c.cfg.BaseCIAMURL)
 		formData := url.Values{}
@@ -342,15 +363,24 @@ func (c *Client) doRefreshToken(ctx context.Context, acc *Account) (*Tokens, err
 		headers["Content-Type"] = "application/x-www-form-urlencoded"
 
 		resp, err := c.getHTTP().DoRequest(ctx, network.MethodPost, reqURL, strings.NewReader(formData.Encode()), headers)
-		if err == nil {
+		if err != nil {
+			refreshErr = fmt.Errorf("%w: %v", ErrRefreshNetwork, err)
+		} else {
 			body, readErr := readMyXLResponse(resp)
-			if readErr == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if readErr != nil {
+				refreshErr = fmt.Errorf("%w: %v", ErrRefreshNetwork, readErr)
+			} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				var tokens Tokens
 				if jsonErr := json.Unmarshal(body, &tokens); jsonErr == nil && tokens.IDToken != "" {
 					return &tokens, nil
 				}
+				refreshErr = fmt.Errorf("%w: invalid token response payload", ErrRefreshAuthRejected)
+			} else {
+				refreshErr = classifyHTTPStatusError(resp.StatusCode, "refresh token")
 			}
 		}
+	} else {
+		refreshErr = ErrRefreshMissingToken
 	}
 
 	// Fallback to extend-session if subscriber_id is present
@@ -359,14 +389,34 @@ func (c *Client) doRefreshToken(ctx context.Context, acc *Account) (*Tokens, err
 		if err == nil && tokens != nil && tokens.IDToken != "" {
 			return tokens, nil
 		}
+		if err != nil && refreshErr == ErrRefreshMissingToken {
+			refreshErr = err
+		}
 	}
 
+	if refreshErr != nil {
+		return nil, fmt.Errorf("refresh token and extend session both failed: %w", refreshErr)
+	}
 	return nil, errors.New("refresh token and extend session both failed")
 }
 
+func isTokenFreshAt(expiresAt, now time.Time, skew time.Duration) bool {
+	if expiresAt.IsZero() || !expiresAt.After(time.Unix(0, 0)) {
+		return false
+	}
+	return now.Add(skew).Before(expiresAt)
+}
+
 func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bool, failedIDToken string) (*Account, error) {
+	return c.refreshSingleflightWithSkew(ctx, acc, force, failedIDToken, DefaultTokenRefreshSkew)
+}
+
+func (c *Client) refreshSingleflightWithSkew(ctx context.Context, acc *Account, force bool, failedIDToken string, skew time.Duration) (*Account, error) {
 	if acc == nil {
 		return nil, errors.New("account is nil")
+	}
+	if skew < DefaultTokenRefreshSkew {
+		skew = DefaultTokenRefreshSkew
 	}
 
 	msisdn := acc.MSISDN
@@ -378,7 +428,7 @@ func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bo
 		if c.repo != nil && msisdn != "" {
 			dbAcc, err := c.repo.GetByMSISDN(refreshCtx, msisdn)
 			if err != nil {
-				return nil, fmt.Errorf("read account from repository: %w", err)
+				return nil, fmt.Errorf("%w: read account from repository: %v", ErrRefreshPersistence, err)
 			}
 			if dbAcc != nil {
 				targetAcc = dbAcc
@@ -397,7 +447,7 @@ func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bo
 		}
 
 		// Proactive freshness check (when not forced and not handling 401 recovery):
-		if !force && failedIDToken == "" && !targetAcc.TokenExpiresAt.IsZero() && time.Now().Add(DefaultTokenRefreshSkew).Before(targetAcc.TokenExpiresAt) {
+		if !force && failedIDToken == "" && isTokenFreshAt(targetAcc.TokenExpiresAt, time.Now(), skew) {
 			return targetAcc, nil
 		}
 
@@ -410,7 +460,7 @@ func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bo
 
 		if c.repo != nil {
 			if err := c.repo.Save(refreshCtx, targetAcc); err != nil {
-				return nil, fmt.Errorf("persist refreshed account to repository: %w", err)
+				return nil, fmt.Errorf("%w: persist refreshed account to repository: %v", ErrRefreshPersistence, err)
 			}
 		}
 
@@ -439,16 +489,25 @@ func (c *Client) refreshSingleflight(ctx context.Context, acc *Account, force bo
 // EnsureFreshToken checks if the account token is near expiry or expired,
 // and refreshes it cooperatively using singleflight if needed.
 func (c *Client) EnsureFreshToken(ctx context.Context, acc *Account) error {
+	return c.EnsureFreshTokenWithin(ctx, acc, DefaultTokenRefreshSkew)
+}
+
+// EnsureFreshTokenWithin checks if the account token expires within window
+// (clamped to at least DefaultTokenRefreshSkew) and refreshes it via singleflight.
+func (c *Client) EnsureFreshTokenWithin(ctx context.Context, acc *Account, window time.Duration) error {
 	if acc == nil {
 		return errors.New("account is nil")
 	}
+	if window < DefaultTokenRefreshSkew {
+		window = DefaultTokenRefreshSkew
+	}
 
-	// If token has expiry recorded and is still valid with skew buffer, no refresh needed
-	if !acc.TokenExpiresAt.IsZero() && time.Now().Add(DefaultTokenRefreshSkew).Before(acc.TokenExpiresAt) {
+	// If token has expiry recorded and is still valid with window buffer, no refresh needed
+	if isTokenFreshAt(acc.TokenExpiresAt, time.Now(), window) {
 		return nil
 	}
 
-	refreshed, err := c.refreshSingleflight(ctx, acc, false, "")
+	refreshed, err := c.refreshSingleflightWithSkew(ctx, acc, false, "", window)
 	if err != nil {
 		return err
 	}

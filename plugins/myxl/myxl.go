@@ -19,6 +19,7 @@ import (
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 var _ execution.CapabilityProvider = (*Plugin)(nil)
@@ -31,6 +32,17 @@ type Plugin struct {
 	files     *filesystem.Scope
 	tasks     tasks.Client
 	qrTaskSeq atomic.Uint64
+
+	maintMu        sync.RWMutex
+	maintConfigMu  sync.Mutex
+	maintSvc       *MaintenanceService
+	jobsClient     plugin.JobClient
+	scheduleClient plugin.ScheduleClient
+	maintRunning   atomic.Bool
+	logger         *zap.Logger
+	ownerID        int64
+	msgSvcFunc     func() core.MessageServicer
+	maintDiag      maintenanceCounters
 
 	assistantMu      sync.RWMutex
 	assistantRuntime interaction.DriverRuntime
@@ -57,6 +69,7 @@ func New(repo Repository, client *Client) *Plugin {
 		repo:   repo,
 		client: client,
 	}
+	p.maintSvc = NewMaintenanceService(p)
 	p.menuMgr = NewMenuManager(p)
 	return p
 }
@@ -124,6 +137,10 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 	}
 	p.tasks = taskClient
 
+	if err := p.initMaintenanceScheduling(pctx); err != nil {
+		return err
+	}
+
 	secMgr, err := pctx.Secrets()
 	if err != nil {
 		return fmt.Errorf("initialize MyXL secrets: %w", err)
@@ -172,7 +189,7 @@ func (p *Plugin) Commands() []core.Command {
 			Name:        "myxl",
 			Aliases:     []string{"xlcli"},
 			Description: "MyXL account manager and interactive menu",
-			Usage:       ".myxl [login|otp|refresh|accounts|use|alias|status|del|kuota|notif|family|paket|saved|buy]",
+			Usage:       ".myxl [login|otp|refresh|schedule|accounts|use|alias|status|del|kuota|notif|family|paket|saved|buy]",
 			Category:    "Utility",
 			Permission:  core.PermissionOwner,
 			Surfaces:    execution.SurfaceUserbot | execution.SurfaceAssistant,
@@ -244,6 +261,7 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 				"• <code>.myxl login &lt;nomor&gt;</code> - Minta kode OTP SMS\n" +
 				"• <code>.myxl otp &lt;nomor&gt; &lt;kode&gt;</code> - Verifikasi OTP dan simpan akun\n" +
 				"• <code>.myxl refresh [nomor/alias]</code> - Force refresh token CIAM\n" +
+				"• <code>.myxl schedule [status|enable|disable|interval|time|timezone|window|accounts|run|history]</code> - Jadwal maintenance token\n" +
 				"• <code>.myxl accounts</code> - Daftar akun tersimpan\n" +
 				"• <code>.myxl use &lt;nomor/alias&gt;</code> - Ganti akun aktif\n" +
 				"• <code>.myxl alias &lt;nomor&gt; &lt;alias&gt;</code> - Ubah alias akun\n" +
@@ -270,6 +288,8 @@ func (p *Plugin) handleMyXL(ctx *core.Context) error {
 		return p.handleOTP(ctx, args)
 	case "refresh":
 		return p.handleRefreshToken(ctx, args)
+	case "schedule", "jadwal", "maint":
+		return p.handleScheduleCommand(ctx, args)
 	case "accounts", "list":
 		return p.handleListAccounts(ctx)
 	case "use", "switch":
@@ -558,10 +578,10 @@ func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 		return ctx.Status("Tidak ada akun MyXL yang aktif. Silakan login terlebih dahulu.")
 	}
 
-	_ = ctx.Progress(fmt.Sprintf("Me-refresh token CIAM untuk <code>%s</code>...", html.EscapeString(acc.MSISDN)))
+	maskedMSISDN := MaskMSISDN(acc.MSISDN)
+	_ = ctx.Progress(fmt.Sprintf("Me-refresh token CIAM untuk <code>%s</code>...", html.EscapeString(maskedMSISDN)))
 
-	tokens, err := p.client.ForceRefreshToken(cCtx, acc.MSISDN)
-	if err != nil {
+	if _, err := p.client.ForceRefreshToken(cCtx, acc.MSISDN); err != nil {
 		return ctx.Fail(err, "Gagal memperbarui sesi MyXL. Silakan coba lagi.")
 	}
 
@@ -569,14 +589,9 @@ func (p *Plugin) handleRefreshToken(ctx *core.Context, args []string) error {
 		fmt.Sprintf(
 			"<b>Token CIAM Berhasil Diperbarui!</b>\n\n"+
 				"<b>Akun:</b> <code>%s</code>\n"+
-				"<b>Access Token:</b> <code>%s...</code>\n"+
-				"<b>ID Token:</b> <code>%s...</code>\n"+
-				"<b>Refresh Token:</b> <code>%s...</code>\n"+
+				"<b>Status:</b> Token tersimpan aman di repository\n"+
 				"<b>Waktu:</b> %s",
-			html.EscapeString(acc.MSISDN),
-			html.EscapeString(truncateString(tokens.AccessToken, 20)),
-			html.EscapeString(truncateString(tokens.IDToken, 20)),
-			html.EscapeString(truncateString(tokens.RefreshToken, 20)),
+			html.EscapeString(maskedMSISDN),
 			time.Now().Format("2006-01-02 15:04:05 WIB"),
 		),
 	)
