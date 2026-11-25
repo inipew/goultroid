@@ -22,13 +22,14 @@ type urlDownloadRequest struct {
 }
 
 type urlPipelineHooks struct {
-	Delivery        orchestration.MediaDelivery
-	ProgressEdit    func(context.Context, string) error
-	DownloadFailure func(context.Context) error
-	DeliveryFailure func(context.Context) error
-	Delivered       func(context.Context) error
-	Cancel          func() bool
-	TargetKind      string
+	Delivery               orchestration.MediaDelivery
+	ProgressEdit           func(context.Context, string) error
+	DownloadFailure        func(context.Context) error
+	DownloadFailureWithErr func(context.Context, error) error
+	DeliveryFailure        func(context.Context) error
+	Delivered              func(context.Context) error
+	Cancel                 func() bool
+	TargetKind             string
 }
 
 func (p *Plugin) submitURLPipeline(admissionCtx context.Context, request urlDownloadRequest, hooks urlPipelineHooks) error {
@@ -68,6 +69,7 @@ func (p *Plugin) submitURLPipeline(admissionCtx context.Context, request urlDown
 	var (
 		asset       *storage.Asset
 		targetStore storage.Storage
+		lastErr     error
 	)
 	spec := tasks.WorkSpec{
 		ID:               downloadTaskID,
@@ -110,13 +112,18 @@ func (p *Plugin) submitURLPipeline(admissionCtx context.Context, request urlDown
 				reporter.Close()
 			}
 			if downloadErr != nil {
+				lastErr = downloadErr
 				return downloadErr
 			}
 			producer := "downloader.unknown"
 			if provider != nil {
 				producer = downloaderProviderProducer(provider.Name())
 			}
-			return p.registerRetainedAsset(taskCtx, targetStore, asset, producer)
+			if regErr := p.registerRetainedAsset(taskCtx, targetStore, asset, producer); regErr != nil {
+				lastErr = fmt.Errorf("%w: %w", errRetainedRegistration, regErr)
+				return regErr
+			}
+			return nil
 		},
 	}
 	spec.OnComplete = func(result tasks.TaskResult) {
@@ -127,9 +134,21 @@ func (p *Plugin) submitURLPipeline(admissionCtx context.Context, request urlDown
 				}
 				return
 			}
-			if hooks.DownloadFailure != nil {
+			failureErr := lastErr
+			if failureErr == nil && result.Failure.Message != "" {
+				failureErr = fmt.Errorf("%w: %s", download.ErrDownloadFailed, result.Failure.Message)
+			}
+			var failureEdit func(context.Context) error
+			if hooks.DownloadFailureWithErr != nil {
+				failureEdit = func(editCtx context.Context) error {
+					return hooks.DownloadFailureWithErr(editCtx, failureErr)
+				}
+			} else if hooks.DownloadFailure != nil {
+				failureEdit = hooks.DownloadFailure
+			}
+			if failureEdit != nil {
 				if err := p.submitTerminalEdit(continuationCtx, "download-failed", func(editCtx context.Context) error {
-					if err := hooks.DownloadFailure(editCtx); err != nil {
+					if err := failureEdit(editCtx); err != nil {
 						if hooks.Cancel != nil {
 							hooks.Cancel()
 						}
@@ -143,8 +162,16 @@ func (p *Plugin) submitURLPipeline(admissionCtx context.Context, request urlDown
 			return
 		}
 		if asset == nil || targetStore == nil {
-			if hooks.DownloadFailure != nil {
-				if err := p.submitTerminalEdit(continuationCtx, "download-invalid-result", hooks.DownloadFailure); err != nil && hooks.Cancel != nil {
+			var invalidEdit func(context.Context) error
+			if hooks.DownloadFailureWithErr != nil {
+				invalidEdit = func(editCtx context.Context) error {
+					return hooks.DownloadFailureWithErr(editCtx, download.ErrDownloadFailed)
+				}
+			} else if hooks.DownloadFailure != nil {
+				invalidEdit = hooks.DownloadFailure
+			}
+			if invalidEdit != nil {
+				if err := p.submitTerminalEdit(continuationCtx, "download-invalid-result", invalidEdit); err != nil && hooks.Cancel != nil {
 					hooks.Cancel()
 				}
 			}

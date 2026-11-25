@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	inlineservice "github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/localization"
 	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 const (
@@ -330,31 +332,69 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 		prepared, ok := ctx.Preparation().(probePreparation)
 		if !ok || prepared.State.URL != state.URL || prepared.State.Provider != state.Provider || prepared.State.Phase != state.Phase {
 			err := fmt.Errorf("%w: downloader probe preparation is stale", core.ErrUnavailable)
-			_ = ctx.Edit(failedView(err, state.Locale))
+			p.getLogger().Warn("downloader: probe preparation stale",
+				zap.String("provider", state.Provider),
+				zap.String("phase", string(state.Phase)),
+				zap.Bool("has_prepared", ok),
+				zap.Error(err),
+			)
+			_ = ctx.Edit(failedView(fmt.Errorf("%w: %w", errInvalidSession, err), state.Locale))
 			ctx.Cancel()
 			return err
 		}
 		p.ensureRegistry()
 		if p.registry == nil {
 			err := fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+			p.getLogger().Warn("downloader: probe registry unavailable", zap.Error(err))
 			_ = ctx.Edit(failedView(err, state.Locale))
 			ctx.Cancel()
 			return err
 		}
-		showProbeFailure, err := ctx.PrepareStaticEdit(failedView(nil, state.Locale))
-		if err != nil {
-			return err
-		}
 		if err := ctx.Edit(probingVideoView(state.URL, state.Locale)); err != nil {
+			p.getLogger().Warn("downloader: probing status edit failed", zap.Error(err))
 			return err
 		}
+		probeStart := time.Now()
+		p.getLogger().Info("downloader: probe started",
+			zap.String("provider", state.Provider),
+			zap.String("phase", string(state.Phase)),
+			zap.Int64("actor_id", ctx.Session().Binding.ActorID),
+			zap.Int64("chat_id", ctx.Session().Binding.ChatID),
+		)
 		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{Timeout: download.DefaultProbeTimeout})
+		probeDuration := time.Since(probeStart)
 		if err != nil {
+			category := classifyDownloaderError(err)
+			p.getLogger().Warn("downloader: probe failed",
+				zap.String("provider", state.Provider),
+				zap.Duration("elapsed", probeDuration),
+				zap.Bool("timeout", errors.Is(err, context.DeadlineExceeded)),
+				zap.Bool("cancelled", errors.Is(err, context.Canceled)),
+				zap.String("category", string(category)),
+				zap.Error(err),
+			)
 			editCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = showProbeFailure(editCtx)
+			if editProbeFailure, prepErr := ctx.PrepareStaticEdit(failedView(err, state.Locale)); prepErr == nil {
+				if editErr := editProbeFailure(editCtx); editErr != nil {
+					p.getLogger().Warn("downloader: probe failure view edit failed", zap.Error(editErr))
+				}
+			} else {
+				p.getLogger().Warn("downloader: probe failure view prepare failed", zap.Error(prepErr))
+			}
 			cancel()
 			ctx.Cancel()
 			return err
+		}
+		p.getLogger().Info("downloader: probe complete",
+			zap.String("provider", state.Provider),
+			zap.Duration("elapsed", probeDuration),
+			zap.Int("quality_count", len(probe.VideoQualities)),
+			zap.Bool("has_title", probe.Title != ""),
+		)
+		if len(probe.VideoQualities) == 0 {
+			p.getLogger().Info("downloader: probe returned no canonical MP4 qualities, showing best-only view",
+				zap.String("provider", state.Provider),
+			)
 		}
 		state.Phase = phaseVideoFormat
 		state.Mode = download.MediaModeVideo
@@ -441,14 +481,18 @@ func (p *Plugin) validateFinalAction(state interactiveState, actionID string) er
 
 func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state interactiveState, actionID string) error {
 	if err := p.validateFinalAction(state, actionID); err != nil {
-		_ = ctx.Edit(failedView(err, state.Locale))
+		viewErr := err
+		if errors.Is(err, core.ErrInvalidArgs) {
+			viewErr = fmt.Errorf("%w: %w", errInvalidSession, err)
+		}
+		_ = ctx.Edit(failedView(viewErr, state.Locale))
 		ctx.Cancel()
 		return err
 	}
 	prepared, ok := ctx.Preparation().(downloadPreparation)
 	if !ok || prepared.State.URL != state.URL || prepared.State.Provider != state.Provider || prepared.State.Phase != state.Phase {
 		err := fmt.Errorf("%w: downloader prepared state is stale", core.ErrUnavailable)
-		_ = ctx.Edit(failedView(err, state.Locale))
+		_ = ctx.Edit(failedView(fmt.Errorf("%w: %w", errInvalidSession, err), state.Locale))
 		ctx.Cancel()
 		return err
 	}
@@ -505,8 +549,12 @@ func (p *Plugin) executeInteractiveDownload(ctx *orchestration.Context, state in
 		ctx.Cancel()
 		return err
 	}
-	downloadFailure := func(editCtx context.Context) error {
-		return terminalTransition(editCtx, failedEncoded, interactiveTTL, failedRetryView(failedState))
+	downloadFailure := func(editCtx context.Context, downloadErr error) error {
+		if !isRetryableDownloaderError(downloadErr) {
+			_ = cancelSession()
+			return terminalTransition(editCtx, failedEncoded, interactiveTTL, failedView(downloadErr, state.Locale))
+		}
+		return terminalTransition(editCtx, failedEncoded, interactiveTTL, failedRetryView(failedState, downloadErr))
 	}
 	deliveryFailure, err := ctx.PrepareStaticEdit(deliveryFailedView(state.Locale))
 	if err != nil {
@@ -653,7 +701,13 @@ func (h *interactiveInlineHandler) HandleInlineV2(ctx *inlineservice.InlineConte
 	}
 	state, encoded, provider, err := h.plugin.prepareInteractiveURLState(rawURL, locale)
 	if err != nil {
-		return nil, err
+		return interactiveInlineResponse([]inlineservice.InlineResult{{
+			ID:          "downloader-error",
+			Type:        inlineservice.ResultArticle,
+			Title:       downloaderTR(locale, "downloader.inline.title"),
+			Description: downloaderTR(locale, "downloader.inline.description"),
+			Text:        downloaderUserMessage(locale, err),
+		}}), nil
 	}
 	view := directDownloadView(state.URL, locale)
 	if provider.Name() == "extractor" {
@@ -895,7 +949,7 @@ func runningView(state interactiveState) presentation.View {
 	}
 }
 
-func failedRetryView(state interactiveState) presentation.View {
+func failedRetryView(state interactiveState, errs ...error) presentation.View {
 	label := "file"
 	if state.Mode != download.MediaModeDefault {
 		label = string(state.Mode) + " / " + string(state.Format)
@@ -904,8 +958,12 @@ func failedRetryView(state interactiveState) presentation.View {
 		}
 	}
 	locale := localization.CanonicalLocale(state.Locale)
+	header := downloaderTR(locale, "downloader.failed")
+	if len(errs) > 0 && errs[0] != nil {
+		header = downloaderUserMessage(locale, errs[0])
+	}
 	return presentation.View{
-		Text: downloaderTR(locale, "downloader.failed") + "\n\n<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.field.selection")) + ":</b> <code>" + core.EscapeHTML(label) + "</code>\n" + downloaderTR(locale, "downloader.retry_hint"),
+		Text: header + "\n\n<b>" + core.EscapeHTML(downloaderTR(locale, "downloader.field.selection")) + ":</b> <code>" + core.EscapeHTML(label) + "</code>\n" + downloaderTR(locale, "downloader.retry_hint"),
 		Rows: []presentation.Row{
 			{{Text: downloaderTR(locale, "ui.retry"), ActionID: actionRetry}, {Text: downloaderTR(locale, "ui.close"), ActionID: actionCancel}},
 		},
@@ -913,7 +971,7 @@ func failedRetryView(state interactiveState) presentation.View {
 }
 
 func failedView(err error, locales ...string) presentation.View {
-	return presentation.View{Text: downloaderTR(optionalDownloaderLocale(locales), "downloader.error")}
+	return presentation.View{Text: downloaderUserMessage(optionalDownloaderLocale(locales), err)}
 }
 
 func cancelledView(locales ...string) presentation.View {

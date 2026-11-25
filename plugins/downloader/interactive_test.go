@@ -306,7 +306,7 @@ func TestVideoProbeTimeoutStillShowsFailure(t *testing.T) {
 	if !strings.Contains(progressText, "Inspecting video formats") {
 		t.Fatalf("probe began without a visible progress view: %q", progressText)
 	}
-	if !strings.Contains(port.edited.Text, "Error downloading media") {
+	if !strings.Contains(port.edited.Text, "Process timed out") {
 		t.Fatalf("failure view not delivered after probe timeout: %+v", port.edited)
 	}
 }

@@ -305,20 +305,20 @@ func TestYouTubeFeature_CommandQueryErrorPaths(t *testing.T) {
 			name:      "extractor_unavailable",
 			args:      []string{"music"},
 			searchErr: download.ErrExtractorUnavailable,
-			wantText:  "YouTube search is unavailable",
+			wantText:  "Download service is unavailable",
 			wantCalls: 1,
 		},
 		{
 			name:      "timeout",
 			args:      []string{"music"},
 			searchErr: context.DeadlineExceeded,
-			wantText:  "YouTube search timed out",
+			wantText:  "Process timed out",
 			wantCalls: 1,
 		},
 		{
 			name:      "oversized_query",
 			args:      []string{strings.Repeat("a", download.MaxSearchQueryBytes+1)},
-			wantText:  "YouTube search query too long",
+			wantText:  "Invalid URL or input",
 			wantCalls: 0,
 		},
 	}

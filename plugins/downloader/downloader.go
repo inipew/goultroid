@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 const downloaderExecutionTimeout = 10 * time.Minute
@@ -33,6 +34,7 @@ type Plugin struct {
 	tasks         tasks.Client
 	renderer      selfinline.Renderer
 	settings      *settings.Service
+	logger        *zap.Logger
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -72,6 +74,22 @@ func (p *Plugin) SetTaskClient(client tasks.Client) {
 // per-user locale resolution. Downloader does not retain a second locale map.
 func (p *Plugin) SetSettingsService(service *settings.Service) {
 	p.settings = service
+}
+
+// SetLogger injects the structured logger used for probe observability.
+// If not set, a no-op logger is used.
+func (p *Plugin) SetLogger(logger *zap.Logger) {
+	if p != nil && logger != nil {
+		p.logger = logger
+	}
+}
+
+// getLogger returns the plugin logger, falling back to a no-op logger.
+func (p *Plugin) getLogger() *zap.Logger {
+	if p != nil && p.logger != nil {
+		return p.logger
+	}
+	return zap.NewNop()
 }
 
 // SetSelfInlineRenderer injects the canonical userbot -> own Assistant inline
@@ -328,14 +346,14 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 
 	workspace, cleanup, err := p.createDownloadWorkspace()
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error"))
+		return ctx.Fail(err, downloaderUserMessage(p.contextLocale(ctx), err))
 	}
 	defer cleanup()
 
 	start := time.Now()
 	filePath, err := ctx.DownloadMedia(workspace)
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error"))
+		return ctx.Fail(err, downloaderUserMessage(p.contextLocale(ctx), err))
 	}
 
 	targetStore := p.storage
@@ -345,7 +363,7 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 
 	f, err := os.Open(filePath)
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error"))
+		return ctx.Fail(err, downloaderUserMessage(p.contextLocale(ctx), err))
 	}
 	defer f.Close()
 
@@ -362,10 +380,10 @@ func (p *Plugin) executeMediaDownload(taskCtx context.Context, ctx *core.Context
 	}
 	asset, err := targetStore.Put(taskCtx, f, meta)
 	if err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error"))
+		return ctx.Fail(err, downloaderUserMessage(p.contextLocale(ctx), err))
 	}
 	if err := p.registerRetainedAsset(taskCtx, targetStore, asset, downloaderTelegramProducer); err != nil {
-		return ctx.Fail(err, ctx.T("downloader.error"))
+		return ctx.Fail(err, downloaderUserMessage(p.contextLocale(ctx), err))
 	}
 
 	duration := time.Since(start)
@@ -427,16 +445,21 @@ func (p *Plugin) handleURLDownload(ctx *core.Context, rawURL string) error {
 	if ctx == nil {
 		return core.ErrInvalidArgs
 	}
+	locale := p.contextLocale(ctx)
 	normalized, err := normalizeInteractiveURL(rawURL)
 	if err != nil {
+		_ = ctx.Status(downloaderUserMessage(locale, err))
 		return err
 	}
 	p.ensureRegistry()
 	if p.registry == nil {
-		return fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+		err := fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+		_ = ctx.Status(downloaderUserMessage(locale, err))
+		return err
 	}
 	provider := p.registry.Resolve(normalized)
 	if provider == nil {
+		_ = ctx.Status(downloaderUserMessage(locale, download.ErrNoMatchingProvider))
 		return download.ErrNoMatchingProvider
 	}
 	if handled, err := p.openInteractiveURLDownload(ctx, normalized); err != nil || handled {

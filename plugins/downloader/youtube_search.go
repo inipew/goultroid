@@ -106,18 +106,25 @@ func (p *Plugin) searchYouTube(ctx context.Context, query string) ([]download.Se
 }
 
 func (p *Plugin) handleYouTubeInlineSearch(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+	locale := p.resolveInteractiveLocale(ctx.Ctx, ctx.UserID, 0)
 	query := strings.TrimSpace(strings.Join(ctx.Args, " "))
 	if query == "" {
 		return interactiveInlineResponse([]inlineservice.InlineResult{{
 			ID:          "youtube-search-help",
 			Type:        inlineservice.ResultArticle,
-			Title:       "YouTube search",
-			Description: "Type: yt <search query>",
-			Text:        "<b>YouTube search</b>\nType <code>yt &lt;search query&gt;</code> in inline mode.",
+			Title:       downloaderTR(locale, "downloader.yt.inline_title"),
+			Description: downloaderTR(locale, "downloader.yt.inline_desc"),
+			Text:        downloaderTR(locale, "downloader.yt.inline_help"),
 		}}), nil
 	}
 	if len(query) > download.MaxSearchQueryBytes {
-		return nil, fmt.Errorf("%w: YouTube search query exceeds %d bytes", core.ErrInvalidArgs, download.MaxSearchQueryBytes)
+		return interactiveInlineResponse([]inlineservice.InlineResult{{
+			ID:          "youtube-search-invalid",
+			Type:        inlineservice.ResultArticle,
+			Title:       downloaderTR(locale, "downloader.yt.inline_title"),
+			Description: downloaderTR(locale, "downloader.yt.query_too_long_desc"),
+			Text:        downloaderUserMessage(locale, core.ErrInvalidArgs),
+		}}), nil
 	}
 
 	results, err := p.searchYouTube(ctx.Ctx, query)
@@ -127,28 +134,34 @@ func (p *Plugin) handleYouTubeInlineSearch(ctx *inlineservice.InlineContext) (*i
 			return interactiveInlineResponse([]inlineservice.InlineResult{{
 				ID:          "youtube-search-empty",
 				Type:        inlineservice.ResultArticle,
-				Title:       "No YouTube results",
-				Description: "Try different keywords",
-				Text:        "<b>No YouTube results found.</b>\nTry a shorter or more specific query.",
+				Title:       downloaderTR(locale, "downloader.yt.no_results_title"),
+				Description: downloaderTR(locale, "downloader.yt.no_results_desc"),
+				Text:        downloaderTR(locale, "downloader.yt.no_results"),
 			}}), nil
 		case errors.Is(err, download.ErrExtractorUnavailable):
 			return interactiveInlineResponse([]inlineservice.InlineResult{{
 				ID:          "youtube-search-unavailable",
 				Type:        inlineservice.ResultArticle,
-				Title:       "YouTube search unavailable",
-				Description: "yt-dlp is not available",
-				Text:        "<b>YouTube search is unavailable.</b>\nThe media extractor is not installed or cannot be started.",
+				Title:       downloaderTR(locale, "downloader.yt.unavailable_title"),
+				Description: downloaderTR(locale, "downloader.yt.error_title"),
+				Text:        downloaderUserMessage(locale, err),
 			}}), nil
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, core.ErrTimeout):
 			return interactiveInlineResponse([]inlineservice.InlineResult{{
 				ID:          "youtube-search-timeout",
 				Type:        inlineservice.ResultArticle,
-				Title:       "YouTube search timed out",
-				Description: "Try a shorter or more specific query",
-				Text:        "<b>YouTube search timed out.</b>\nTry a shorter or more specific query.",
+				Title:       downloaderTR(locale, "downloader.yt.timeout_title"),
+				Description: downloaderTR(locale, "downloader.yt.error_title"),
+				Text:        downloaderUserMessage(locale, err),
 			}}), nil
 		default:
-			return nil, err
+			return interactiveInlineResponse([]inlineservice.InlineResult{{
+				ID:          "youtube-search-error",
+				Type:        inlineservice.ResultArticle,
+				Title:       downloaderTR(locale, "downloader.yt.error_title"),
+				Description: downloaderTR(locale, "downloader.yt.error_title"),
+				Text:        downloaderUserMessage(locale, err),
+			}}), nil
 		}
 	}
 
@@ -163,9 +176,9 @@ func (p *Plugin) handleYouTubeInlineSearch(ctx *inlineservice.InlineContext) (*i
 		return interactiveInlineResponse([]inlineservice.InlineResult{{
 			ID:          "youtube-search-empty",
 			Type:        inlineservice.ResultArticle,
-			Title:       "No YouTube results",
-			Description: "Try different keywords",
-			Text:        "<b>No usable YouTube results found.</b>\nTry different keywords.",
+			Title:       downloaderTR(locale, "downloader.yt.no_results_title"),
+			Description: downloaderTR(locale, "downloader.yt.no_results_desc"),
+			Text:        downloaderTR(locale, "downloader.yt.no_usable_results"),
 		}}), nil
 	}
 	return interactiveInlineResponse(inlineResults), nil

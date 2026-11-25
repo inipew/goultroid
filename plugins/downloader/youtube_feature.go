@@ -127,9 +127,10 @@ func (p *Plugin) handleYouTubeCommand(ctx *core.Context) error {
 	if ctx == nil {
 		return core.ErrInvalidArgs
 	}
+	locale := p.contextLocale(ctx)
 	input := strings.TrimSpace(strings.Join(ctx.Args, " "))
 	if input == "" {
-		return ctx.Status("<b>YouTube</b>\nUsage:\n• <code>.yt &lt;query&gt;</code> — search YouTube\n• <code>.yt &lt;youtube-url&gt;</code> — download YouTube media")
+		return ctx.Status(downloaderTR(locale, "downloader.yt.usage"))
 	}
 
 	if looksLikeURL(input) {
@@ -141,26 +142,27 @@ func (p *Plugin) handleYouTubeCommand(ctx *core.Context) error {
 	}
 
 	if len(input) > download.MaxSearchQueryBytes {
-		return ctx.Status(fmt.Sprintf("<b>YouTube search query too long.</b>\nMaximum length is %d bytes.", download.MaxSearchQueryBytes))
+		return ctx.Status(downloaderUserMessage(locale, core.ErrInvalidArgs))
 	}
 
 	results, err := p.searchYouTube(ctx.Ctx, input)
 	if err != nil {
 		switch {
 		case errors.Is(err, download.ErrSearchNoResults):
-			return ctx.Status("<b>No YouTube results found.</b>\nTry a shorter or more specific query.")
-		case errors.Is(err, download.ErrExtractorUnavailable):
-			return ctx.Status("<b>YouTube search is unavailable.</b>\nThe media extractor is not installed or cannot be started.")
-		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, core.ErrTimeout):
-			return ctx.Status("<b>YouTube search timed out.</b>\nTry a shorter or more specific query.")
+			return ctx.Status(downloaderTR(locale, "downloader.yt.no_results"))
+		case errors.Is(err, download.ErrExtractorUnavailable),
+			errors.Is(err, context.DeadlineExceeded),
+			errors.Is(err, core.ErrTimeout):
+			return ctx.Status(downloaderUserMessage(locale, err))
 		default:
+			_ = ctx.Status(downloaderUserMessage(locale, err))
 			return err
 		}
 	}
 
 	filtered := filterYouTubeResults(results)
 	if len(filtered) == 0 {
-		return ctx.Status("<b>No usable YouTube results found.</b>\nTry different keywords.")
+		return ctx.Status(downloaderTR(locale, "downloader.yt.no_usable_results"))
 	}
 	return ctx.Status(renderYouTubeSearchResults(input, filtered))
 }

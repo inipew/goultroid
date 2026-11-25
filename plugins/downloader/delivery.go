@@ -157,7 +157,7 @@ func (p *Plugin) submitInteractivePipeline(
 	format download.MediaFormat,
 	delivery orchestration.MediaDelivery,
 	progressEdit func(context.Context, string) error,
-	downloadFailure func(context.Context) error,
+	downloadFailure func(context.Context, error) error,
 	deliveryFailure func(context.Context) error,
 	delivered func(context.Context) error,
 	cancelSession func() bool,
@@ -171,13 +171,13 @@ func (p *Plugin) submitInteractivePipeline(
 		Format:    format,
 		MaxHeight: state.MaxHeight,
 	}, urlPipelineHooks{
-		Delivery:        delivery,
-		ProgressEdit:    progressEdit,
-		DownloadFailure: downloadFailure,
-		DeliveryFailure: deliveryFailure,
-		Delivered:       delivered,
-		Cancel:          cancelSession,
-		TargetKind:      targetKind,
+		Delivery:               delivery,
+		ProgressEdit:           progressEdit,
+		DownloadFailureWithErr: downloadFailure,
+		DeliveryFailure:        deliveryFailure,
+		Delivered:              delivered,
+		Cancel:                 cancelSession,
+		TargetKind:             targetKind,
 	})
 }
 
@@ -255,11 +255,7 @@ func isDeliveryLifecycleCancellation(err error) bool {
 }
 
 func deliveryFailedView(locales ...string) presentation.View {
-	locale := localization.DefaultLocale
-	if len(locales) > 0 {
-		locale = localization.CanonicalLocale(locales[0])
-	}
-	return presentation.View{Text: localization.Translate(locale, "downloader.delivery_failed")}
+	return presentation.View{Text: downloaderUserMessage(optionalDownloaderLocale(locales), errDeliveryFailure)}
 }
 
 func deliveredView(locales ...string) presentation.View {

@@ -77,22 +77,23 @@ func (p *Plugin) startNativeURLDownload(ctx *core.Context, normalizedURL, provid
 		Format:    download.MediaFormatDefault,
 		MaxHeight: 0,
 	}
+	locale := p.contextLocale(ctx)
 	hooks := urlPipelineHooks{
 		Delivery:     delivery,
 		ProgressEdit: edit,
-		DownloadFailure: func(editCtx context.Context) error {
-			return edit(editCtx, "❌ <b>Download failed.</b> Retry the command to start again.")
+		DownloadFailureWithErr: func(editCtx context.Context, downloadErr error) error {
+			return edit(editCtx, downloaderUserMessage(locale, downloadErr))
 		},
 		DeliveryFailure: func(editCtx context.Context) error {
-			return edit(editCtx, deliveryFailedView().Text)
+			return edit(editCtx, deliveryFailedView(locale).Text)
 		},
 		Delivered: func(editCtx context.Context) error {
-			return edit(editCtx, deliveredView().Text)
+			return edit(editCtx, deliveredView(locale).Text)
 		},
 		TargetKind: "message",
 	}
 	if err := p.submitURLPipeline(ctx.Ctx, request, hooks); err != nil {
-		_ = edit(context.Background(), "❌ <b>Unable to start download.</b> Please retry the command.")
+		_ = edit(context.Background(), downloaderUserMessage(locale, err))
 		return err
 	}
 	return nil

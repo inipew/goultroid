@@ -222,13 +222,19 @@ func TestYouTubeSearchRejectsOversizedQueryBeforeAdmission(t *testing.T) {
 	p := New(client)
 	h := &interactiveInlineHandler{plugin: p}
 	query := strings.Repeat("x", download.MaxSearchQueryBytes+1)
-	_, err := h.HandleInlineV2(&inlineservice.InlineContext{
+	response, err := h.HandleInlineV2(&inlineservice.InlineContext{
 		Ctx:      context.Background(),
 		RawQuery: "yt " + query,
 		Args:     []string{query},
 	})
-	if err == nil {
-		t.Fatal("expected oversized query error")
+	if err != nil {
+		t.Fatalf("expected localized inline result, got err=%v", err)
+	}
+	if len(response.Results) != 1 || response.Results[0].ID != "youtube-search-invalid" {
+		t.Fatalf("unexpected oversized query response: %+v", response)
+	}
+	if len(response.Results[0].InteractionState) != 0 {
+		t.Fatal("oversized query must not attach interaction state")
 	}
 	if len(client.specs) != 0 {
 		t.Fatalf("oversized query submitted %d tasks", len(client.specs))
