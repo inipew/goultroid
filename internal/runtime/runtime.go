@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -433,8 +434,55 @@ func (r *Runtime) performStop(ctx context.Context) error {
 	return nil
 }
 
+// sanitizeHealthReason normalizes a detail or component string into a stable, bounded, machine-readable identifier.
+// It strips punctuation, limits length to 48 chars, and prevents raw errors,
+// tokens, paths, URLs, or payloads from entering health reasons.
+func sanitizeHealthReason(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "unknown"
+	}
+	if idx := strings.Index(s, "("); idx != -1 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	if idx := strings.Index(s, "?"); idx != -1 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	lastDash := false
+	for _, r := range s {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastDash = false
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+			lastDash = false
+		default:
+			if !lastDash && b.Len() > 0 {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+	res := strings.Trim(b.String(), "-")
+	if len(res) > 48 {
+		res = strings.TrimRight(res[:48], "-")
+	}
+	if res == "" {
+		return "unknown"
+	}
+	return res
+}
+
 // Health probes all registered components and returns an aggregated health report.
+// Health probes are read-only, context-aware, bounded, and preserve unknown/unavailable state.
 func (r *Runtime) Health(ctx context.Context) AggregateHealth {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	r.mu.Lock()
 	currentState := r.stateMachine.Current()
 	components := append([]Component(nil), r.startedComps...)
@@ -448,7 +496,7 @@ func (r *Runtime) Health(ctx context.Context) AggregateHealth {
 		Status:     HealthHealthy,
 		Ready:      currentState == StateRunning,
 		Runtime:    currentState,
-		Components: make(map[string]string),
+		Components: make(map[string]string, len(components)+len(failedComps)),
 	}
 
 	if currentState != StateRunning {
@@ -461,43 +509,150 @@ func (r *Runtime) Health(ctx context.Context) AggregateHealth {
 		}
 	}
 
-	for _, comp := range components {
-		h := comp.Health(ctx)
-		status := h.Status
-		if status == "" {
-			status = HealthHealthy
+	// If context is already cancelled/expired, record honest unknown/unavailable state
+	// without dispatching probe calls.
+	if err := ctx.Err(); err != nil {
+		for _, comp := range components {
+			compName := sanitizeHealthReason(comp.Name())
+			report.Components[comp.Name()] = HealthUnknown
+			report.Reasons = append(report.Reasons, fmt.Sprintf("%s:probe-cancelled", compName))
+			isCritical := true
+			if cc, ok := comp.(CriticalComponent); ok {
+				isCritical = cc.IsCritical()
+			}
+			if isCritical {
+				report.Ready = false
+				if report.Status != HealthUnhealthy {
+					report.Status = HealthDegraded
+				}
+			}
 		}
-		report.Components[comp.Name()] = status
+		r.recordFailedComps(&report, failedComps)
+		return report
+	}
 
-		if status == HealthUnhealthy {
-			report.Status = HealthUnhealthy
-			if h.Details != "" {
-				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", comp.Name(), h.Details))
-			} else if h.Error != nil {
-				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", comp.Name(), h.Error.Error()))
+	n := len(components)
+	type probeResult struct {
+		idx    int
+		health ComponentHealth
+	}
+	resultCh := make(chan probeResult, n)
+
+	for i, comp := range components {
+		go func(idx int, c Component) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					resultCh <- probeResult{
+						idx: idx,
+						health: ComponentHealth{
+							Status:  HealthUnhealthy,
+							Details: "panic",
+						},
+					}
+				}
+			}()
+
+			h := c.Health(ctx)
+			if h.Status == "" {
+				h.Status = HealthHealthy
 			}
-		} else if status == HealthDegraded && report.Status != HealthUnhealthy {
-			report.Status = HealthDegraded
-			if h.Details != "" {
-				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", comp.Name(), h.Details))
-			}
+			resultCh <- probeResult{idx: idx, health: h}
+		}(i, comp)
+	}
+
+	completed := make(map[int]ComponentHealth, n)
+collectLoop:
+	for len(completed) < n {
+		select {
+		case res := <-resultCh:
+			completed[res.idx] = res.health
+		case <-ctx.Done():
+			break collectLoop
 		}
 	}
 
-	if len(failedComps) > 0 {
-		failedNames := make([]string, 0, len(failedComps))
-		for name := range failedComps {
-			failedNames = append(failedNames, name)
+	for i, comp := range components {
+		compName := sanitizeHealthReason(comp.Name())
+		isCritical := true
+		if cc, ok := comp.(CriticalComponent); ok {
+			isCritical = cc.IsCritical()
 		}
-		sort.Strings(failedNames)
-		for _, name := range failedNames {
-			report.Components[name] = HealthDegraded
+
+		h, ok := completed[i]
+		if !ok {
+			h = ComponentHealth{
+				Status:  HealthUnknown,
+				Details: "probe-timeout",
+			}
+		}
+
+		report.Components[compName] = h.Status
+
+		switch h.Status {
+		case HealthUnhealthy:
+			if isCritical {
+				report.Status = HealthUnhealthy
+				report.Ready = false
+			} else {
+				if report.Status != HealthUnhealthy {
+					report.Status = HealthDegraded
+				}
+			}
+			if h.Details != "" {
+				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", compName, sanitizeHealthReason(h.Details)))
+			} else if h.Error != nil {
+				reasonSuffix := "error"
+				if errors.Is(h.Error, context.DeadlineExceeded) {
+					reasonSuffix = "timeout"
+				} else if errors.Is(h.Error, context.Canceled) {
+					reasonSuffix = "cancelled"
+				}
+				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", compName, reasonSuffix))
+			}
+		case HealthUnknown:
+			if isCritical {
+				report.Ready = false
+				if report.Status != HealthUnhealthy {
+					report.Status = HealthDegraded
+				}
+			} else {
+				if report.Status != HealthUnhealthy {
+					report.Status = HealthDegraded
+				}
+			}
+			if h.Details != "" {
+				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", compName, sanitizeHealthReason(h.Details)))
+			} else {
+				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:unknown", compName))
+			}
+		case HealthDegraded:
 			if report.Status != HealthUnhealthy {
 				report.Status = HealthDegraded
 			}
-			report.Reasons = append(report.Reasons, fmt.Sprintf("runtime:optional-component-failed:%s", name))
+			if h.Details != "" {
+				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", compName, sanitizeHealthReason(h.Details)))
+			}
 		}
 	}
 
+	r.recordFailedComps(&report, failedComps)
 	return report
+}
+
+func (r *Runtime) recordFailedComps(report *AggregateHealth, failedComps map[string]error) {
+	if len(failedComps) == 0 {
+		return
+	}
+	failedNames := make([]string, 0, len(failedComps))
+	for name := range failedComps {
+		failedNames = append(failedNames, name)
+	}
+	sort.Strings(failedNames)
+	for _, name := range failedNames {
+		report.Components[name] = HealthDegraded
+		if report.Status != HealthUnhealthy {
+			report.Status = HealthDegraded
+		}
+		report.Reasons = append(report.Reasons, fmt.Sprintf("runtime:optional-component-failed:%s", sanitizeHealthReason(name)))
+	}
 }

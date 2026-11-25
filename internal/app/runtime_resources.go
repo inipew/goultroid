@@ -101,6 +101,7 @@ type resourceComponent struct {
 	name         string
 	dependencies []string
 	start        func(context.Context) error
+	health       func(context.Context) runtime.ComponentHealth
 	stop         func() error
 	stopContext  func(context.Context) error
 }
@@ -115,7 +116,10 @@ func (c resourceComponent) Start(ctx context.Context) error {
 	}
 	return nil
 }
-func (c resourceComponent) Health(context.Context) runtime.ComponentHealth {
+func (c resourceComponent) Health(ctx context.Context) runtime.ComponentHealth {
+	if c.health != nil {
+		return c.health(ctx)
+	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 func (c resourceComponent) Stop(ctx context.Context) error {

@@ -31,6 +31,11 @@ func (d *Dispatcher) submitInteractiveCommand(ctx context.Context, cancel contex
 	return d.submitInteractiveCommandWithAdmission(ctx, cancel, coreCtx, cmd, taskID, owner, correlationID, nil)
 }
 
+// SubmitInteractiveCommandForTesting submits an interactive command through TaskEngine for integration testing.
+func (d *Dispatcher) SubmitInteractiveCommandForTesting(ctx context.Context, cancel context.CancelFunc, coreCtx *core.Context, cmd core.Command, taskID string, owner string, correlationID string) error {
+	return d.submitInteractiveCommand(ctx, cancel, coreCtx, cmd, taskID, owner, correlationID)
+}
+
 // submitInteractiveCommandWithAdmission gates handler execution until the
 // caller has durably committed any post-Submit admission state. TaskEngine may
 // dispatch a worker before Submit returns, so this gate closes the otherwise

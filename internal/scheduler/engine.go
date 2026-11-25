@@ -364,7 +364,7 @@ func (e *Engine) Health(ctx context.Context) runtime.ComponentHealth {
 	running := e.running
 	e.runMu.Unlock()
 	if !running {
-		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "scheduler engine is not running"}
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "not-running"}
 	}
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }

@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -29,7 +30,7 @@ type FileStorage struct {
 	baseDir  string
 	maxQuota int64
 	mu       sync.RWMutex
-	usage    int64
+	usage    atomic.Int64
 }
 
 var _ Storage = (*FileStorage)(nil)
@@ -53,10 +54,39 @@ func NewFileStorage(baseDir string, maxQuota int64) (*FileStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to calculate initial storage usage: %w", err)
 	}
-	return &FileStorage{baseDir: cleanDir, maxQuota: maxQuota, usage: usage}, nil
+	fs := &FileStorage{baseDir: cleanDir, maxQuota: maxQuota}
+	fs.usage.Store(usage)
+	return fs, nil
 }
 
 func (f *FileStorage) BasePath() string { return f.baseDir }
+
+// Usage returns the current storage usage in bytes as a lock-free snapshot.
+func (f *FileStorage) Usage() int64 {
+	if f == nil {
+		return 0
+	}
+	return f.usage.Load()
+}
+
+// MaxQuota returns the configured quota limit in bytes.
+func (f *FileStorage) MaxQuota() int64 {
+	if f == nil {
+		return 0
+	}
+	return f.maxQuota
+}
+
+// StorageHealth reports the in-memory health state of the storage owner without blocking I/O or mutex contention.
+func (f *FileStorage) StorageHealth() (string, string) {
+	if f == nil {
+		return "unhealthy", "storage:nil"
+	}
+	if f.maxQuota > 0 && f.usage.Load() >= f.maxQuota {
+		return "degraded", "storage:quota-exceeded"
+	}
+	return "healthy", ""
+}
 
 func (f *FileStorage) sanitizeID(id string) (string, error) {
 	id = strings.TrimSpace(id)
@@ -163,7 +193,7 @@ func (f *FileStorage) Put(ctx context.Context, src io.Reader, meta Metadata) (*A
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	currentSize := f.usage
+	currentSize := f.usage.Load()
 	if f.maxQuota > 0 && currentSize >= f.maxQuota {
 		return nil, ErrQuotaExceeded
 	}
@@ -254,7 +284,7 @@ func (f *FileStorage) Put(ctx context.Context, src io.Reader, meta Metadata) (*A
 		return nil, fmt.Errorf("failed to harden metadata permissions: %w", err)
 	}
 
-	f.usage += written + int64(len(metaBytes))
+	f.usage.Add(written + int64(len(metaBytes)))
 	return asset, nil
 }
 
@@ -317,9 +347,9 @@ func (f *FileStorage) Delete(ctx context.Context, id string) error {
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("failed to delete asset: %w", err)
 	}
-	f.usage -= size
-	if f.usage < 0 {
-		f.usage = 0
+	newUsage := f.usage.Add(-size)
+	if newUsage < 0 {
+		f.usage.Store(0)
 	}
 	return nil
 }

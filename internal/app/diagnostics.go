@@ -175,6 +175,9 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 		if stats, err := a.taskEngine.Stats(ctx); err == nil {
 			snapshot.TaskEngine = stats
 			snapshot.TaskEngineSnapshotOK = true
+			if interactivePool, ok := stats.Pools["interactive"]; ok && interactivePool.MaxWorkers > 0 {
+				snapshot.Commands.Capacity = interactivePool.MaxWorkers
+			}
 		}
 		cancel()
 	}

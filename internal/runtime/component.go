@@ -8,6 +8,7 @@ const (
 	HealthHealthy   = "healthy"
 	HealthDegraded  = "degraded"
 	HealthUnhealthy = "unhealthy"
+	HealthUnknown   = "unknown"
 )
 
 // ComponentHealth describes the health condition of a single component.

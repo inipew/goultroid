@@ -400,7 +400,20 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 
 	rt := runtime.New()
 	resources := []resourceComponent{
-		{name: "database", stop: coreDeps.db.Close},
+		{
+			name: "database",
+			stop: coreDeps.db.Close,
+			health: func(ctx context.Context) runtime.ComponentHealth {
+				if err := coreDeps.db.PingContext(ctx); err != nil {
+					return runtime.ComponentHealth{
+						Status:  runtime.HealthUnhealthy,
+						Details: "ping-failed",
+						Error:   err,
+					}
+				}
+				return runtime.ComponentHealth{Status: runtime.HealthHealthy}
+			},
+		},
 		{name: "idempotency", dependencies: []string{"database"}, start: coreDeps.idempManager.Start, stopContext: coreDeps.idempManager.Stop},
 		{name: "command-rate-limiter", dependencies: []string{"database"}, start: coreDeps.cmdLimiter.Start, stop: coreDeps.cmdLimiter.Close},
 		{name: "interaction-rate-limiter", dependencies: []string{"database"}, start: coreDeps.interLimiter.Start, stop: coreDeps.interLimiter.Close},

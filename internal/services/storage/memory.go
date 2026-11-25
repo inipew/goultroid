@@ -29,6 +29,11 @@ func NewMemoryStorage() *MemoryStorage {
 
 func (m *MemoryStorage) BasePath() string { return "memory://" }
 
+// StorageHealth reports the in-memory health state of the storage owner without blocking I/O.
+func (m *MemoryStorage) StorageHealth() (string, string) {
+	return "healthy", ""
+}
+
 func (m *MemoryStorage) Put(ctx context.Context, src io.Reader, meta Metadata) (*Asset, error) {
 	if src == nil {
 		return nil, fmt.Errorf("source reader cannot be nil")

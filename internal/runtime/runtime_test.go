@@ -31,10 +31,11 @@ type blockingHealthComponent struct {
 }
 
 type callbackComponent struct {
-	name    string
-	deps    []string
-	startFn func(context.Context) error
-	stopFn  func(context.Context) error
+	name     string
+	deps     []string
+	startFn  func(context.Context) error
+	stopFn   func(context.Context) error
+	healthFn func(context.Context) ComponentHealth
 }
 
 type phasedComponent struct {
@@ -68,7 +69,10 @@ func (c *callbackComponent) Stop(ctx context.Context) error {
 	}
 	return nil
 }
-func (c *callbackComponent) Health(context.Context) ComponentHealth {
+func (c *callbackComponent) Health(ctx context.Context) ComponentHealth {
+	if c.healthFn != nil {
+		return c.healthFn(ctx)
+	}
 	return ComponentHealth{Status: HealthHealthy}
 }
 
@@ -681,5 +685,210 @@ func TestRuntime_StartupDeadlineExceededPostLoopRollsBack(t *testing.T) {
 	}
 	if !firstStopped {
 		t.Fatal("component 'first' was not rolled back")
+	}
+}
+
+func TestRuntime_HealthSlowReporterBoundedAndPreservesUnknown(t *testing.T) {
+	r := New()
+	slow := &callbackComponent{
+		name: "slow-reporter",
+		healthFn: func(ctx context.Context) ComponentHealth {
+			time.Sleep(500 * time.Millisecond)
+			return ComponentHealth{Status: HealthHealthy}
+		},
+	}
+	_ = r.Register(slow)
+	_ = r.Start(context.Background())
+	defer r.Stop(context.Background())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	h := r.Health(ctx)
+	duration := time.Since(start)
+
+	if duration >= 400*time.Millisecond {
+		t.Fatalf("Health() blocked for %v, want < 400ms", duration)
+	}
+	if h.Components["slow-reporter"] != HealthUnknown {
+		t.Fatalf("slow reporter health = %q, want %q", h.Components["slow-reporter"], HealthUnknown)
+	}
+	if h.Ready {
+		t.Fatal("runtime must not report Ready=true when critical component probe timed out")
+	}
+	if h.Status != HealthDegraded {
+		t.Fatalf("health status = %q, want degraded", h.Status)
+	}
+	var foundReason bool
+	for _, reason := range h.Reasons {
+		if reason == "slow-reporter:probe-timeout" {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Fatalf("missing probe-timeout reason, got: %v", h.Reasons)
+	}
+}
+
+func TestRuntime_HealthCriticalFailureMakesNotReady(t *testing.T) {
+	r := New()
+	crit := &callbackComponent{
+		name: "crit-service",
+		healthFn: func(ctx context.Context) ComponentHealth {
+			return ComponentHealth{
+				Status:  HealthUnhealthy,
+				Details: "database-connection-lost",
+			}
+		},
+	}
+	_ = r.Register(crit)
+	_ = r.Start(context.Background())
+	defer r.Stop(context.Background())
+
+	h := r.Health(context.Background())
+	if h.Ready {
+		t.Fatal("runtime must report Ready=false when critical component is unhealthy")
+	}
+	if h.Status != HealthUnhealthy {
+		t.Fatalf("runtime status = %q, want %q", h.Status, HealthUnhealthy)
+	}
+	if h.Components["crit-service"] != HealthUnhealthy {
+		t.Fatalf("crit-service status = %q, want %q", h.Components["crit-service"], HealthUnhealthy)
+	}
+	var foundReason bool
+	for _, reason := range h.Reasons {
+		if reason == "crit-service:database-connection-lost" {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Fatalf("missing reason, got: %v", h.Reasons)
+	}
+}
+
+func TestRuntime_HealthOptionalFailureDegradesWithoutMakingNotReady(t *testing.T) {
+	r := New()
+	crit := &callbackComponent{
+		name: "crit-service",
+		healthFn: func(ctx context.Context) ComponentHealth {
+			return ComponentHealth{Status: HealthHealthy}
+		},
+	}
+	opt := &optionalComponent{
+		mockComponent: mockComponent{
+			name: "opt-assistant",
+			health: ComponentHealth{
+				Status:  HealthUnhealthy,
+				Details: "assistant-token-expired",
+			},
+		},
+		isCritical: false,
+	}
+	_ = r.Register(crit)
+	_ = r.Register(opt)
+	_ = r.Start(context.Background())
+	defer r.Stop(context.Background())
+
+	h := r.Health(context.Background())
+	if !h.Ready {
+		t.Fatal("runtime must remain Ready=true when only an optional component fails")
+	}
+	if h.Status != HealthDegraded {
+		t.Fatalf("runtime status = %q, want %q", h.Status, HealthDegraded)
+	}
+	if h.Components["opt-assistant"] != HealthUnhealthy {
+		t.Fatalf("opt-assistant status = %q, want %q", h.Components["opt-assistant"], HealthUnhealthy)
+	}
+	var foundReason bool
+	for _, reason := range h.Reasons {
+		if reason == "opt-assistant:assistant-token-expired" {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Fatalf("missing reason, got: %v", h.Reasons)
+	}
+}
+
+func TestRuntime_HealthCancelledContextReportsHonestUnknown(t *testing.T) {
+	r := New()
+	comp := &callbackComponent{name: "any-service"}
+	_ = r.Register(comp)
+	_ = r.Start(context.Background())
+	defer r.Stop(context.Background())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	h := r.Health(ctx)
+	if h.Components["any-service"] != HealthUnknown {
+		t.Fatalf("component health = %q, want %q", h.Components["any-service"], HealthUnknown)
+	}
+	if h.Ready {
+		t.Fatal("runtime must not report Ready=true when probe context was cancelled")
+	}
+}
+
+func TestRuntime_HealthReporterPanicIsContained(t *testing.T) {
+	r := New()
+	panicker := &callbackComponent{
+		name: "panicking-service",
+		healthFn: func(ctx context.Context) ComponentHealth {
+			panic("unexpected internal panic in health probe")
+		},
+	}
+	_ = r.Register(panicker)
+	_ = r.Start(context.Background())
+	defer r.Stop(context.Background())
+
+	h := r.Health(context.Background())
+	if h.Ready {
+		t.Fatal("runtime must report Ready=false when component health panics")
+	}
+	if h.Status != HealthUnhealthy {
+		t.Fatalf("runtime status = %q, want %q", h.Status, HealthUnhealthy)
+	}
+	if h.Components["panicking-service"] != HealthUnhealthy {
+		t.Fatalf("panicker status = %q, want %q", h.Components["panicking-service"], HealthUnhealthy)
+	}
+	var foundReason bool
+	for _, reason := range h.Reasons {
+		if reason == "panicking-service:panic" {
+			foundReason = true
+			break
+		}
+	}
+	if !foundReason {
+		t.Fatalf("missing panic reason, got: %v", h.Reasons)
+	}
+}
+
+func TestSanitizeHealthReason_UntrustedInputs(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{input: "valid-name", want: "valid-name"},
+		{input: "Component With Spaces (10/20)", want: "component-with-spaces"},
+		{input: "https://api.telegram.org/bot1234:ABC?token=secret", want: "https-api-telegram-org-bot1234-abc"},
+		{input: "../../etc/passwd", want: "etc-passwd"},
+		{input: "component_with_special$#@%*chars", want: "component-with-special-chars"},
+		{input: "a-very-long-component-name-that-exceeds-the-maximum-bounded-length-allowed-by-sanitizer", want: "a-very-long-component-name-that-exceeds-the-maxi"},
+		{input: "   ", want: "unknown"},
+		{input: "???", want: "unknown"},
+	}
+
+	for _, tc := range tests {
+		got := sanitizeHealthReason(tc.input)
+		if got != tc.want {
+			t.Errorf("sanitizeHealthReason(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+		if len(got) > 48 {
+			t.Errorf("sanitizeHealthReason(%q) length %d > 48", tc.input, len(got))
+		}
 	}
 }

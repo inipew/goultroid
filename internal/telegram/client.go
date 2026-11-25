@@ -74,6 +74,19 @@ func (c *Client) signalReady() {
 	c.readyOnce.Do(func() { close(c.ready) })
 }
 
+// NewClientForTesting creates a test-only Client instance with an immutable readiness state.
+// It is strictly intended for unit tests and must not be used in production runtime wiring.
+func NewClientForTesting(dispatcher *Dispatcher, ready bool) *Client {
+	c := &Client{
+		dispatcher: dispatcher,
+		ready:      make(chan struct{}),
+	}
+	if ready {
+		close(c.ready)
+	}
+	return c
+}
+
 // terminalAuth handles interactive CLI login with phone, SMS/app OTP code, and 2FA password.
 type terminalAuth struct {
 	phone string

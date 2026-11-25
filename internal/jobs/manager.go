@@ -377,12 +377,32 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 }
 
-func (m *Manager) Health(context.Context) runtime.ComponentHealth {
+func (m *Manager) Health(ctx context.Context) runtime.ComponentHealth {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if !m.accepting {
-		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "job admission is closed"}
+	accepting := m.accepting
+	baseCtx := m.baseCtx
+	m.mu.RUnlock()
+
+	if baseCtx != nil && baseCtx.Err() != nil {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "context-cancelled"}
 	}
+	if !accepting {
+		return runtime.ComponentHealth{Status: runtime.HealthDegraded, Details: "admission-closed"}
+	}
+
+	m.recoveryMu.Lock()
+	lastFail := m.recoveryDiagnostics.LastFailureAt
+	lastSuccess := m.recoveryDiagnostics.LastSuccessAt
+	failCount := m.recoveryDiagnostics.FailureCount
+	m.recoveryMu.Unlock()
+
+	if failCount > 0 && lastFail.After(lastSuccess) {
+		return runtime.ComponentHealth{
+			Status:  runtime.HealthDegraded,
+			Details: "recovery-failing",
+		}
+	}
+
 	return runtime.ComponentHealth{Status: runtime.HealthHealthy}
 }
 

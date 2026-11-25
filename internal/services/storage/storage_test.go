@@ -200,3 +200,180 @@ func TestFileStorageBasePath(t *testing.T) {
 		t.Errorf("expected base path %s, got %s", filepath.Clean(tempDir), store.BasePath())
 	}
 }
+
+type blockingReader struct {
+	data        []byte
+	blockCh     chan struct{}
+	readStarted chan struct{}
+	readOnce    bool
+}
+
+func (b *blockingReader) Read(p []byte) (n int, err error) {
+	if !b.readOnce {
+		b.readOnce = true
+		if b.readStarted != nil {
+			close(b.readStarted)
+		}
+		<-b.blockCh
+	}
+	return copy(p, b.data), io.EOF
+}
+
+func TestFileStorage_StorageHealthNonBlockingDuringTransaction(t *testing.T) {
+	tempDir := t.TempDir()
+
+	store, err := storage.NewFileStorage(tempDir, 1024*1024)
+	if err != nil {
+		t.Fatalf("NewFileStorage failed: %v", err)
+	}
+
+	blockCh := make(chan struct{})
+	readStarted := make(chan struct{})
+	putDone := make(chan struct{})
+
+	reader := &blockingReader{
+		data:        []byte("sample payload"),
+		blockCh:     blockCh,
+		readStarted: readStarted,
+	}
+
+	go func() {
+		defer close(putDone)
+		_, _ = store.Put(context.Background(), reader, storage.Metadata{Name: "test.bin"})
+	}()
+
+	// Deterministic synchronization: wait until Put() has entered Read() while holding transaction lock
+	select {
+	case <-readStarted:
+	case <-time.After(5 * time.Second):
+		close(blockCh)
+		t.Fatal("Put did not enter Read within deadline")
+	}
+
+	// StorageHealth must return immediately without waiting for Put to finish
+	healthDone := make(chan struct{})
+	var status, reason string
+	go func() {
+		status, reason = store.StorageHealth()
+		close(healthDone)
+	}()
+
+	select {
+	case <-healthDone:
+		if status != "healthy" || reason != "" {
+			t.Errorf("unexpected health during transaction: status=%s, reason=%s", status, reason)
+		}
+	case <-time.After(100 * time.Millisecond):
+		close(blockCh)
+		t.Fatal("StorageHealth blocked on transaction mutex!")
+	}
+
+	// Unblock reader and wait for Put goroutine to terminate without leaking
+	close(blockCh)
+	select {
+	case <-putDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Put goroutine did not finish after unblocking")
+	}
+}
+
+func TestFileStorage_UsageSnapshotConsistency(t *testing.T) {
+	tempDir := t.TempDir()
+
+	store, err := storage.NewFileStorage(tempDir, 1024*1024)
+	if err != nil {
+		t.Fatalf("NewFileStorage failed: %v", err)
+	}
+
+	if store.Usage() != 0 {
+		t.Fatalf("expected initial usage 0, got %d", store.Usage())
+	}
+
+	payload := []byte("persistent asset payload data")
+	asset, err := store.Put(context.Background(), bytes.NewReader(payload), storage.Metadata{Name: "asset.bin"})
+	if err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	usageAfterPut := store.Usage()
+	if usageAfterPut <= int64(len(payload)) {
+		t.Fatalf("expected usage > %d (payload + metadata), got %d", len(payload), usageAfterPut)
+	}
+
+	if err := store.Delete(context.Background(), asset.ID); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	if store.Usage() != 0 {
+		t.Fatalf("expected usage 0 after delete, got %d", store.Usage())
+	}
+}
+
+func TestFileStorage_StorageHealthQuotaExceeded(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// 1. Initial empty storage is healthy
+	initialStore, err := storage.NewFileStorage(tempDir, 1024*1024)
+	if err != nil {
+		t.Fatalf("NewFileStorage failed: %v", err)
+	}
+	status, reason := initialStore.StorageHealth()
+	if status != "healthy" || reason != "" {
+		t.Fatalf("initial health status=%s, reason=%s", status, reason)
+	}
+
+	// 2. Put an asset that establishes real data and metadata on disk
+	payload := []byte("persistent payload to exhaust storage quota")
+	asset, err := initialStore.Put(context.Background(), bytes.NewReader(payload), storage.Metadata{Name: "quota.bin"})
+	if err != nil {
+		t.Fatalf("initial Put failed: %v", err)
+	}
+
+	totalUsed := initialStore.Usage()
+	if totalUsed <= 0 {
+		t.Fatalf("expected positive usage after Put, got %d", totalUsed)
+	}
+
+	// 3. Initialize FileStorage with maxQuota set to totalUsed, representing
+	// storage that has fully reached/exhausted its configured capacity.
+	store, err := storage.NewFileStorage(tempDir, totalUsed)
+	if err != nil {
+		t.Fatalf("NewFileStorage with quota failed: %v", err)
+	}
+
+	// 4. Verify StorageHealth produces "degraded" with reason "storage:quota-exceeded"
+	status, reason = store.StorageHealth()
+	if status != "degraded" {
+		t.Errorf("expected status 'degraded' when quota exhausted, got %q", status)
+	}
+	if reason != "storage:quota-exceeded" {
+		t.Errorf("expected reason 'storage:quota-exceeded', got %q", reason)
+	}
+
+	// 5. Verify subsequent Put operation is rejected according to quota contract
+	_, err = store.Put(context.Background(), bytes.NewReader([]byte("rejected overflow")), storage.Metadata{Name: "overflow.bin"})
+	if err == nil {
+		t.Fatal("expected Put to fail when quota is exhausted, but got nil")
+	}
+	if !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatalf("expected ErrQuotaExceeded, got %v", err)
+	}
+
+	// 6. Delete asset to verify quota recovery
+	if err := store.Delete(context.Background(), asset.ID); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+	if store.Usage() != 0 {
+		t.Fatalf("expected usage 0 after deleting asset, got %d", store.Usage())
+	}
+	status, reason = store.StorageHealth()
+	if status != "healthy" || reason != "" {
+		t.Errorf("expected healthy status after delete, got %s, reason %s", status, reason)
+	}
+
+	// 7. Verify subsequent Put succeeds now that quota has recovered
+	_, err = store.Put(context.Background(), bytes.NewReader([]byte("allowed after recovery")), storage.Metadata{Name: "allowed.bin"})
+	if err != nil {
+		t.Fatalf("Put after delete recovery failed: %v", err)
+	}
+}

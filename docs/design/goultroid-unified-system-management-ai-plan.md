@@ -526,14 +526,73 @@ Potential work, only where U0 proves a gap:
 
 **Goal:** one coherent, bounded application health projection.
 
-Potential work:
-- reconcile Runtime aggregate health with App HealthSnapshot;
-- define critical vs optional readiness impact;
-- use stable bounded reason identifiers;
-- avoid duplicate or contradictory subsystem checks;
-- ensure health probes are read-only and bounded;
-- document snapshot freshness and unknown/unavailable state;
-- add tests for slow health reporter, optional failure, critical failure, dependency unavailable, queue pressure, and shutdown.
+Completed work & verification evidence:
+- **Unified Readiness & Aggregate Health:** `Runtime.Health(ctx)` now correctly accounts for critical vs optional components. When any critical component returns `HealthUnhealthy` or times out (`HealthUnknown`), `AggregateHealth.Ready` is set to `false`. When an optional component fails or returns `HealthUnhealthy`, `AggregateHealth.Status` degrades to `HealthDegraded` while `Ready` remains `true` (avoiding false readiness failures). `App.HealthContext(ctx)` now directly merges `rtHealth.Ready` into `health.Ready` and reconciles subsystem states without overwrite.
+- **Elimination of Overlapping / Contradictory Subsystem Checks (F-01):** The database `resourceComponent` now implements a real context-aware health probe calling `db.PingContext(ctx)`. Dummy `resourceComponent` health is eliminated; ping failure reliably sets `health.Subsystems["database"] = "unhealthy"`, `health.Ready = false`, and `health.Status = "unhealthy"`. Fallback checks for `database`, `eventbus`, and `scheduler` in `App.HealthContext` only run when `a.runtime == nil`.
+- **Bounded & Context-Aware Probing with Panic Recovery:** `Runtime.Health(ctx)` probes components concurrently with bounded channel collection. If a component reporter ignores context or blocks, `Runtime.Health` returns strictly within the caller's deadline; unfinished probes are preserved honestly as `HealthUnknown` with detail `probe-timeout`. Component panics are caught and contained with status `HealthUnhealthy` and detail `panic`. Pre-cancelled contexts return immediately with `probe-cancelled`.
+- **Stable, Bounded, Sanitized Reason Identifiers (F-07):** Raw error strings (such as `err.Error()`) are strictly prevented from entering `health.Reasons`. `sanitizeHealthReason` normalizes details into lowercase kebab-case identifiers with maximum 48-char bounds. Database failures emit `database:ping-failed`, filesystem failures emit `filesystem:unavailable`, and component errors emit stable identifiers (`comp:timeout`, `comp:cancelled`, `comp:error`). Reasons are deduplicated deterministically.
+- **Subsystem Operational Health Hardening (F-08):** `JobManager.Health` now checks `baseCtx`, admission state, and consecutive recovery failures (`recovery-failing`) without misclassifying intentional `UnknownEffect` quarantined occurrences as component failure. `Scheduler.Health` reports `not-running` upon engine stop.
+- **Regression Suite Added & Passing:**
+  - `TestRuntime_HealthSlowReporterBoundedAndPreservesUnknown`
+  - `TestRuntime_HealthCriticalFailureMakesNotReady`
+  - `TestRuntime_HealthOptionalFailureDegradesWithoutMakingNotReady`
+  - `TestRuntime_HealthCancelledContextReportsHonestUnknown`
+  - `TestRuntime_HealthReporterPanicIsContained`
+  - `TestHealthContext_DatabaseFailureMakesAppUnreadyAndUnhealthy`
+  - `TestHealthContext_DatabaseHealthNotOverwrittenByRuntime`
+  - `TestHealthContext_RuntimeOptionalFailureDegradesWithoutMakingAppNotReady`
+  - `TestHealthContext_ShutdownStateIsUnhealthyAndNotReady`
+  - `TestJobManager_HealthAcceptingAndClosed`, `TestJobManager_HealthRecoveryFailing`, `TestJobManager_HealthContextCancelled`
+  - `TestSchedulerEngine_HealthRunningAndStopped`
+  - Full race test suite passes cleanly across all core packages.
+
+- **U2 Final Review & Hardening Outcome (Completed):**
+  - **A. App health boundedness:** Eliminated synchronous blocking `os.Stat()` from `App.HealthContext()`. Replaced with `probeFilesystem(ctx, basePath)` which wraps the check in a non-blocking channel probe and strictly honors `ctx.Done()`. If filesystem probing hangs or the context expires, it returns `HealthUnknown` with reason `filesystem:probe-timeout` within deadline, avoiding hung calls on network/slow mounts. Verified via `TestProbeFilesystem_BoundedAndContextAware`.
+  - **B. Reason & Identifier Sanitization:** Audited and hardened all dynamic reason sources across Runtime and App. Component names, plugin names, task names, and resource owner labels are passed through `sanitizeHealthReason` and `sanitizeHealthIdentifier`. Any untrusted strings (tokens, query parameters, path traversals `../../etc/passwd`, raw errors, non-alphanumerics) are stripped and normalized to kebab-case with a hard upper bound of 48 characters. Verified via `TestSanitizeHealthReason_UntrustedInputs` and `TestSanitizeHealthIdentifier_UntrustedInputs`.
+  - **C. HealthUnknown Semantics Consistency:** Critical component timeouts or unknown states preserve `HealthUnknown` status with `Ready = false`, while aggregate status remains `HealthDegraded` (unless another component is unhealthy). Preserved honest unknown reporting without false escalation to unhealthy.
+  - **D. Comprehensive Test Coverage & Hardening:**
+    - `TestProbeFilesystem_BoundedAndContextAware`: Verifies filesystem probing respects context cancellations and timeouts (< 50ms).
+    - `TestSanitizeHealthReason_UntrustedInputs` & `TestSanitizeHealthIdentifier_UntrustedInputs`: Verifies boundary limits and sanitization of malicious/dirty input strings.
+    - `TestHealthContext_DependencyUnavailable`: Verifies EventBus created-not-started (`eventbus:not-started`, `HealthDegraded`) and EventBus closed (`eventbus:closed`, `HealthUnhealthy`).
+    - `TestHealthContext_ConcurrentStateTransitions`: 4 background goroutines rapidly flipping lifecycle states while 4 concurrent goroutines call `App.HealthContext()`, asserting zero panics and valid status under `-race`.
+    - `TestHealthContext_QueuePressure`: Verifies process runner concurrency saturation (`process:concurrency-saturated`), command concurrency saturation (`commands:concurrency-saturated`), telegram readiness integration (`telegram:not-ready`), EventBus dropped events (`eventbus:dropped-events`), and EventBus handler panics (`eventbus:handler-panics`).
+  - **E. Clean Verification Outcomes:**
+    - Modified package race tests (`./internal/runtime`, `./internal/app`, `./internal/telegram`): PASS.
+    - Related subsystem race tests (`./internal/jobs`, `./internal/scheduler`, `./internal/taskengine`): PASS.
+    - Full repository race test suite (`go test -race ./...`): PASS (100% across all packages).
+
+- **U2 Final Verification — Resource Ownership & Bounded Probe Correction Outcome (Completed):**
+  - **A. Filesystem health probe resource limits:** Audited `probeFilesystem()` and eliminated goroutine accumulation on hung storage/mounts. Storage owner state is queried in-memory first without I/O (`StorageHealth()`). When physical I/O is probed, active goroutines are bounded by a hard capacity limit of at most 1 active probe slot (`fsProbeSlot`). If a probe hangs or exceeds deadline, repeated subsequent health checks do not spawn goroutines, immediately returning `HealthUnknown` with `filesystem:probe-saturated`. Verified resource boundedness via `TestProbeFilesystem_ResourceBoundedWhenStuck` under `-race`.
+  - **B. Command concurrency & resource ownership:** Audited command execution path from Dispatcher to TaskEngine. Removed duplicate manual counters (`commandCapacity`, `SetCommandCapacity`, `AddRunningCommands`) from Dispatcher. Real command execution capacity is derived directly from the admission owner (`TaskEngine.Stats().Pools["interactive"].MaxWorkers`), while active count reflects live execution in the worker handler (`d.runningCommands`). Handler guarantees release via `defer` across success, error, panic, and cancellation. Verified end-to-end integration via `TestHealthContext_QueuePressure` using a real TaskEngine and Dispatcher.
+  - **C. Client readiness & test isolation:** Removed public `SignalReady()` method from `Client`, preventing artificial readiness bypasses outside of successful Telegram authentication. Replaced `NewClientWithDispatcher` with test-only constructor `NewClientForTesting(dispatcher, ready)` with immutable initial readiness state, ensuring production readiness is solely governed by Telegram connection and authentication completion in `c.raw.Run()`.
+  - **D. Verification results:**
+    - Fresh race tests on modified packages (`./internal/app`, `./internal/telegram`, `./internal/services/storage`, `./internal/runtime`): PASS.
+    - Full repository race suite (`go test -race ./...`): PASS (100% across all packages).
+
+- **U2 Final Correction — Non-Blocking Storage Health Snapshot (Completed):**
+  - **A. Lock-Free Storage Health Snapshot:** Replaced `FileStorage.usage` `int64` with `atomic.Int64`. Completely eliminated mutex acquisition (`f.mu.RLock()`) from `StorageHealth()`, reading `f.usage.Load()` lock-free. `Put` checks `f.usage.Load()` under `mu.Lock()` for quota enforcement and updates `f.usage.Add(...)` after successful disk write. `Delete` updates `f.usage.Add(-size)` with clamp to 0. Even if a disk write hangs or blocks in filesystem I/O, `StorageHealth()` returns instantaneously without blocking.
+  - **B. Subsystem Separation in App Health:** Separated `storage` (owner logical state / quota enforcement) and `filesystem` (physical mount accessibility) into independent keys in `health.Subsystems`. Physical filesystem probe results never overwrite a degraded storage quota status (`storage:quota-exceeded`). Fixed reason preservation so internal constant reason identifiers retain standard canonical formatting.
+  - **C. Regression Test Coverage & Verification:**
+    - `TestFileStorage_StorageHealthNonBlockingDuringTransaction`: verifies `store.StorageHealth()` returns immediately (< 1ms) while a concurrent `Put` holds the transaction mutex.
+    - `TestFileStorage_UsageSnapshotConsistency`: verifies atomic usage accuracy across initialization, `Put`, and `Delete`.
+    - `TestFileStorage_StorageHealthQuotaExceeded`: verifies degraded quota reporting.
+    - `TestHealthContext_DoesNotWaitOnStorageMutex`: verifies `App.HealthContext()` completes within deadline (< 20ms) while storage `Put` is holding its transaction lock.
+    - `TestHealthContext_StorageDegradedNotOverwrittenByFilesystemHealthy`: verifies degraded storage retains `health.Status = HealthDegraded` even if physical filesystem probe is healthy.
+    - `TestHealthContext_StorageAndFilesystemCombinations`: parametric matrix testing combinations of storage health and filesystem probe states.
+    - Fresh race tests on modified packages (`./internal/services/storage`, `./internal/app`, `./internal/runtime`, `./internal/telegram`): PASS.
+    - Full repository race test suite (`go test -race ./...`): PASS (100% across all packages).
+
+- **U2 Test Hardening — Deterministic Non-Blocking & Quota Verification (Completed):**
+  - **A. Deterministic Quota Full & Recovery Verification (`TestFileStorage_StorageHealthQuotaExceeded`):** Hardened quota test to perform an actual `Put()` writing physical data and metadata, configure capacity at 100% full, verify `StorageHealth()` returns `degraded` with reason `storage:quota-exceeded`, verify subsequent `Put()` operations are rejected with `storage.ErrQuotaExceeded`, verify `Delete()` recovers capacity, and verify subsequent `Put()` succeeds after recovery.
+  - **B. Explicit Synchronization on Non-Blocking Storage Test (`TestFileStorage_StorageHealthNonBlockingDuringTransaction`):** Replaced sleep assumptions with explicit reader signaling (`readStarted`) confirming `Put()` has entered `Read()` while holding the transaction lock before `StorageHealth()` is evaluated. Added watchdog protection, clean reader unblocking, and waited on goroutine completion to eliminate goroutine leaks.
+  - **C. Deterministic App Health Non-Blocking Test (`TestHealthContext_DoesNotWaitOnStorageMutex`):** Replaced sleep with explicit reader signaling to guarantee transaction lock contention, measured actual execution duration under a 500ms watchdog, asserted strict duration boundary (<= 50ms, actual < 1ms), and guaranteed clean termination of the `Put()` goroutine before test exit.
+  - **D. Verification Results:**
+    - `go test -count=1 -race ./internal/services/storage`: PASS (1.023s).
+    - `go test -count=1 -race -run 'TestHealthContext' ./internal/app`: PASS (1.413s).
+    - `go test -count=1 -race ./internal/app`: PASS (18.907s).
+    - `go test -race ./...`: PASS (100% across all packages).
+    - `go vet ./internal/app ./internal/services/storage`: PASS (0 warnings).
+    - `gofmt -l` on all changed files: PASS (0 unformatted files).
 
 **No new health polling loop.** Health is an on-demand projection of existing owner snapshots.
 
