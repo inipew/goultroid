@@ -167,6 +167,12 @@ func leaseDurationFor(def JobDefinition) time.Duration {
 func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def JobDefinition, handler Handler, timingOwned bool) error {
 	unlock := m.lockOccurrence(occurrenceID)
 	defer unlock()
+	m.mu.RLock()
+	_, alreadyTracked := m.tracked[occurrenceID]
+	m.mu.RUnlock()
+	if alreadyTracked {
+		return nil
+	}
 	attempt, err := m.prepareNextAttemptLease(ctx, occurrenceID, leaseDurationFor(def))
 	if err != nil {
 		return err

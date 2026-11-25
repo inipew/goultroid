@@ -71,6 +71,7 @@ type Engine struct {
 	claimsInspected          atomic.Uint64
 	scheduledReads           atomic.Uint64
 	occurrenceReads          atomic.Uint64
+	claimLeaseRenews         atomic.Uint64
 	reconcileNanos           atomic.Uint64
 	notificationWakes        atomic.Uint64
 	dueTimerWakes            atomic.Uint64
@@ -116,6 +117,7 @@ type Diagnostics struct {
 	ClaimsInspected          uint64
 	ScheduledReads           uint64
 	OccurrenceReads          uint64
+	ClaimLeaseRenews         uint64
 	ReconcileDuration        time.Duration
 	NotificationWakes        uint64
 	DueTimerWakes            uint64
@@ -132,6 +134,7 @@ func (e *Engine) Diagnostics() Diagnostics {
 		ClaimsInspected:          e.claimsInspected.Load(),
 		ScheduledReads:           e.scheduledReads.Load(),
 		OccurrenceReads:          e.occurrenceReads.Load(),
+		ClaimLeaseRenews:         e.claimLeaseRenews.Load(),
 		ReconcileDuration:        time.Duration(e.reconcileNanos.Load()),
 		NotificationWakes:        e.notificationWakes.Load(),
 		DueTimerWakes:            e.dueTimerWakes.Load(),
@@ -1150,6 +1153,21 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 		e.pruneSettledOccurrences(ctx, c.definitionID)
 		e.untrackClaim(c.jobID)
 		e.notifyWake()
+	default:
+		// Active, nonterminal, non-quarantined occurrence: renew legacy claim lease
+		// if it is nearing expiry or missing.
+		if row.LeaseUntil == nil || !row.LeaseUntil.After(now.Add(schedulerClaimLease/2)) {
+			if err := e.db.RenewJobLease(stateCtx, c.jobID, c.claimToken, schedulerClaimLease, now); err != nil {
+				if errors.Is(err, ErrJobLeaseLost) {
+					e.untrackClaim(c.jobID)
+					e.notifyWake()
+				} else {
+					e.logger.Warn("failed to renew lease for active scheduled occurrence", zap.Int64("job_id", c.jobID), zap.Error(err))
+				}
+				return
+			}
+			e.claimLeaseRenews.Add(1)
+		}
 	}
 }
 

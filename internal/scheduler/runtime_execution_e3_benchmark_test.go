@@ -29,6 +29,16 @@ func (r *executionReconcileMeasurementRepository) GetScheduledJob(_ context.Cont
 	return &copy, nil
 }
 
+func (r *executionReconcileMeasurementRepository) RenewJobLease(_ context.Context, id int64, claimToken string, extension time.Duration, now time.Time) error {
+	row := r.rows[id]
+	if row == nil || row.ClaimToken != claimToken || row.Status != JobStatusRunning {
+		return ErrJobLeaseLost
+	}
+	lease := now.Add(extension)
+	row.LeaseUntil = &lease
+	return nil
+}
+
 type executionReconcileMeasurementOccurrenceStore struct {
 	*executionReconcileOccurrenceStore
 	reads atomic.Int64

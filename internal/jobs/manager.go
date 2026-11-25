@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
+	"go.uber.org/zap"
 )
 
 // Handler resolves a versioned job definition at execution time. It receives a
@@ -58,6 +59,10 @@ type Manager struct {
 	tracked           map[string]*trackedOccurrence
 	occurrenceGatesMu sync.Mutex
 	occurrenceGates   map[string]*occurrenceGate
+
+	logger              *zap.Logger
+	recoveryMu          sync.RWMutex
+	recoveryDiagnostics RecoveryDiagnostics
 }
 
 // retryItem watches one submitted attempt for retry/recovery decisions.
@@ -100,6 +105,16 @@ type RecoverReport struct {
 	Orphaned  int
 }
 
+// RecoveryDiagnostics records bounded recovery execution history.
+type RecoveryDiagnostics struct {
+	PassCount          uint64
+	FailureCount       uint64
+	LastSuccessAt      time.Time
+	LastFailureAt      time.Time
+	LastFailureMessage string
+	LastReport         RecoverReport
+}
+
 // Diagnostics is a read-only count of declarative job registrations.
 type Diagnostics struct {
 	RetryWorkerLimit    int
@@ -115,6 +130,7 @@ type Diagnostics struct {
 	RetainedDeferrals   int
 	EarliestDeferredAt  time.Time
 	DurableSnapshotOK   bool
+	Recovery            RecoveryDiagnostics
 }
 
 var (
@@ -703,10 +719,16 @@ func (m *Manager) GetOccurrence(ctx context.Context, occurrenceID string) (*JobO
 }
 
 func (m *Manager) OccurrenceByKey(ctx context.Context, occurrenceKey string) (*JobOccurrence, error) {
+	if m.stores.Occurrences == nil {
+		return nil, errors.New("occurrence store is not configured")
+	}
 	return m.stores.Occurrences.GetOccurrenceByKey(ctx, occurrenceKey)
 }
 
 func (m *Manager) LatestAttempt(ctx context.Context, occurrenceID string) (*JobAttempt, error) {
+	if m.stores.Attempts == nil {
+		return nil, errors.New("attempt store is not configured")
+	}
 	return m.stores.Attempts.LatestAttempt(ctx, occurrenceID)
 }
 
@@ -756,6 +778,21 @@ func (m *Manager) Definition(id string) (JobDefinition, bool) {
 	return cloneDefinition(def), ok
 }
 
+func (m *Manager) SetLogger(logger *zap.Logger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.logger = logger
+}
+
+func (m *Manager) RecoveryDiagnostics() RecoveryDiagnostics {
+	if m == nil {
+		return RecoveryDiagnostics{}
+	}
+	m.recoveryMu.RLock()
+	defer m.recoveryMu.RUnlock()
+	return m.recoveryDiagnostics
+}
+
 func (m *Manager) Diagnostics() Diagnostics {
 	if m == nil {
 		return Diagnostics{}
@@ -770,6 +807,7 @@ func (m *Manager) Diagnostics() Diagnostics {
 		Definitions:        len(m.definitions),
 		Handlers:           len(m.handlers),
 		Accepting:          m.accepting,
+		Recovery:           m.RecoveryDiagnostics(),
 	}
 	store := m.stores.Diagnostics
 	m.mu.RUnlock()

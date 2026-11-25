@@ -515,6 +515,31 @@ func (r *SQLiteRepository) claimDueScheduledJobsOnce(ctx context.Context, now ti
 	return claimedJobs, nil
 }
 
+// nextIntervalDueAfter computes the earliest anchored time strictly after now for a schedule
+// with the given interval, starting from nextDue. It executes in O(1) arithmetic time.
+func nextIntervalDueAfter(nextDue, now time.Time, interval time.Duration) (time.Time, error) {
+	if interval <= 0 {
+		return time.Time{}, errors.New("schedule interval must be positive")
+	}
+	if nextDue.After(now) {
+		return nextDue, nil
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	delta := now.Sub(nextDue)
+	if now.After(nextDue) && delta == maxDuration {
+		return time.Time{}, errors.New("schedule catch-up span exceeds time.Duration range")
+	}
+	steps := int64(delta/interval) + 1
+	if steps <= 0 || steps > int64(maxDuration)/int64(interval) {
+		return time.Time{}, errors.New("schedule catch-up arithmetic overflow")
+	}
+	candidate := nextDue.Add(time.Duration(steps * int64(interval)))
+	if !candidate.After(now) {
+		return time.Time{}, errors.New("schedule catch-up did not advance strictly after now")
+	}
+	return candidate, nil
+}
+
 // CompleteScheduledJob marks a job complete or advances its recurring schedule.
 func (r *SQLiteRepository) CompleteScheduledJob(ctx context.Context, id int64, claimToken string, durationMs int64, now time.Time) error {
 	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{})
@@ -534,10 +559,16 @@ func (r *SQLiteRepository) CompleteScheduledJob(ctx context.Context, id int64, c
 	}
 
 	if intervalSeconds > 0 {
-		// Anchored next run calculation with SkipMissed policy to eliminate clock drift
-		nextRun := nextRunAt.Add(time.Duration(intervalSeconds) * time.Second)
-		for !nextRun.After(now) {
-			nextRun = nextRun.Add(time.Duration(intervalSeconds) * time.Second)
+		// Anchored next run calculation with SkipMissed policy in O(1) arithmetic time
+		const maxIntervalSeconds = int64(time.Duration(1<<63-1) / time.Second)
+		if intervalSeconds > maxIntervalSeconds {
+			return fmt.Errorf("scheduled job %d interval %d seconds exceeds duration range", id, intervalSeconds)
+		}
+		interval := time.Duration(intervalSeconds) * time.Second
+		firstNext := nextRunAt.Add(interval)
+		nextRun, err := nextIntervalDueAfter(firstNext, now, interval)
+		if err != nil {
+			return fmt.Errorf("scheduled job %d catch-up: %w", id, err)
 		}
 
 		res, err := tx.ExecContext(ctx, `

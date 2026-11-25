@@ -3,6 +3,8 @@ package jobs
 import (
 	"context"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // signalRecovery coalesces arbitrarily many recovery hints into one bounded wake.
@@ -121,7 +123,46 @@ func (m *Manager) runRecoveryPass(baseCtx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, recoveryTimeout)
 	defer cancel()
-	_, _ = m.Recover(ctx, recoveryScanLimit)
+
+	report, err := m.Recover(ctx, recoveryScanLimit)
+	if err != nil {
+		// Shutdown or cancellation of the parent context is not an operational failure.
+		if baseCtx.Err() != nil {
+			return
+		}
+		// If the parent context is still active, any failure (including internal
+		// recoveryTimeout deadline exceeded) is an operational failure.
+		errMsg := err.Error()
+		if len(errMsg) > 256 {
+			errMsg = errMsg[:256]
+		}
+		now := time.Now().UTC()
+		m.recoveryMu.Lock()
+		m.recoveryDiagnostics.PassCount++
+		m.recoveryDiagnostics.FailureCount++
+		m.recoveryDiagnostics.LastFailureAt = now
+		m.recoveryDiagnostics.LastFailureMessage = errMsg
+		m.recoveryMu.Unlock()
+
+		m.mu.RLock()
+		logger := m.logger
+		m.mu.RUnlock()
+		if logger != nil {
+			logger.Warn("job recovery pass failed",
+				zap.String("operation", "recover"),
+				zap.Int("scan_limit", recoveryScanLimit),
+				zap.Error(err),
+			)
+		}
+		return
+	}
+
+	now := time.Now().UTC()
+	m.recoveryMu.Lock()
+	m.recoveryDiagnostics.PassCount++
+	m.recoveryDiagnostics.LastSuccessAt = now
+	m.recoveryDiagnostics.LastReport = report
+	m.recoveryMu.Unlock()
 }
 
 func occurrenceTerminal(state OccurrenceState) bool {
@@ -178,6 +219,18 @@ func (m *Manager) Recover(ctx context.Context, limit int) (RecoverReport, error)
 		// and exceed the retry budget.
 		if activelyTracked {
 			report.Stale++
+			continue
+		}
+		if occ.State == OccurrenceReady {
+			if !found || !def.Enabled || handler == nil {
+				report.Orphaned++
+				continue
+			}
+			if derr := m.driveAttempt(ctx, occ.ID, def, handler, timingOwnedOccurrence(occ)); derr != nil {
+				report.Stale++
+				continue
+			}
+			report.Redriven++
 			continue
 		}
 		summary := candidate.Summary

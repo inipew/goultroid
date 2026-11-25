@@ -432,7 +432,7 @@ func (s *Store) ListUnresolvedOccurrences(ctx context.Context, limit int) ([]*jo
 	query := `
 	SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision
 	FROM job_occurrences
-	WHERE state = 'dispatched'
+	WHERE state IN ('ready', 'dispatched')
 	ORDER BY ready_at ASC, id ASC
 	LIMIT ?;
 	`
@@ -580,7 +580,7 @@ func (s *Store) ListRecoveryCandidates(ctx context.Context, limit int) ([]jobs.R
 		SELECT id, job_id, schedule_id, scheduled_for, occurrence_key, state,
 		       ready_at, cancel_epoch, revision
 		FROM job_occurrences
-		WHERE state = 'dispatched'
+		WHERE state IN ('ready', 'dispatched')
 		ORDER BY ready_at ASC, id ASC
 		LIMIT ?
 	),
@@ -596,15 +596,18 @@ func (s *Store) ListRecoveryCandidates(ctx context.Context, limit int) ([]jobs.R
 	)
 	SELECT u.id, u.job_id, u.schedule_id, u.scheduled_for, u.occurrence_key,
 	       u.state, u.ready_at, u.cancel_epoch, u.revision,
-	       a.id, a.occurrence_id, a.attempt_no, a.task_id, a.lease_epoch, a.lease_until, a.state,
+	       COALESCE(a.id, ''), COALESCE(a.occurrence_id, ''), COALESCE(a.attempt_no, 0),
+	       COALESCE(a.task_id, ''), COALESCE(a.lease_epoch, 0), a.lease_until, a.state,
 	       a.started_at, a.finished_at, a.created_at,
 	       COALESCE(a.result, ''), COALESCE(a.error, ''),
-	       stats.attempt_count, stats.retry_budget_uses, stats.deferrals
+	       COALESCE(stats.attempt_count, 0), COALESCE(stats.retry_budget_uses, 0), COALESCE(stats.deferrals, 0)
 	FROM unresolved u
-	JOIN stats ON stats.occurrence_id = u.id
-	JOIN job_attempts a
+	LEFT JOIN stats ON stats.occurrence_id = u.id
+	LEFT JOIN job_attempts a
 	  ON a.occurrence_id = stats.occurrence_id
 	 AND a.attempt_no = stats.latest_attempt_no
+	WHERE (u.state = 'ready' AND stats.attempt_count IS NULL)
+	   OR (u.state = 'dispatched' AND stats.attempt_count > 0)
 	ORDER BY u.ready_at ASC, u.id ASC;
 	`
 	rows, err := s.db.QueryContext(ctx, query, limit)
@@ -618,21 +621,26 @@ func (s *Store) ListRecoveryCandidates(ctx context.Context, limit int) ([]jobs.R
 		var candidate jobs.RecoveryCandidate
 		var summary jobs.AttemptSummary
 		var schedID sql.NullString
-		var occurrenceState, attemptState string
-		var started, finished sql.NullTime
-		var created time.Time
+		var occurrenceState string
+		var attemptID, attemptOccID, taskID string
+		var attemptNo int
+		var leaseEpoch uint64
+		var leaseUntil sql.NullTime
+		var attemptState sql.NullString
+		var started, finished, created sql.NullTime
 		var result []byte
 		var errStr string
+		var attemptCount, retryBudgetUses, deferrals int
 		if err := rows.Scan(
 			&candidate.Occurrence.ID, &candidate.Occurrence.JobID, &schedID,
 			&candidate.Occurrence.ScheduledFor, &candidate.Occurrence.OccurrenceKey,
 			&occurrenceState, &candidate.Occurrence.ReadyAt, &candidate.Occurrence.CancelEpoch,
 			&candidate.Occurrence.Revision,
-			&summary.Latest.ID, &summary.Latest.OccurrenceID, &summary.Latest.AttemptNo,
-			&summary.Latest.TaskID, &summary.Latest.LeaseEpoch, &summary.Latest.LeaseUntil, &attemptState,
+			&attemptID, &attemptOccID, &attemptNo,
+			&taskID, &leaseEpoch, &leaseUntil, &attemptState,
 			&started, &finished, &created,
 			&result, &errStr,
-			&summary.AttemptCount, &summary.RetryBudgetUses, &summary.Deferrals,
+			&attemptCount, &retryBudgetUses, &deferrals,
 		); err != nil {
 			return nil, fmt.Errorf("scan job recovery candidate: %w", err)
 		}
@@ -640,17 +648,33 @@ func (s *Store) ListRecoveryCandidates(ctx context.Context, limit int) ([]jobs.R
 		candidate.Occurrence.State = jobs.OccurrenceState(occurrenceState)
 		summary.OccurrenceState = candidate.Occurrence.State
 		summary.ReadyAt = candidate.Occurrence.ReadyAt
-		summary.Latest.State = jobs.AttemptState(attemptState)
-		summary.Latest.StartedAt = created
-		if started.Valid {
-			summary.Latest.StartedAt = started.Time
+		summary.AttemptCount = attemptCount
+		summary.RetryBudgetUses = retryBudgetUses
+		summary.Deferrals = deferrals
+
+		if attemptID != "" {
+			summary.Latest.ID = attemptID
+			summary.Latest.OccurrenceID = attemptOccID
+			summary.Latest.AttemptNo = attemptNo
+			summary.Latest.TaskID = taskID
+			summary.Latest.LeaseEpoch = leaseEpoch
+			if leaseUntil.Valid {
+				summary.Latest.LeaseUntil = leaseUntil.Time
+			}
+			summary.Latest.State = jobs.AttemptState(attemptState.String)
+			if created.Valid {
+				summary.Latest.StartedAt = created.Time
+				summary.Latest.FinishedAt = created.Time
+			}
+			if started.Valid {
+				summary.Latest.StartedAt = started.Time
+			}
+			if finished.Valid {
+				summary.Latest.FinishedAt = finished.Time
+			}
+			summary.Latest.Result = result
+			summary.Latest.Error = errStr
 		}
-		summary.Latest.FinishedAt = created
-		if finished.Valid {
-			summary.Latest.FinishedAt = finished.Time
-		}
-		summary.Latest.Result = result
-		summary.Latest.Error = errStr
 		candidate.Summary = &summary
 		out = append(out, candidate)
 	}

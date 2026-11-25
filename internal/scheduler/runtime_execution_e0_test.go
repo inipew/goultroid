@@ -480,6 +480,10 @@ func (r *executionReconcileRepository) CompleteScheduledJob(context.Context, int
 	return nil
 }
 
+func (r *executionReconcileRepository) RenewJobLease(context.Context, int64, string, time.Duration, time.Time) error {
+	return nil
+}
+
 func TestRuntimeExecutionE0_TransientScheduledJobReadKeepsClaimTracked(t *testing.T) {
 	readErr := errors.New("temporary scheduled job read failure")
 	repo := &executionReconcileRepository{

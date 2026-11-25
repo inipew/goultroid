@@ -817,3 +817,151 @@ func TestInitializingScheduledJobIsNotClaimableUntilActivated(t *testing.T) {
 		t.Fatalf("activated row claim=%+v, want job %d", claimed, job.ID)
 	}
 }
+
+func TestLegacyRecurringCatchUpIsBoundedForLongDowntime(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := setupTestSchedulerRepo(t)
+
+	baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// 1-second interval scheduled job
+	job, err := repo.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          1001,
+		PeerType:        "user",
+		ActionType:      "message",
+		Payload:         "1s recurring long downtime",
+		IntervalSeconds: 1,
+		NextRunAt:       baseTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Claim the job at baseTime
+	claimed, err := repo.ClaimDueScheduledJobs(ctx, baseTime, 1, 90*time.Second)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim failed: %v (len %d)", err, len(claimed))
+	}
+
+	// 30 days of downtime = 2,592,000 seconds
+	downtime := 30 * 24 * time.Hour
+	now := baseTime.Add(downtime).Add(500 * time.Millisecond) // 30 days + 0.5s
+
+	start := time.Now()
+	if err := repo.CompleteScheduledJob(ctx, job.ID, claimed[0].ClaimToken, 10, now); err != nil {
+		t.Fatalf("CompleteScheduledJob failed: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("catch-up took %v for 30-day downtime, expected O(1) bounded execution", elapsed)
+	}
+
+	updated, err := repo.GetScheduledJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// baseTime + 2,592,000s = baseTime + 30 days.
+	// Since now is baseTime + 30 days + 0.5s, the next run must be baseTime + 30 days + 1s.
+	expectedNext := baseTime.Add(downtime).Add(1 * time.Second)
+	if !updated.NextRunAt.Equal(expectedNext) {
+		t.Fatalf("nextRunAt = %v, want %v", updated.NextRunAt, expectedNext)
+	}
+}
+
+func TestLegacyRecurringCatchUpPreservesAnchoredPhase(t *testing.T) {
+	ctx := context.Background()
+	repo, _ := setupTestSchedulerRepo(t)
+
+	// Scheduled with an anchor phase of :15 past the hour
+	anchor := time.Date(2026, 6, 1, 12, 15, 0, 0, time.UTC)
+	job, err := repo.CreateScheduledJob(ctx, &ScheduledJob{
+		ChatID:          1002,
+		PeerType:        "user",
+		ActionType:      "message",
+		Payload:         "hourly anchored",
+		IntervalSeconds: 3600, // 1 hour
+		NextRunAt:       anchor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := repo.ClaimDueScheduledJobs(ctx, anchor, 1, 90*time.Second)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim failed: %v", err)
+	}
+
+	// Complete at 16:30:45 (missed 13:15, 14:15, 15:15, 16:15)
+	finishTime := time.Date(2026, 6, 1, 16, 30, 45, 0, time.UTC)
+	if err := repo.CompleteScheduledJob(ctx, job.ID, claimed[0].ClaimToken, 50, finishTime); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := repo.GetScheduledJob(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Expected next run: strictly 17:15:00
+	expected := time.Date(2026, 6, 1, 17, 15, 0, 0, time.UTC)
+	if !updated.NextRunAt.Equal(expected) {
+		t.Fatalf("nextRunAt = %v, want %v", updated.NextRunAt, expected)
+	}
+}
+
+func TestLegacyRecurringCatchUpHandlesExactBoundary(t *testing.T) {
+	anchor := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	interval := 10 * time.Minute
+
+	// Case 1: now is strictly before nextDue (e.g. 5 minutes before)
+	early := anchor.Add(-5 * time.Minute)
+	res, err := nextIntervalDueAfter(anchor, early, interval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Equal(anchor) {
+		t.Fatalf("early: got %v, want %v", res, anchor)
+	}
+
+	// Case 2: now is exactly nextDue
+	res, err = nextIntervalDueAfter(anchor, anchor, interval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedBoundary := anchor.Add(interval)
+	if !res.Equal(expectedBoundary) {
+		t.Fatalf("exact boundary: got %v, want %v", res, expectedBoundary)
+	}
+
+	// Case 3: now is exactly nextDue + 3 * interval
+	threeIntervals := anchor.Add(3 * interval)
+	res, err = nextIntervalDueAfter(anchor, threeIntervals, interval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedFour := anchor.Add(4 * interval)
+	if !res.Equal(expectedFour) {
+		t.Fatalf("exact 3*interval: got %v, want %v", res, expectedFour)
+	}
+}
+
+func TestLegacyRecurringCatchUpRejectsOverflow(t *testing.T) {
+	now := time.Now().UTC()
+
+	// Non-positive interval
+	if _, err := nextIntervalDueAfter(now, now, 0); err == nil {
+		t.Fatal("expected error for zero interval")
+	}
+	if _, err := nextIntervalDueAfter(now, now, -time.Second); err == nil {
+		t.Fatal("expected error for negative interval")
+	}
+
+	// NextDue far in past causing delta overflow
+	farPast := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	farFuture := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Even across millennia, 1ns interval produces overflow
+	if _, err := nextIntervalDueAfter(farPast, farFuture, 1*time.Nanosecond); err == nil {
+		t.Fatal("expected arithmetic overflow error for nanosecond interval over millennia")
+	}
+}
