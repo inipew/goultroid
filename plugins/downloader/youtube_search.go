@@ -105,7 +105,7 @@ func (p *Plugin) searchYouTube(ctx context.Context, query string) ([]download.Se
 	return results, nil
 }
 
-func (h *interactiveInlineHandler) handleYouTubeSearch(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
+func (p *Plugin) handleYouTubeInlineSearch(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
 	query := strings.TrimSpace(strings.Join(ctx.Args, " "))
 	if query == "" {
 		return interactiveInlineResponse([]inlineservice.InlineResult{{
@@ -120,7 +120,7 @@ func (h *interactiveInlineHandler) handleYouTubeSearch(ctx *inlineservice.Inline
 		return nil, fmt.Errorf("%w: YouTube search query exceeds %d bytes", core.ErrInvalidArgs, download.MaxSearchQueryBytes)
 	}
 
-	results, err := h.plugin.searchYouTube(ctx.Ctx, query)
+	results, err := p.searchYouTube(ctx.Ctx, query)
 	if err != nil {
 		switch {
 		case errors.Is(err, download.ErrSearchNoResults):
@@ -154,7 +154,7 @@ func (h *interactiveInlineHandler) handleYouTubeSearch(ctx *inlineservice.Inline
 
 	inlineResults := make([]inlineservice.InlineResult, 0, len(results))
 	for _, result := range results {
-		inlineResult, ok := h.plugin.youtubeInlineResult(result)
+		inlineResult, ok := p.youtubeInlineResult(result)
 		if ok {
 			inlineResults = append(inlineResults, inlineResult)
 		}
@@ -175,22 +175,8 @@ func (p *Plugin) youtubeInlineResult(result download.SearchResult) (inlineservic
 	if result.Provider != "extractor" || result.Source != "youtube" || strings.TrimSpace(result.SourceID) == "" {
 		return inlineservice.InlineResult{}, false
 	}
-	normalized, err := normalizeInteractiveURL(result.URL)
-	if err != nil {
-		return inlineservice.InlineResult{}, false
-	}
-	p.ensureRegistry()
-	if p.registry == nil {
-		return inlineservice.InlineResult{}, false
-	}
-	provider := p.registry.Resolve(normalized)
-	if provider == nil || provider.Name() != "extractor" {
-		return inlineservice.InlineResult{}, false
-	}
-
-	state := interactiveState{URL: normalized, Provider: "extractor", Phase: phaseChoose}
-	encoded, err := encodeInteractiveState(state)
-	if err != nil {
+	state, encoded, provider, err := p.prepareInteractiveURLState(result.URL, "")
+	if err != nil || provider == nil || provider.Name() != "extractor" {
 		return inlineservice.InlineResult{}, false
 	}
 	view := youtubeSearchChoiceView(result)
@@ -205,7 +191,7 @@ func (p *Plugin) youtubeInlineResult(result download.SearchResult) (inlineservic
 		Text:             view.Text,
 		Markup:           &markup,
 		ThumbURL:         result.Thumbnail,
-		URL:              normalized,
+		URL:              state.URL,
 		ActionRows:       view.Rows,
 		InteractionState: encoded,
 		InteractionTTL:   interactiveTTL,

@@ -607,12 +607,38 @@ func (h *interactiveInlineHandler) HandleInline(ctx *inlineservice.InlineContext
 	return response.Results, nil
 }
 
+func (p *Plugin) prepareInteractiveURLState(rawURL, locale string) (interactiveState, []byte, download.Provider, error) {
+	normalized, err := normalizeInteractiveURL(rawURL)
+	if err != nil {
+		return interactiveState{}, nil, nil, err
+	}
+	p.ensureRegistry()
+	if p.registry == nil {
+		return interactiveState{}, nil, nil, fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
+	}
+	provider := p.registry.Resolve(normalized)
+	if provider == nil {
+		return interactiveState{}, nil, nil, download.ErrNoMatchingProvider
+	}
+	state := interactiveState{
+		URL:      normalized,
+		Provider: provider.Name(),
+		Phase:    phaseChoose,
+		Locale:   locale,
+	}
+	encoded, err := encodeInteractiveState(state)
+	if err != nil {
+		return interactiveState{}, nil, nil, err
+	}
+	return state, encoded, provider, nil
+}
+
 func (h *interactiveInlineHandler) HandleInlineV2(ctx *inlineservice.InlineContext) (*inlineservice.InlineResponse, error) {
 	if ctx == nil || h == nil || h.plugin == nil {
 		return nil, core.ErrInvalidArgs
 	}
 	if isYouTubeSearchQuery(ctx.RawQuery) {
-		return h.handleYouTubeSearch(ctx)
+		return h.plugin.handleYouTubeInlineSearch(ctx)
 	}
 	locale := h.plugin.resolveInteractiveLocale(ctx.Ctx, ctx.UserID, 0)
 	rawURL := strings.TrimSpace(strings.Join(ctx.Args, " "))
@@ -625,26 +651,13 @@ func (h *interactiveInlineHandler) HandleInlineV2(ctx *inlineservice.InlineConte
 			Text:        downloaderTR(locale, "downloader.inline.help"),
 		}}), nil
 	}
-	normalized, err := normalizeInteractiveURL(rawURL)
+	state, encoded, provider, err := h.plugin.prepareInteractiveURLState(rawURL, locale)
 	if err != nil {
 		return nil, err
 	}
-	h.plugin.ensureRegistry()
-	if h.plugin.registry == nil {
-		return nil, fmt.Errorf("%w: downloader registry unavailable", core.ErrUnavailable)
-	}
-	provider := h.plugin.registry.Resolve(normalized)
-	if provider == nil {
-		return nil, download.ErrNoMatchingProvider
-	}
-	state := interactiveState{URL: normalized, Provider: provider.Name(), Phase: phaseChoose, Locale: locale}
-	encoded, err := encodeInteractiveState(state)
-	if err != nil {
-		return nil, err
-	}
-	view := directDownloadView(normalized, locale)
+	view := directDownloadView(state.URL, locale)
 	if provider.Name() == "extractor" {
-		view = extractorChoiceView(normalized, locale)
+		view = extractorChoiceView(state.URL, locale)
 	}
 	return interactiveInlineResponse([]inlineservice.InlineResult{{
 		ID:               "downloader",
