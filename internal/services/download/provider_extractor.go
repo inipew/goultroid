@@ -276,16 +276,20 @@ func (p *ExtractorProvider) Search(ctx context.Context, query string, opts Searc
 	if err != nil {
 		return nil, fmt.Errorf("%w: please install yt-dlp on the host machine to search YouTube", ErrExtractorUnavailable)
 	}
+	searchArgs := []string{
+		"--ignore-config",
+		"--no-warnings",
+		"--simulate",
+		"--flat-playlist",
+		"--dump-single-json",
+	}
+	if cookiesFile := strings.TrimSpace(opts.CookiesFile); cookiesFile != "" {
+		searchArgs = append(searchArgs, "--cookies", cookiesFile)
+	}
+	searchArgs = append(searchArgs, fmt.Sprintf("ytsearch%d:%s", limit, query))
 	req := process.Request{
-		Command: ytdlpPath,
-		Args: []string{
-			"--ignore-config",
-			"--no-warnings",
-			"--simulate",
-			"--flat-playlist",
-			"--dump-single-json",
-			fmt.Sprintf("ytsearch%d:%s", limit, query),
-		},
+		Command:   ytdlpPath,
+		Args:      searchArgs,
 		Timeout:   timeout,
 		MaxOutput: extractorSearchMaxOutput,
 	}
@@ -446,6 +450,9 @@ func (p *ExtractorProvider) Download(ctx context.Context, rawURL string, store s
 		"--no-playlist",
 		"--no-warnings",
 		"--max-filesize", fmt.Sprintf("%d", p.defaultMaxCap),
+	}
+	if cookiesFile := strings.TrimSpace(opts.CookiesFile); cookiesFile != "" {
+		args = append(args, "--cookies", cookiesFile)
 	}
 	if progressOutputObserver != nil {
 		args = append(args,

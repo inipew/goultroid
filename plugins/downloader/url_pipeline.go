@@ -99,15 +99,30 @@ func (p *Plugin) submitURLPipeline(admissionCtx context.Context, request urlDown
 				progress = reporter.Callback
 			}
 
-			var downloadErr error
-			asset, downloadErr = p.registry.Download(taskCtx, request.URL, targetStore, download.DownloadOptions{
+			var cookiesFile string
+			if isYouTubeURL(request.URL) {
+				var cleanupCookies func()
+				var cookieErr error
+				cookiesFile, cleanupCookies, cookieErr = p.acquireYouTubeCookieSnapshot(taskCtx)
+				if cookieErr != nil {
+					lastErr = cookieErr
+					return cookieErr
+				}
+				defer cleanupCookies()
+			}
+
+			dlOpts := download.DownloadOptions{
 				Timeout:   downloaderExecutionTimeout,
 				MaxBytes:  500 * 1024 * 1024,
 				Progress:  progress,
 				Mode:      request.Mode,
 				Format:    request.Format,
 				MaxHeight: request.MaxHeight,
-			})
+			}
+			dlOpts.CookiesFile = cookiesFile
+
+			var downloadErr error
+			asset, downloadErr = p.registry.Download(taskCtx, request.URL, targetStore, dlOpts)
 			if reporter != nil {
 				reporter.Close()
 			}

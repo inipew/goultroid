@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/presentation/selfinline"
@@ -27,14 +28,17 @@ var downloaderTaskSequence atomic.Uint64
 
 // Plugin provides media download capabilities for Telegram media and external URLs.
 type Plugin struct {
-	registry      *download.Registry
-	storage       storage.Storage
-	mediaRegistry *mediaregistry.Registry
-	files         *filesystem.Scope
-	tasks         tasks.Client
-	renderer      selfinline.Renderer
-	settings      *settings.Service
-	logger        *zap.Logger
+	registry             *download.Registry
+	storage              storage.Storage
+	mediaRegistry        *mediaregistry.Registry
+	files                *filesystem.Scope
+	tasks                tasks.Client
+	renderer             selfinline.Renderer
+	settings             *settings.Service
+	logger               *zap.Logger
+	cookieSink           cookieIngestionSink
+	cookieStore          *youtubeCookieStore
+	removeCookieSnapshot func(string) error
 }
 
 // New creates a new downloader Plugin instance with optional dependencies.
@@ -107,6 +111,10 @@ func (p *Plugin) InitPlugin(pctx plugin.PluginContext) error {
 		return fmt.Errorf("initialize downloader filesystem scope: %w", err)
 	}
 	p.files = files
+	cookieStore := newYouTubeCookieStore(files, os.Getenv)
+	p.cookieSink = cookieStore
+	p.cookieStore = cookieStore
+	p.cleanupStaleCookieSnapshots()
 	client, err := pctx.TaskClient()
 	if err != nil {
 		return fmt.Errorf("initialize downloader task client: %w", err)
@@ -164,6 +172,18 @@ func (p *Plugin) Commands() []core.Command {
 			Cooldown:    3 * time.Second,
 			Timeout:     downloaderExecutionTimeout,
 			Handler:     p.handleYouTubeCommand,
+		},
+		{
+			Name:        "ytcookies",
+			Description: "Upload or manage YouTube cookies in Saved Messages (Owner Only)",
+			Usage:       ".ytcookies [set] (with document or reply to document in Saved Messages)",
+			Category:    "Media",
+			Permission:  core.PermissionOwner,
+			PrivateOnly: true,
+			Cooldown:    3 * time.Second,
+			Timeout:     youtubeCookiesTimeout,
+			Surfaces:    execution.SurfaceUserbot,
+			Handler:     p.handleYouTubeCookiesCommand,
 		},
 	}
 }

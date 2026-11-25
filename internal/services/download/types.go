@@ -62,8 +62,9 @@ const (
 
 // SearchOptions controls bounded provider metadata searches.
 type SearchOptions struct {
-	Limit   int
-	Timeout time.Duration
+	Limit       int
+	Timeout     time.Duration
+	CookiesFile string
 }
 
 // SearchResult is normalized provider metadata suitable for higher-level
@@ -91,7 +92,8 @@ type SearchProvider interface {
 
 // ProbeOptions controls bounded metadata/format inspection without downloading media.
 type ProbeOptions struct {
-	Timeout time.Duration
+	Timeout     time.Duration
+	CookiesFile string
 }
 
 // VideoQuality is one normalized, user-facing MP4 quality discovered from the
@@ -131,7 +133,8 @@ type DownloadOptions struct {
 	Format         MediaFormat
 	// MaxHeight bounds extractor-backed video selection. Zero means uncapped.
 	// Providers must reject unsupported values rather than accepting arbitrary selectors.
-	MaxHeight int
+	MaxHeight   int
+	CookiesFile string
 }
 
 // Provider represents a source-specific media downloader.

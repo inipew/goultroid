@@ -67,9 +67,17 @@ func (p *Plugin) searchYouTube(ctx context.Context, query string) ([]download.Se
 		ExecutionTimeout: youtubeInlineSearchTimeout,
 		Resources:        []tasks.ResourceRequirement{{Name: "process", Amount: 1}},
 		Handler: func(taskCtx context.Context) error {
+			cookiesFile, cleanupCookies, cookieErr := p.acquireYouTubeCookieSnapshot(taskCtx)
+			if cookieErr != nil {
+				searchErr = cookieErr
+				return cookieErr
+			}
+			defer cleanupCookies()
+
 			results, searchErr = p.registry.Search(taskCtx, "extractor", query, download.SearchOptions{
-				Limit:   download.MaxSearchLimit,
-				Timeout: youtubeInlineSearchTimeout,
+				Limit:       download.MaxSearchLimit,
+				Timeout:     youtubeInlineSearchTimeout,
+				CookiesFile: cookiesFile,
 			})
 			return searchErr
 		},

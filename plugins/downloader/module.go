@@ -24,6 +24,7 @@ func (ModuleType) Manifest() module.Manifest {
 			plugin.CapProcessExecute,
 			plugin.CapTelegramRead,
 			plugin.CapTelegramSendMessage,
+			plugin.CapTelegramDeleteMessage,
 			plugin.CapTasks,
 		},
 	}

@@ -354,6 +354,28 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 			p.getLogger().Warn("downloader: probing status edit failed", zap.Error(err))
 			return err
 		}
+		var cookiesFile string
+		if isYouTubeURL(state.URL) {
+			var cleanupCookies func()
+			var cookieErr error
+			cookiesFile, cleanupCookies, cookieErr = p.acquireYouTubeCookieSnapshot(ctx.Context())
+			if cookieErr != nil {
+				p.getLogger().Warn("downloader: probe cookie snapshot failed",
+					zap.String("provider", state.Provider),
+					zap.String("category", string(classifyDownloaderError(cookieErr))),
+				)
+				editCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if editProbeFailure, prepErr := ctx.PrepareStaticEdit(failedView(cookieErr, state.Locale)); prepErr == nil {
+					if editErr := editProbeFailure(editCtx); editErr != nil {
+						p.getLogger().Warn("downloader: probe failure view edit failed", zap.Error(editErr))
+					}
+				}
+				cancel()
+				ctx.Cancel()
+				return cookieErr
+			}
+			defer cleanupCookies()
+		}
 		probeStart := time.Now()
 		p.getLogger().Info("downloader: probe started",
 			zap.String("provider", state.Provider),
@@ -361,7 +383,10 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 			zap.Int64("actor_id", ctx.Session().Binding.ActorID),
 			zap.Int64("chat_id", ctx.Session().Binding.ChatID),
 		)
-		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{Timeout: download.DefaultProbeTimeout})
+		probe, err := p.registry.Probe(ctx.Context(), state.URL, download.ProbeOptions{
+			Timeout:     download.DefaultProbeTimeout,
+			CookiesFile: cookiesFile,
+		})
 		probeDuration := time.Since(probeStart)
 		if err != nil {
 			category := classifyDownloaderError(err)
@@ -371,7 +396,6 @@ func (p *Plugin) handleInteractiveAction(ctx *orchestration.Context, actionID st
 				zap.Bool("timeout", errors.Is(err, context.DeadlineExceeded)),
 				zap.Bool("cancelled", errors.Is(err, context.Canceled)),
 				zap.String("category", string(category)),
-				zap.Error(err),
 			)
 			editCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			if editProbeFailure, prepErr := ctx.PrepareStaticEdit(failedView(err, state.Locale)); prepErr == nil {

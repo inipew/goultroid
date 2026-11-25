@@ -128,15 +128,19 @@ func (p *ExtractorProvider) Probe(ctx context.Context, rawURL string, opts Probe
 	if timeout > MaxProbeTimeout {
 		timeout = MaxProbeTimeout
 	}
+	probeArgs := []string{
+		"--ignore-config",
+		"--no-warnings",
+		"--simulate",
+		"--dump-single-json",
+	}
+	if cookiesFile := strings.TrimSpace(opts.CookiesFile); cookiesFile != "" {
+		probeArgs = append(probeArgs, "--cookies", cookiesFile)
+	}
+	probeArgs = append(probeArgs, parsedURL.String())
 	req := process.Request{
-		Command: ytdlpPath,
-		Args: []string{
-			"--ignore-config",
-			"--no-warnings",
-			"--simulate",
-			"--dump-single-json",
-			parsedURL.String(),
-		},
+		Command:   ytdlpPath,
+		Args:      probeArgs,
 		Timeout:   timeout,
 		MaxOutput: extractorProbeMaxOutput,
 	}
