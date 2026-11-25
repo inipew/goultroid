@@ -73,6 +73,9 @@ func (s *MaintenanceService) updateConfig(ctx context.Context, mutate func(*Toke
 	if updated.SelectedMSISDNs != nil {
 		updated.SelectedMSISDNs = append([]string(nil), updated.SelectedMSISDNs...)
 	}
+	if updated.Destinations != nil {
+		updated.Destinations = append([]NotificationDestination(nil), updated.Destinations...)
+	}
 	if err := mutate(&updated); err != nil {
 		return nil, err
 	}
@@ -80,6 +83,36 @@ func (s *MaintenanceService) updateConfig(ctx context.Context, mutate func(*Toke
 		return nil, err
 	}
 	if err := s.plugin.ApplyMaintenanceConfig(ctx, updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
+}
+
+func (s *MaintenanceService) updateNotificationConfig(ctx context.Context, mutate func(*TokenMaintenanceConfig) error) (*TokenMaintenanceConfig, error) {
+	if err := s.ensureReady(); err != nil {
+		return nil, err
+	}
+	s.plugin.maintConfigMu.Lock()
+	defer s.plugin.maintConfigMu.Unlock()
+
+	cfg, err := s.plugin.repo.GetTokenMaintenanceConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+	updated := *cfg
+	if updated.SelectedMSISDNs != nil {
+		updated.SelectedMSISDNs = append([]string(nil), updated.SelectedMSISDNs...)
+	}
+	if updated.Destinations != nil {
+		updated.Destinations = append([]NotificationDestination(nil), updated.Destinations...)
+	}
+	if err := mutate(&updated); err != nil {
+		return nil, err
+	}
+	if err := ValidateTokenMaintenanceConfig(updated); err != nil {
+		return nil, err
+	}
+	if err := s.plugin.repo.SaveTokenMaintenanceConfig(ctx, &updated); err != nil {
 		return nil, err
 	}
 	return &updated, nil
@@ -162,9 +195,12 @@ func (s *MaintenanceService) SetAccountScope(ctx context.Context, scope AccountS
 	})
 }
 
+// ErrDestinationNotFound indicates no registered destination matched the given ID.
+var ErrDestinationNotFound = errors.New("notification destination not found")
+
 // SetNotifyPreferences updates owner notification preferences while preserving all other fields.
 func (s *MaintenanceService) SetNotifyPreferences(ctx context.Context, onCompletion, onFailure *bool) (*TokenMaintenanceConfig, error) {
-	return s.updateConfig(ctx, func(c *TokenMaintenanceConfig) error {
+	return s.updateNotificationConfig(ctx, func(c *TokenMaintenanceConfig) error {
 		if onCompletion != nil {
 			c.NotifyOnCompletion = *onCompletion
 		}
@@ -173,6 +209,144 @@ func (s *MaintenanceService) SetNotifyPreferences(ctx context.Context, onComplet
 		}
 		return nil
 	})
+}
+
+// SetNotifyEvent updates a single notification event preference without altering
+// other preferences, destinations, or the active JobSchedule.
+func (s *MaintenanceService) SetNotifyEvent(ctx context.Context, event NotificationEvent, enabled bool) (*TokenMaintenanceConfig, error) {
+	return s.updateNotificationConfig(ctx, func(c *TokenMaintenanceConfig) error {
+		switch event {
+		case EventCompletion:
+			c.NotifyOnCompletion = enabled
+		case EventPartialFailure:
+			c.NotifyOnPartialFailure = enabled
+		case EventFailure:
+			c.NotifyOnFailure = enabled
+		case EventCancelled:
+			c.NotifyOnCancelled = enabled
+		default:
+			return fmt.Errorf("unsupported notification event %q", event)
+		}
+		return nil
+	})
+}
+
+// AddNotificationDestination validates, deduplicates, and appends a destination
+// within MaxNotificationDestinations without altering schedule timing.
+func (s *MaintenanceService) AddNotificationDestination(ctx context.Context, dest NotificationDestination) (*TokenMaintenanceConfig, error) {
+	return s.updateNotificationConfig(ctx, func(c *TokenMaintenanceConfig) error {
+		next := append(append([]NotificationDestination(nil), c.Destinations...), dest)
+		norm, err := NormalizeAndValidateDestinations(next)
+		if err != nil {
+			return err
+		}
+		c.Destinations = norm
+		return nil
+	})
+}
+
+// RemoveNotificationDestination removes a registered destination by stable ID.
+func (s *MaintenanceService) RemoveNotificationDestination(ctx context.Context, id string) (*TokenMaintenanceConfig, error) {
+	targetID := strings.TrimSpace(id)
+	if targetID == "" {
+		return nil, errors.New("destination id is required")
+	}
+	return s.updateNotificationConfig(ctx, func(c *TokenMaintenanceConfig) error {
+		idx := -1
+		for i, d := range c.Destinations {
+			if d.ID == targetID {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return fmt.Errorf("%w: %s", ErrDestinationNotFound, targetID)
+		}
+		c.Destinations = append(c.Destinations[:idx], c.Destinations[idx+1:]...)
+		return nil
+	})
+}
+
+// SetNotificationDestinationEnabled enables or disables a registered destination by ID.
+func (s *MaintenanceService) SetNotificationDestinationEnabled(ctx context.Context, id string, enabled bool) (*TokenMaintenanceConfig, error) {
+	targetID := strings.TrimSpace(id)
+	if targetID == "" {
+		return nil, errors.New("destination id is required")
+	}
+	return s.updateNotificationConfig(ctx, func(c *TokenMaintenanceConfig) error {
+		for i, d := range c.Destinations {
+			if d.ID == targetID {
+				c.Destinations[i].Enabled = enabled
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %s", ErrDestinationNotFound, targetID)
+	})
+}
+
+// TestNotificationDestination sends a safe verification message to a registered
+// destination without creating a maintenance run or mutating configuration.
+func (s *MaintenanceService) TestNotificationDestination(ctx context.Context, id string) error {
+	if err := s.ensureReady(); err != nil {
+		return err
+	}
+	targetID := strings.TrimSpace(id)
+	if targetID == "" {
+		return errors.New("destination id is required")
+	}
+	cfg, err := s.plugin.repo.GetTokenMaintenanceConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	var target *NotificationDestination
+	if len(cfg.Destinations) == 0 && targetID == "owner" {
+		fallback := NotificationDestination{ID: "owner", Type: DestOwner, Label: "Owner PM", Enabled: true}
+		target = &fallback
+	} else {
+		for i := range cfg.Destinations {
+			if cfg.Destinations[i].ID == targetID {
+				d := cfg.Destinations[i]
+				target = &d
+				break
+			}
+		}
+	}
+	if target == nil {
+		return fmt.Errorf("%w: %s", ErrDestinationNotFound, targetID)
+	}
+
+	s.plugin.maintMu.RLock()
+	ownerID := s.plugin.ownerID
+	msgSvcFn := s.plugin.msgSvcFunc
+	resolver := s.plugin.peerResolver
+	ulog := s.plugin.userlogSvc
+	s.plugin.maintMu.RUnlock()
+
+	if msgSvcFn == nil || msgSvcFn() == nil {
+		return errors.New("telegram message service is unavailable")
+	}
+	msgSvc := msgSvcFn()
+
+	res := deliverMaintenanceNotifications(
+		ctx,
+		msgSvc,
+		ownerID,
+		resolver,
+		ulog,
+		EventNone,
+		[]NotificationDestination{*target},
+		"🧪 <b>Test Notifikasi MyXL Token Maintenance</b>\n\nKonfigurasi tujuan notifikasi aktif dan dapat menerima pesan.",
+		maintenanceNotifyTimeout,
+		maintenanceNotifyTimeout,
+	)
+	if res.Sent == 1 {
+		return nil
+	}
+	if len(res.PerRecipient) > 0 && res.PerRecipient[0].Reason != "" {
+		return fmt.Errorf("test delivery failed: %s", res.PerRecipient[0].Reason)
+	}
+	return errors.New("test delivery failed")
 }
 
 // TriggerRun requests an immediate maintenance execution through JobClient.Trigger.

@@ -161,3 +161,54 @@ func TestResolver_CloseCancelsLifecycleContext(t *testing.T) {
 		t.Fatalf("expected lifecycleCtx to be canceled after Close, got: %v", r.lifecycleCtx.Err())
 	}
 }
+
+func TestResolver_NumericSupergroupIDResolution(t *testing.T) {
+	ctx := context.Background()
+	const rawID = "-1002091172531"
+	const chanID int64 = 2091172531
+	const accessHash int64 = 778899001122
+
+	// 1. Without AccessHash -> ErrAccessHashMissing via Resolve() (not swallowed as ErrNotFound).
+	rEmpty := NewResolver(nil, nil)
+	if _, err := rEmpty.Resolve(ctx, rawID); !errors.Is(err, core.ErrAccessHashMissing) {
+		t.Fatalf("Resolve(%q) without access hash = %v, want ErrAccessHashMissing", rawID, err)
+	}
+
+	// 2. Numeric negative ID must NOT invoke ResolveUser().
+	rNoUser := NewResolver(nil, nil)
+	resolveUserCalled := false
+	rNoUser.onResolveUser = func() { resolveUserCalled = true }
+	rNoUser.cache.Set("channel", "2091172531", "channel", chanID, accessHash)
+	peer, err := rNoUser.Resolve(ctx, rawID)
+	if err != nil {
+		t.Fatalf("Resolve(%q) with channel cache error = %v", rawID, err)
+	}
+	if resolveUserCalled {
+		t.Fatalf("Resolve(%q) unexpectedly invoked ResolveUser()", rawID)
+	}
+	chPeer, ok := peer.(*tg.InputPeerChannel)
+	if !ok || chPeer.ChannelID != chanID || chPeer.AccessHash != accessHash {
+		t.Fatalf("Resolve(%q) = %#v, want InputPeerChannel{ID:%d, Hash:%d}", rawID, peer, chanID, accessHash)
+	}
+
+	// 3. Persistent PeerStorage lookup when memory cache misses.
+	db, err := database.Open(fmt.Sprintf("file:resolver_sg_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	memStore := NewPeerStorage(db)
+	if err := memStore.Save(ctx, peers.Key{Prefix: "channel", ID: chanID}, peers.Value{AccessHash: accessHash}); err != nil {
+		t.Fatal(err)
+	}
+	rStore := NewResolver(nil, nil)
+	rStore.SetStorage(memStore)
+	peer2, err := rStore.Resolve(ctx, rawID)
+	if err != nil {
+		t.Fatalf("Resolve(%q) from PeerStorage error = %v", rawID, err)
+	}
+	chPeer2, ok := peer2.(*tg.InputPeerChannel)
+	if !ok || chPeer2.ChannelID != chanID || chPeer2.AccessHash != accessHash {
+		t.Fatalf("Resolve(%q) from storage = %#v, want InputPeerChannel{ID:%d, Hash:%d}", rawID, peer2, chanID, accessHash)
+	}
+}

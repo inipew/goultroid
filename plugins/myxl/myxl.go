@@ -18,6 +18,7 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/plugin"
+	"github.com/inipew/goultroid/internal/services/userlog"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -42,6 +43,8 @@ type Plugin struct {
 	logger         *zap.Logger
 	ownerID        int64
 	msgSvcFunc     func() core.MessageServicer
+	peerResolver   core.PeerResolver
+	userlogSvc     *userlog.Service
 	maintDiag      maintenanceCounters
 
 	assistantMu      sync.RWMutex

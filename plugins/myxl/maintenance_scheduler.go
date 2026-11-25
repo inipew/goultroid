@@ -229,15 +229,20 @@ func (p *Plugin) handleTokenMaintenanceJob(ctx context.Context, _ jobs.JobDefini
 	}
 	p.logMaintenanceFinished(summary, outcomes, runErr)
 
+	if summary != nil && summary.Status == RunStatusCancelled {
+		// Use a fresh bounded context inside maybeNotifyDestinations because ctx is already cancelled.
+		p.maybeNotifyDestinations(context.Background(), *cfg, summary, outcomes)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return context.Canceled
+	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxErr
 	}
 	if runErr != nil {
 		return runErr
 	}
-	if summary != nil && summary.Status == RunStatusCancelled {
-		return context.Canceled
-	}
-	p.maybeNotifyOwner(*cfg, summary, outcomes)
+	p.maybeNotifyDestinations(ctx, *cfg, summary, outcomes)
 	return nil
 }

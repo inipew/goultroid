@@ -726,6 +726,154 @@ func (p *Plugin) dispatchAssistantAction(ctx *orchestration.Context, state assis
 		}
 		return ctx.Answer("Kirim scope akun baru…", false)
 
+	case "maint_notify":
+		screen, err := p.menuMgr.BuildMaintenanceNotifyScreen(ctx.Context())
+		if err != nil {
+			return err
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_notify_ev":
+		ev := NotificationEvent(strings.TrimSpace(opaque))
+		if ev != EventCompletion && ev != EventPartialFailure && ev != EventFailure && ev != EventCancelled {
+			return ctx.Answer("Event notifikasi tidak valid.", true)
+		}
+		svc := p.maintenanceService()
+		cCtx, cancel := context.WithTimeout(ctx.Context(), 15*time.Second)
+		defer cancel()
+		status, err := svc.GetStatus(cCtx)
+		if err != nil {
+			return ctx.Answer("Gagal membaca konfigurasi notifikasi.", true)
+		}
+		var next bool
+		switch ev {
+		case EventCompletion:
+			next = !status.Config.NotifyOnCompletion
+		case EventPartialFailure:
+			next = !status.Config.NotifyOnPartialFailure
+		case EventFailure:
+			next = !status.Config.NotifyOnFailure
+		case EventCancelled:
+			next = !status.Config.NotifyOnCancelled
+		}
+		if _, err := svc.SetNotifyEvent(cCtx, ev, next); err != nil {
+			return ctx.Answer("Gagal memperbarui preferensi event notifikasi.", true)
+		}
+		screen, err := p.menuMgr.BuildMaintenanceNotifyScreen(cCtx)
+		if err != nil {
+			return err
+		}
+		_ = ctx.Answer("Preferensi notifikasi diperbarui.", false)
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_notify_dest":
+		screen, err := p.menuMgr.BuildMaintenanceNotifyDestScreen(ctx.Context(), opaque)
+		if err != nil {
+			_ = ctx.Answer("Destination tidak ditemukan.", true)
+			fallback, fbErr := p.menuMgr.BuildMaintenanceNotifyScreen(ctx.Context())
+			if fbErr != nil {
+				return err
+			}
+			return p.assistantTransition(ctx, state, fallback)
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_notify_dest_toggle":
+		svc := p.maintenanceService()
+		cCtx, cancel := context.WithTimeout(ctx.Context(), 15*time.Second)
+		defer cancel()
+		status, err := svc.GetStatus(cCtx)
+		if err != nil {
+			return ctx.Answer("Gagal membaca konfigurasi notifikasi.", true)
+		}
+		dest, ok := findNotificationDestination(&status.Config, opaque)
+		if !ok {
+			return ctx.Answer("Destination tidak ditemukan.", true)
+		}
+		if _, err := svc.SetNotificationDestinationEnabled(cCtx, dest.ID, !dest.Enabled); err != nil {
+			return ctx.Answer("Gagal mengubah status destination.", true)
+		}
+		screen, err := p.menuMgr.BuildMaintenanceNotifyDestScreen(cCtx, dest.ID)
+		if err != nil {
+			return err
+		}
+		_ = ctx.Answer("Status destination diperbarui.", false)
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_notify_dest_test":
+		cCtx, cancel := context.WithTimeout(ctx.Context(), 15*time.Second)
+		defer cancel()
+		if err := p.maintenanceService().TestNotificationDestination(cCtx, opaque); err != nil {
+			return ctx.Answer("Tes kirim gagal. Periksa akses atau konfigurasi tujuan.", true)
+		}
+		return ctx.Answer("✅ Notifikasi uji berhasil dikirim!", true)
+
+	case "maint_notify_dest_del_ask":
+		screen, err := p.menuMgr.BuildMaintenanceNotifyDestDeleteConfirmScreen(ctx.Context(), opaque)
+		if err != nil {
+			return ctx.Answer("Destination tidak ditemukan.", true)
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_notify_dest_del_confirm":
+		cCtx, cancel := context.WithTimeout(ctx.Context(), 15*time.Second)
+		defer cancel()
+		if _, err := p.maintenanceService().RemoveNotificationDestination(cCtx, opaque); err != nil {
+			return ctx.Answer("Gagal menghapus destination.", true)
+		}
+		screen, err := p.menuMgr.BuildMaintenanceNotifyScreen(cCtx)
+		if err != nil {
+			return err
+		}
+		_ = ctx.Answer("🗑️ Destination dihapus.", false)
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_notify_add":
+		screen, err := p.menuMgr.BuildMaintenanceNotifyAddScreen(ctx.Context())
+		if err != nil {
+			return err
+		}
+		return p.assistantTransition(ctx, state, screen)
+
+	case "maint_notify_add_type":
+		destType := NotificationDestinationType(strings.TrimSpace(opaque))
+		switch destType {
+		case DestOwner, DestGlobalLog:
+			cCtx, cancel := context.WithTimeout(ctx.Context(), 15*time.Second)
+			defer cancel()
+			dest, err := p.buildDestinationFromCommand(cCtx, nil, destType, "")
+			if err != nil {
+				return ctx.Answer("Gagal menyiapkan destination. Pastikan konfigurasi tersedia.", true)
+			}
+			if _, err := p.maintenanceService().AddNotificationDestination(cCtx, dest); err != nil {
+				return ctx.Answer("Gagal menambahkan destination. Pastikan tujuan dapat dijangkau.", true)
+			}
+			screen, err := p.menuMgr.BuildMaintenanceNotifyScreen(cCtx)
+			if err != nil {
+				return err
+			}
+			_ = ctx.Answer("✅ Destination berhasil ditambahkan!", false)
+			return p.assistantTransition(ctx, state, screen)
+
+		case DestGroup, DestSupergroup, DestBotPM, DestChannel:
+			state.Wizard = "maint_notify_add_" + string(destType)
+			prompt := fmt.Sprintf(
+				"➕ <b>Tambah Destination (%s)</b>\n\n"+
+					"Kirim <code>@username</code> publik atau numeric ID (contoh: <code>-100...</code> untuk supergroup/channel jika metadata peer &amp; access hash sudah tersedia).\n"+
+					"<i>Untuk supergroup/channel privat tanpa username, cara paling andal adalah menjalankan <code>.myxl schedule notify destination add %s</code> langsung di chat tujuan.</i>\n\n"+
+					"<i>Ketik <code>/cancel</code> atau tekan Batal di bawah.</i>",
+				html.EscapeString(string(destType)),
+				html.EscapeString(string(destType)),
+			)
+			if err := p.assistantAwait(ctx, state, prompt); err != nil {
+				return err
+			}
+			return ctx.Answer("Kirim target destination…", false)
+
+		default:
+			return ctx.Answer("Tipe destination tidak valid.", true)
+		}
+
 	case "login_req":
 		state.Wizard = "login_msisdn"
 		state.MSISDN = ""
@@ -1066,6 +1214,8 @@ func (p *Plugin) HandleAssistantInput(ctx *orchestration.Context, text string) e
 		return p.assistantInputFamily(ctx, state, input)
 	case "maint_interval", "maint_time", "maint_tz", "maint_window", "maint_scope":
 		return p.assistantInputMaintenance(ctx, state, input)
+	case "maint_notify_add_group", "maint_notify_add_supergroup", "maint_notify_add_bot_pm", "maint_notify_add_channel":
+		return p.assistantInputNotifyAdd(ctx, state, input)
 	default:
 		return fmt.Errorf("myxl: no assistant input wizard is active")
 	}
@@ -1322,6 +1472,61 @@ func (p *Plugin) assistantInputMaintenance(ctx *orchestration.Context, state ass
 		return err
 	}
 	return p.assistantTransition(ctx, state, screen)
+}
+
+func (p *Plugin) assistantInputNotifyAdd(ctx *orchestration.Context, state assistantState, input string) error {
+	target := strings.TrimSpace(input)
+	if target == "" {
+		return p.assistantRearm(ctx, state, "⚠️ Target tujuan tidak boleh kosong.")
+	}
+	destType := NotificationDestinationType(strings.TrimPrefix(state.Wizard, "maint_notify_add_"))
+	cCtx, cancel := context.WithTimeout(ctx.Context(), 15*time.Second)
+	defer cancel()
+
+	dest, err := p.buildDestinationFromCommand(cCtx, nil, destType, target)
+	if err != nil {
+		return p.assistantRearm(ctx, state, formatAssistantNotifyResolveError(destType, err))
+	}
+	if _, err := p.maintenanceService().AddNotificationDestination(cCtx, dest); err != nil {
+		return p.assistantRearm(ctx, state, formatAssistantNotifySaveError(err))
+	}
+
+	state.Wizard = ""
+	screen, err := p.menuMgr.BuildMaintenanceNotifyScreen(cCtx)
+	if err != nil {
+		return err
+	}
+	return p.assistantTransition(ctx, state, screen)
+}
+
+func formatAssistantNotifyResolveError(destType NotificationDestinationType, err error) string {
+	switch {
+	case errors.Is(err, core.ErrAccessHashMissing):
+		return fmt.Sprintf(
+			"⚠️ <b>Access hash peer belum tersedia.</b>\nUntuk supergroup/channel privat tanpa username, jalankan <code>.myxl schedule notify destination add %s</code> langsung di chat tujuan.",
+			html.EscapeString(string(destType)),
+		)
+	case errors.Is(err, core.ErrNotFound):
+		return "⚠️ <b>Peer tidak ditemukan.</b>\nPeriksa kembali <code>@username</code> atau ID tujuan."
+	case errors.Is(err, errNotifyDestTypeMismatch):
+		return fmt.Sprintf("⚠️ <b>Tipe target tidak sesuai</b> untuk jenis destination <code>%s</code>.", html.EscapeString(string(destType)))
+	default:
+		return "⚠️ <b>Target tidak dapat diselesaikan.</b>\nPastikan <code>@username</code> atau numeric ID valid, atau jalankan command di chat tujuan."
+	}
+}
+
+func formatAssistantNotifySaveError(err error) string {
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "maximum") || strings.Contains(msg, "too many"):
+		return fmt.Sprintf("⚠️ <b>Batas maksimum %d destination sudah tercapai.</b>\nHapus salah satu destination terlebih dahulu.", MaxNotificationDestinations)
+	case strings.Contains(msg, "duplicate"):
+		return "⚠️ <b>Destination sudah terdaftar.</b>"
+	case strings.Contains(msg, "test delivery") || strings.Contains(msg, "send_failed"):
+		return "⚠️ <b>Gagal mengirim pesan uji ke tujuan.</b>\nPastikan bot/akun memiliki izin mengirim pesan di tujuan tersebut."
+	default:
+		return "⚠️ <b>Gagal menambahkan destination.</b>\nPastikan tujuan dapat menerima pesan uji dan belum mencapai batas maksimum."
+	}
 }
 
 var _ assistantinteraction.FeatureDriver = (*Plugin)(nil)

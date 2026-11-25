@@ -357,7 +357,72 @@ func (migration008) VerifySchema(ctx context.Context, tx database.SQLExecutor) e
 	return nil
 }
 
+var _ database.SchemaInvariantMigration = migration009{}
+
+type migration009 struct{}
+
+func (migration009) ID() string { return "myxl.009" }
+func (migration009) Description() string {
+	return "Add partial failure notification preference and bounded destinations JSON"
+}
+func (migration009) Checksum() string {
+	return "b7f2d9e4103c58a6f1e2d3c4b5a697880123456789abcdef0123456789abcd09"
+}
+func (migration009) LegacyVersions() []int { return nil }
+
+func (migration009) Up(ctx context.Context, tx database.SQLExecutor) error {
+	_, err := tx.ExecContext(ctx, `
+		ALTER TABLE myxl_token_maintenance_config ADD COLUMN notify_on_partial_failure INTEGER NOT NULL DEFAULT 1;
+		ALTER TABLE myxl_token_maintenance_config ADD COLUMN destinations_json TEXT NOT NULL DEFAULT '[]';
+	`)
+	return err
+}
+
+func (migration009) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	for _, col := range []string{"notify_on_partial_failure", "destinations_json"} {
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('myxl_token_maintenance_config') WHERE name=?`, col).Scan(&count); err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("required column %s in table myxl_token_maintenance_config does not exist", col)
+		}
+	}
+	return nil
+}
+
+var _ database.SchemaInvariantMigration = migration010{}
+
+type migration010 struct{}
+
+func (migration010) ID() string { return "myxl.010" }
+func (migration010) Description() string {
+	return "Add cancelled notification preference column"
+}
+func (migration010) Checksum() string {
+	return "c8a1e3f5b7d90246813579bdf02468ace13579bdf02468ace13579bdf0246810"
+}
+func (migration010) LegacyVersions() []int { return nil }
+
+func (migration010) Up(ctx context.Context, tx database.SQLExecutor) error {
+	_, err := tx.ExecContext(ctx, `
+		ALTER TABLE myxl_token_maintenance_config ADD COLUMN notify_on_cancelled INTEGER NOT NULL DEFAULT 0;
+	`)
+	return err
+}
+
+func (migration010) VerifySchema(ctx context.Context, tx database.SQLExecutor) error {
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('myxl_token_maintenance_config') WHERE name='notify_on_cancelled'`).Scan(&count); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("required column notify_on_cancelled in table myxl_token_maintenance_config does not exist")
+	}
+	return nil
+}
+
 // Migrations returns the database migrations for the myxl plugin.
 func Migrations() []database.Migration {
-	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}, migration006{}, migration007{}, migration008{}}
+	return []database.Migration{migration001{}, migration002{}, migration003{}, migration004{}, migration005{}, migration006{}, migration007{}, migration008{}, migration009{}, migration010{}}
 }

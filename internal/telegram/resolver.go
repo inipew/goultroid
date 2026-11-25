@@ -26,6 +26,7 @@ type Resolver struct {
 	networkSlots    chan struct{}
 	lifecycleCtx    context.Context
 	lifecycleCancel context.CancelFunc
+	onResolveUser   func()
 }
 
 var _ core.PeerResolver = (*Resolver)(nil)
@@ -134,16 +135,30 @@ func (r *Resolver) Resolve(ctx context.Context, ref string) (tg.InputPeerClass, 
 	if lower == "self" || lower == "me" {
 		return &tg.InputPeerSelf{}, nil
 	}
-	if peer, _, err := r.ResolveUser(ctx, ref); err == nil && peer != nil {
+	if id, err := strconv.ParseInt(ref, 10, 64); err == nil && id < 0 {
+		return r.ResolveChat(ctx, ref)
+	}
+	peer, _, userErr := r.ResolveUser(ctx, ref)
+	if userErr == nil && peer != nil {
 		return peer, nil
 	}
-	if peer, err := r.ResolveChat(ctx, ref); err == nil && peer != nil {
-		return peer, nil
+	chatPeer, chatErr := r.ResolveChat(ctx, ref)
+	if chatErr == nil && chatPeer != nil {
+		return chatPeer, nil
+	}
+	if errors.Is(chatErr, core.ErrAccessHashMissing) {
+		return nil, chatErr
+	}
+	if errors.Is(userErr, core.ErrAccessHashMissing) {
+		return nil, userErr
 	}
 	return nil, fmt.Errorf("%w: entity %q could not be resolved", core.ErrNotFound, ref)
 }
 
 func (r *Resolver) ResolveUser(ctx context.Context, ref string) (tg.InputPeerClass, int64, error) {
+	if r.onResolveUser != nil {
+		r.onResolveUser()
+	}
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return nil, 0, core.ErrInvalidArgs

@@ -186,6 +186,9 @@ func (m *MenuManager) BuildMaintenanceScreen(ctx context.Context) (*ui.Screen, e
 		newMenuButton("📜 Riwayat", "myxl:maint_history"),
 	)
 	screen.AddRow(
+		newMenuButton("🔔 Notifikasi Routing", "myxl:maint_notify"),
+	)
+	screen.AddRow(
 		newMenuButton("🔄 Muat Ulang", "myxl:maintenance"),
 		newMenuButton("🔙 Kembali", "myxl:home"),
 	)

@@ -43,6 +43,7 @@ func (m ModuleType) Register(ctx context.Context, rt *module.Runtime) error {
 	p := New(repo, client)
 	p.SetLogger(rt.Logger)
 	p.SetOwnerNotifier(rt.OwnerID, rt.MessageService)
+	p.SetNotificationServices(rt.Resolver, rt.UserlogService)
 
 	return rt.RegisterPlugin(ctx, m.Manifest(), p)
 }

@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
 	"go.uber.org/zap"
 )
@@ -31,6 +30,8 @@ type MaintenanceDiagnostics struct {
 	NotificationsAttempted int64 `json:"notifications_attempted"`
 	NotificationsSucceeded int64 `json:"notifications_succeeded"`
 	NotificationsFailed    int64 `json:"notifications_failed"`
+	NotificationsSkipped   int64 `json:"notifications_skipped"`
+	NotificationsInvalid   int64 `json:"notifications_invalid"`
 }
 
 type maintenanceCounters struct {
@@ -47,6 +48,8 @@ type maintenanceCounters struct {
 	notificationsAttempted atomic.Int64
 	notificationsSucceeded atomic.Int64
 	notificationsFailed    atomic.Int64
+	notificationsSkipped   atomic.Int64
+	notificationsInvalid   atomic.Int64
 }
 
 // SetLogger configures the structured zap logger for MyXL lifecycle events.
@@ -103,6 +106,8 @@ func (p *Plugin) MaintenanceDiagnostics() MaintenanceDiagnostics {
 		NotificationsAttempted: p.maintDiag.notificationsAttempted.Load(),
 		NotificationsSucceeded: p.maintDiag.notificationsSucceeded.Load(),
 		NotificationsFailed:    p.maintDiag.notificationsFailed.Load(),
+		NotificationsSkipped:   p.maintDiag.notificationsSkipped.Load(),
+		NotificationsInvalid:   p.maintDiag.notificationsInvalid.Load(),
 	}
 }
 
@@ -212,51 +217,124 @@ func shouldNotifyOwner(cfg TokenMaintenanceConfig, summary *MaintenanceRunSummar
 }
 
 func (p *Plugin) maybeNotifyOwner(cfg TokenMaintenanceConfig, summary *MaintenanceRunSummary, outcomes []AccountMaintenanceOutcome) {
-	if p == nil || !shouldNotifyOwner(cfg, summary) {
+	p.maybeNotifyDestinations(context.Background(), cfg, summary, outcomes)
+}
+
+func (p *Plugin) maybeNotifyDestinations(parentCtx context.Context, cfg TokenMaintenanceConfig, summary *MaintenanceRunSummary, outcomes []AccountMaintenanceOutcome) {
+	if p == nil || summary == nil {
+		return
+	}
+	event, enabled := classifyMaintenanceNotificationEvent(cfg, summary)
+	if !enabled {
+		return
+	}
+	destinations := effectiveNotificationDestinations(cfg)
+	disabledCount := 0
+	if len(cfg.Destinations) > 0 {
+		disabledCount = len(cfg.Destinations) - len(destinations)
+	}
+	if len(destinations) == 0 {
+		if disabledCount > 0 {
+			p.maintDiag.notificationsSkipped.Add(int64(disabledCount))
+		}
+		p.getLogger().Info("myxl token maintenance notification skipped",
+			zap.String("plugin", "myxl"),
+			zap.String("job_id", maintenanceJobID),
+			zap.Int64("run_id", summary.ID),
+			zap.String("event_type", string(event)),
+			zap.Bool("fallback_owner", false),
+			zap.Int("destination_count", len(cfg.Destinations)),
+			zap.Int("skipped_count", disabledCount),
+			zap.String("notification_status", "skipped"),
+		)
 		return
 	}
 
 	p.maintMu.RLock()
 	ownerID := p.ownerID
 	msgSvcFn := p.msgSvcFunc
+	resolver := p.peerResolver
+	ulog := p.userlogSvc
 	p.maintMu.RUnlock()
 
-	if ownerID <= 0 || msgSvcFn == nil {
-		return
+	var msgSvc core.MessageServicer
+	if msgSvcFn != nil {
+		msgSvc = msgSvcFn()
 	}
-	msgSvc := msgSvcFn()
-	if msgSvc == nil {
-		return
-	}
-
-	p.maintDiag.notificationsAttempted.Add(1)
-	notifyCtx, cancel := context.WithTimeout(context.Background(), maintenanceNotifyTimeout)
-	defer cancel()
 
 	text := formatMaintenanceNotificationHTML(summary, outcomes)
-	if _, err := msgSvc.SendMessage(notifyCtx, &tg.InputPeerUser{UserID: ownerID}, text); err != nil {
-		p.maintDiag.notificationsFailed.Add(1)
-		p.getLogger().Warn("myxl token maintenance notification failed",
-			zap.String("plugin", "myxl"),
-			zap.String("job_id", maintenanceJobID),
-			zap.Int64("run_id", summary.ID),
-			zap.String("notification_status", "failed"),
-		)
-		return
+	batchRes := deliverMaintenanceNotifications(
+		parentCtx,
+		msgSvc,
+		ownerID,
+		resolver,
+		ulog,
+		event,
+		destinations,
+		text,
+		maintenanceNotifyTotalBudget,
+		maintenanceNotifyTimeout,
+	)
+
+	attempted := int64(batchRes.Sent + batchRes.Failed + batchRes.InvalidDest)
+	if attempted > 0 {
+		p.maintDiag.notificationsAttempted.Add(attempted)
+	}
+	if batchRes.Sent > 0 {
+		p.maintDiag.notificationsSucceeded.Add(int64(batchRes.Sent))
+	}
+	if batchRes.Failed > 0 {
+		p.maintDiag.notificationsFailed.Add(int64(batchRes.Failed))
+	}
+	if batchRes.InvalidDest > 0 {
+		p.maintDiag.notificationsInvalid.Add(int64(batchRes.InvalidDest))
+	}
+	totalSkipped := batchRes.Skipped + disabledCount
+	if totalSkipped > 0 {
+		p.maintDiag.notificationsSkipped.Add(int64(totalSkipped))
 	}
 
-	p.maintDiag.notificationsSucceeded.Add(1)
-	p.getLogger().Info("myxl token maintenance notification sent",
+	fields := []zap.Field{
 		zap.String("plugin", "myxl"),
 		zap.String("job_id", maintenanceJobID),
 		zap.Int64("run_id", summary.ID),
-		zap.String("notification_status", "sent"),
-	)
+		zap.String("event_type", string(event)),
+		zap.Bool("fallback_owner", len(cfg.Destinations) == 0),
+		zap.Int("destination_count", batchRes.Total+disabledCount),
+		zap.Int("sent_count", batchRes.Sent),
+		zap.Int("failure_count", batchRes.Failed),
+		zap.Int("invalid_count", batchRes.InvalidDest),
+		zap.Int("skipped_count", totalSkipped),
+		zap.Duration("duration", batchRes.Duration),
+	}
+	switch {
+	case batchRes.Sent > 0 && (batchRes.Failed > 0 || batchRes.InvalidDest > 0):
+		fields = append(fields, zap.String("notification_status", "partial_failure"))
+		p.getLogger().Warn("myxl token maintenance notification partially failed", fields...)
+	case batchRes.Failed > 0 || batchRes.InvalidDest > 0:
+		fields = append(fields, zap.String("notification_status", "failed"))
+		p.getLogger().Warn("myxl token maintenance notification failed", fields...)
+	case batchRes.Sent == 0 && totalSkipped > 0:
+		fields = append(fields, zap.String("notification_status", "skipped"))
+		p.getLogger().Info("myxl token maintenance notification skipped", fields...)
+	default:
+		fields = append(fields, zap.String("notification_status", "sent"))
+		p.getLogger().Info("myxl token maintenance notification sent", fields...)
+	}
 }
 
 func formatMaintenanceNotificationHTML(summary *MaintenanceRunSummary, outcomes []AccountMaintenanceOutcome) string {
 	var b strings.Builder
-	b.WriteString("🕒 <b>MyXL Token Maintenance</b>\n\n")
+	title := "MyXL Token Maintenance"
+	switch summary.Status {
+	case RunStatusPartialFailure:
+		title = "MyXL Token Maintenance — Partial Failure"
+	case RunStatusFailed:
+		title = "MyXL Token Maintenance — Failed"
+	case RunStatusCancelled:
+		title = "MyXL Token Maintenance — Cancelled"
+	}
+	fmt.Fprintf(&b, "🕒 <b>%s</b>\n\n", html.EscapeString(title))
 	fmt.Fprintf(&b, "• <b>Status:</b> <code>%s</code> (%s)\n", html.EscapeString(string(summary.Status)), html.EscapeString(summary.TriggerSource))
 	fmt.Fprintf(&b, "• <b>Durasi:</b> %s\n", summary.Duration.Round(time.Millisecond))
 	fmt.Fprintf(&b, "• <b>Ringkasan:</b> total=%d, refreshed=%d, fresh=%d, skipped=%d, failed=%d",

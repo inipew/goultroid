@@ -139,33 +139,7 @@ func (p *Plugin) handleScheduleCommand(ctx *core.Context, args []string) error {
 		return ctx.Success("▶️ Permintaan maintenance token telah dikirim ke JobManager / TaskEngine.")
 
 	case "notify":
-		if len(rest) < 2 {
-			return ctx.Status("Format: <code>.myxl schedule notify &lt;completion|failure&gt; &lt;on|off&gt;</code>")
-		}
-		kind := strings.ToLower(strings.TrimSpace(rest[0]))
-		valStr := strings.ToLower(strings.TrimSpace(rest[1]))
-		var val bool
-		switch valStr {
-		case "on", "true", "enable", "1":
-			val = true
-		case "off", "false", "disable", "0":
-			val = false
-		default:
-			return ctx.Status("Nilai notifikasi harus <code>on</code> atau <code>off</code>.")
-		}
-		var err error
-		switch kind {
-		case "completion", "complete", "selesai":
-			_, err = svc.SetNotifyPreferences(cCtx, &val, nil)
-		case "failure", "fail", "gagal":
-			_, err = svc.SetNotifyPreferences(cCtx, nil, &val)
-		default:
-			return ctx.Status("Jenis notifikasi harus <code>completion</code> atau <code>failure</code>.")
-		}
-		if err != nil {
-			return ctx.Status(formatMaintenanceMutationError("mengatur notifikasi", err))
-		}
-		return ctx.Success(fmt.Sprintf("✅ Notifikasi <b>%s</b> diatur ke <code>%s</code>.", html.EscapeString(kind), html.EscapeString(valStr)))
+		return p.handleScheduleNotifyCommand(ctx, cCtx, rest)
 
 	case "history", "riwayat":
 		runs, err := svc.GetHistory(cCtx, 10)

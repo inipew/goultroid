@@ -17,19 +17,21 @@ func (r *SQLiteRepository) GetTokenMaintenanceConfig(ctx context.Context) (*Toke
 	}
 	query := `
 	SELECT enabled, interval_seconds, anchor_time, timezone, refresh_window_seconds,
-	       account_scope, selected_msisdns_json, notify_on_completion, notify_on_failure, updated_at
+	       account_scope, selected_msisdns_json, notify_on_completion, notify_on_partial_failure,
+	       notify_on_failure, notify_on_cancelled, destinations_json, updated_at
 	FROM myxl_token_maintenance_config
 	WHERE id = 1
 	LIMIT 1
 	`
-	var enabledInt, notifyCompletionInt, notifyFailureInt int
+	var enabledInt, notifyCompletionInt, notifyPartialInt, notifyFailureInt, notifyCancelledInt int
 	var intervalSec, windowSec int64
-	var anchorTime, timezone, scope, selectedJSON string
+	var anchorTime, timezone, scope, selectedJSON, destinationsJSON string
 	var updatedAt time.Time
 
 	err := r.db.QueryRowContext(ctx, query).Scan(
 		&enabledInt, &intervalSec, &anchorTime, &timezone, &windowSec,
-		&scope, &selectedJSON, &notifyCompletionInt, &notifyFailureInt, &updatedAt,
+		&scope, &selectedJSON, &notifyCompletionInt, &notifyPartialInt,
+		&notifyFailureInt, &notifyCancelledInt, &destinationsJSON, &updatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -46,17 +48,25 @@ func (r *SQLiteRepository) GetTokenMaintenanceConfig(ctx context.Context) (*Toke
 		}
 	}
 
+	destinations, err := DecodeNotificationDestinations(destinationsJSON)
+	if err != nil {
+		return nil, err
+	}
+
 	return &TokenMaintenanceConfig{
-		Enabled:            enabledInt == 1,
-		Interval:           time.Duration(intervalSec) * time.Second,
-		AnchorTime:         anchorTime,
-		Timezone:           timezone,
-		RefreshWindow:      time.Duration(windowSec) * time.Second,
-		AccountScope:       AccountScope(scope),
-		SelectedMSISDNs:    selected,
-		NotifyOnCompletion: notifyCompletionInt == 1,
-		NotifyOnFailure:    notifyFailureInt == 1,
-		UpdatedAt:          updatedAt,
+		Enabled:                enabledInt == 1,
+		Interval:               time.Duration(intervalSec) * time.Second,
+		AnchorTime:             anchorTime,
+		Timezone:               timezone,
+		RefreshWindow:          time.Duration(windowSec) * time.Second,
+		AccountScope:           AccountScope(scope),
+		SelectedMSISDNs:        selected,
+		NotifyOnCompletion:     notifyCompletionInt == 1,
+		NotifyOnPartialFailure: notifyPartialInt == 1,
+		NotifyOnFailure:        notifyFailureInt == 1,
+		NotifyOnCancelled:      notifyCancelledInt == 1,
+		Destinations:           destinations,
+		UpdatedAt:              updatedAt,
 	}, nil
 }
 
@@ -84,6 +94,11 @@ func (r *SQLiteRepository) SaveTokenMaintenanceConfig(ctx context.Context, cfg *
 		return fmt.Errorf("encode selected msisdns: %w", err)
 	}
 
+	destinationsJSON, err := EncodeNotificationDestinations(cfg.Destinations)
+	if err != nil {
+		return err
+	}
+
 	now := time.Now().UTC()
 	cfg.UpdatedAt = now
 
@@ -95,16 +110,25 @@ func (r *SQLiteRepository) SaveTokenMaintenanceConfig(ctx context.Context, cfg *
 	if cfg.NotifyOnCompletion {
 		notifyCompletionInt = 1
 	}
+	notifyPartialInt := 0
+	if cfg.NotifyOnPartialFailure {
+		notifyPartialInt = 1
+	}
 	notifyFailureInt := 0
 	if cfg.NotifyOnFailure {
 		notifyFailureInt = 1
+	}
+	notifyCancelledInt := 0
+	if cfg.NotifyOnCancelled {
+		notifyCancelledInt = 1
 	}
 
 	query := `
 	INSERT INTO myxl_token_maintenance_config (
 		id, enabled, interval_seconds, anchor_time, timezone, refresh_window_seconds,
-		account_scope, selected_msisdns_json, notify_on_completion, notify_on_failure, updated_at
-	) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		account_scope, selected_msisdns_json, notify_on_completion, notify_on_partial_failure,
+		notify_on_failure, notify_on_cancelled, destinations_json, updated_at
+	) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		enabled = excluded.enabled,
 		interval_seconds = excluded.interval_seconds,
@@ -114,13 +138,16 @@ func (r *SQLiteRepository) SaveTokenMaintenanceConfig(ctx context.Context, cfg *
 		account_scope = excluded.account_scope,
 		selected_msisdns_json = excluded.selected_msisdns_json,
 		notify_on_completion = excluded.notify_on_completion,
+		notify_on_partial_failure = excluded.notify_on_partial_failure,
 		notify_on_failure = excluded.notify_on_failure,
+		notify_on_cancelled = excluded.notify_on_cancelled,
+		destinations_json = excluded.destinations_json,
 		updated_at = excluded.updated_at
 	`
 	_, err = r.db.ExecContext(ctx, query,
 		enabledInt, int64(cfg.Interval.Seconds()), cfg.AnchorTime, cfg.Timezone,
 		int64(cfg.RefreshWindow.Seconds()), string(cfg.AccountScope), string(selectedJSON),
-		notifyCompletionInt, notifyFailureInt, now,
+		notifyCompletionInt, notifyPartialInt, notifyFailureInt, notifyCancelledInt, destinationsJSON, now,
 	)
 	if err != nil {
 		return fmt.Errorf("save token maintenance config: %w", err)

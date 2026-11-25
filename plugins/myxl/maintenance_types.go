@@ -45,29 +45,33 @@ const (
 // TokenMaintenanceConfig holds durable user preferences for MyXL token maintenance.
 // NextDueAt is owned exclusively by jobs.JobSchedule and is intentionally omitted here.
 type TokenMaintenanceConfig struct {
-	Enabled            bool          `json:"enabled"`
-	Interval           time.Duration `json:"interval"`
-	AnchorTime         string        `json:"anchor_time"`
-	Timezone           string        `json:"timezone"`
-	RefreshWindow      time.Duration `json:"refresh_window"`
-	AccountScope       AccountScope  `json:"account_scope"`
-	SelectedMSISDNs    []string      `json:"selected_msisdns,omitempty"`
-	NotifyOnCompletion bool          `json:"notify_on_completion"`
-	NotifyOnFailure    bool          `json:"notify_on_failure"`
-	UpdatedAt          time.Time     `json:"updated_at"`
+	Enabled                bool                      `json:"enabled"`
+	Interval               time.Duration             `json:"interval"`
+	AnchorTime             string                    `json:"anchor_time"`
+	Timezone               string                    `json:"timezone"`
+	RefreshWindow          time.Duration             `json:"refresh_window"`
+	AccountScope           AccountScope              `json:"account_scope"`
+	SelectedMSISDNs        []string                  `json:"selected_msisdns,omitempty"`
+	NotifyOnCompletion     bool                      `json:"notify_on_completion"`
+	NotifyOnPartialFailure bool                      `json:"notify_on_partial_failure"`
+	NotifyOnFailure        bool                      `json:"notify_on_failure"`
+	NotifyOnCancelled      bool                      `json:"notify_on_cancelled"`
+	Destinations           []NotificationDestination `json:"destinations,omitempty"`
+	UpdatedAt              time.Time                 `json:"updated_at"`
 }
 
 // DefaultTokenMaintenanceConfig returns the safe default maintenance configuration.
 func DefaultTokenMaintenanceConfig() TokenMaintenanceConfig {
 	return TokenMaintenanceConfig{
-		Enabled:            false,
-		Interval:           DefaultMaintenanceInterval,
-		AnchorTime:         DefaultMaintenanceAnchorTime,
-		Timezone:           DefaultMaintenanceTimezone,
-		RefreshWindow:      DefaultMaintenanceRefreshWindow,
-		AccountScope:       AccountScopeAll,
-		NotifyOnCompletion: false,
-		NotifyOnFailure:    true,
+		Enabled:                false,
+		Interval:               DefaultMaintenanceInterval,
+		AnchorTime:             DefaultMaintenanceAnchorTime,
+		Timezone:               DefaultMaintenanceTimezone,
+		RefreshWindow:          DefaultMaintenanceRefreshWindow,
+		AccountScope:           AccountScopeAll,
+		NotifyOnCompletion:     false,
+		NotifyOnPartialFailure: true,
+		NotifyOnFailure:        true,
 	}
 }
 
@@ -127,6 +131,9 @@ func ValidateTokenMaintenanceConfig(cfg TokenMaintenanceConfig) error {
 		}
 	default:
 		return fmt.Errorf("invalid account scope %q (must be all, active, or selected)", cfg.AccountScope)
+	}
+	if _, err := NormalizeAndValidateDestinations(cfg.Destinations); err != nil {
+		return err
 	}
 	return nil
 }
