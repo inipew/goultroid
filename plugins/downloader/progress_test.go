@@ -2,11 +2,16 @@ package downloader
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/download"
+	"github.com/inipew/goultroid/internal/services/storage"
+	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 )
 
 func TestDownloadProgressTextIncludesTransferDetails(t *testing.T) {
@@ -110,5 +115,105 @@ func TestP4DownloadProgressCoalescesBurstAndSkipsIdleTicks(t *testing.T) {
 	case text := <-edits:
 		t.Fatalf("closed reporter emitted progress edit: %q", text)
 	case <-time.After(60 * time.Millisecond):
+	}
+}
+
+type panicProvider struct{}
+
+func (panicProvider) Name() string      { return "http" }
+func (panicProvider) Match(string) bool { return true }
+func (panicProvider) Download(_ context.Context, _ string, _ storage.Storage, opts download.DownloadOptions) (*storage.Asset, error) {
+	if opts.Progress != nil {
+		opts.Progress(10, 100)
+	}
+	panic("simulated download panic")
+}
+
+func TestDownloadProgressReporter_CloseIsIdempotentAndJoins(t *testing.T) {
+	reporter := newDownloadProgressReporterWithInterval(
+		context.Background(),
+		func(context.Context, string) error { return nil },
+		"http",
+		download.MediaModeDefault,
+		download.MediaFormatDefault,
+		0,
+		10*time.Millisecond,
+	)
+	if reporter == nil {
+		t.Fatal("progress reporter is nil")
+	}
+	reporter.Close()
+	reporter.Close()
+	reporter.Close()
+	select {
+	case <-reporter.done:
+	default:
+		t.Fatal("expected reporter done channel to be closed after Close()")
+	}
+}
+
+func TestURLPipeline_ClosesReporterSynchronouslyOnDownloadPanic(t *testing.T) {
+	engine := taskengine.NewEngine(taskengine.Config{
+		Pools: map[tasks.PoolID]taskengine.PoolEngineConfig{
+			"download": {Concurrency: 1, ZeroIdle: true, IdleTimeout: 20 * time.Millisecond, BacklogLimit: 8, PayloadBudget: 1 << 20},
+			"general":  {Concurrency: 1, ZeroIdle: true, IdleTimeout: 20 * time.Millisecond, BacklogLimit: 8, PayloadBudget: 1 << 20},
+		},
+		ResultCapacity: 16,
+		ResourceCapacities: map[string]int64{
+			"download": 1,
+			"media":    1,
+		},
+	})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = engine.Stop(ctx)
+	})
+
+	reg := download.NewRegistry()
+	reg.Register(panicProvider{})
+	p := New(reg, storage.NewMemoryStorage(), engine)
+
+	runtime.GC()
+	baseGoroutines := runtime.NumGoroutine()
+
+	failed := make(chan struct{}, 1)
+	if err := p.submitURLPipeline(context.Background(), urlDownloadRequest{
+		URL: "https://example.com/panic.bin",
+	}, urlPipelineHooks{
+		Delivery: func(context.Context, presentation.Media) error { return nil },
+		ProgressEdit: func(context.Context, string) error {
+			return nil
+		},
+		DownloadFailure: func(context.Context) error {
+			select {
+			case failed <- struct{}{}:
+			default:
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("submitURLPipeline() error = %v", err)
+	}
+
+	select {
+	case <-failed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for DownloadFailure after provider panic")
+	}
+
+	// Allow TaskEngine ZeroIdle worker to retire and verify no reporter goroutine leaked.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= baseGoroutines+2 {
+			return
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > baseGoroutines+2 {
+		t.Fatalf("goroutine count did not return near baseline after panic: base=%d got=%d", baseGoroutines, got)
 	}
 }

@@ -93,6 +93,7 @@ func (p *Plugin) submitURLPipeline(admissionCtx context.Context, request urlDown
 			)
 			var progress download.ProgressCallback
 			if reporter != nil {
+				defer reporter.Close()
 				progress = reporter.Callback
 			}
 

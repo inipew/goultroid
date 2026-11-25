@@ -113,3 +113,64 @@ type roundTripperFunc func(req *http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
+
+func TestSafeDownloader_MultiHopRedirectToPrivateIPBlocked(t *testing.T) {
+	// Start a local listener on 127.0.0.1; the production transport's
+	// Dialer.Control hook must block the redirect target before connecting.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	privURL := "http://" + ln.Addr().String() + "/secret"
+	dl := NewSafeDownloader(5*time.Second, 1024)
+	realTransport := dl.client.Transport
+
+	hops := 0
+	dl.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host == "public.example" {
+			hops++
+			rec := httptest.NewRecorder()
+			if hops == 1 {
+				rec.Header().Set("Location", "https://public.example/hop2")
+			} else {
+				rec.Header().Set("Location", privURL)
+			}
+			rec.WriteHeader(http.StatusFound)
+			res := rec.Result()
+			res.Request = req
+			return res, nil
+		}
+		return realTransport.RoundTrip(req)
+	})
+
+	dst := filepath.Join(t.TempDir(), "ssrf.bin")
+	_, dlErr := dl.Download(context.Background(), "https://public.example/start", dst, 1024)
+	if !errors.Is(dlErr, ErrBlockedSSRF) {
+		t.Fatalf("expected ErrBlockedSSRF after multi-hop redirect to %s, got: %v", privURL, dlErr)
+	}
+	if hops != 2 {
+		t.Fatalf("expected 2 redirect hops before SSRF block, got %d", hops)
+	}
+}
+
+func TestSafeDownloader_MismatchedContentLengthStillEnforcesMaxBytes(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "mismatch.bin")
+	dl := NewSafeDownloader(5*time.Second, 100)
+	dl.client.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		rec := httptest.NewRecorder()
+		rec.Header().Set("Content-Length", "10")
+		rec.WriteHeader(http.StatusOK)
+		_, _ = rec.Write(make([]byte, 250))
+		res := rec.Result()
+		res.Request = req
+		res.ContentLength = 10 // Lie about Content-Length while body has 250 bytes.
+		return res, nil
+	})
+
+	_, err := dl.Download(context.Background(), "https://example.com/mismatch.bin", dst, 100)
+	if !errors.Is(err, core.ErrResourceLimit) {
+		t.Fatalf("expected ErrResourceLimit for mismatched Content-Length body, got: %v", err)
+	}
+}
