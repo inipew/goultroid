@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 	"go.uber.org/zap"
 )
@@ -471,9 +472,10 @@ func (c *periodicCoordinator) Snapshots() []PeriodicTaskSnapshot {
 	c.mu.Lock()
 	snapshots := make([]PeriodicTaskSnapshot, 0, len(c.entries))
 	for _, entry := range c.entries {
+		lastErr := runtime.SanitizeDiagnosticError(entry.LastError)
 		snapshots = append(snapshots, PeriodicTaskSnapshot{
 			Owner: entry.Owner, Name: entry.Name, Runs: entry.Runs,
-			Failures: entry.Failures, LastRunAt: entry.LastRunAt, LastError: entry.LastError,
+			Failures: entry.Failures, LastRunAt: entry.LastRunAt, LastError: lastErr,
 		})
 	}
 	c.mu.Unlock()
@@ -784,7 +786,7 @@ func (c *periodicCoordinator) reconcileOne(jobsMgr *jobs.Manager, in pendingReco
 		entry.LastRunAt = finished
 		if failed {
 			entry.Failures++
-			entry.LastError = errText
+			entry.LastError = runtime.SanitizeDiagnosticError(errText)
 		} else {
 			entry.LastError = ""
 		}

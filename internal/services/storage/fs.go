@@ -77,6 +77,25 @@ func (f *FileStorage) MaxQuota() int64 {
 	return f.maxQuota
 }
 
+// Diagnostics returns a lock-free snapshot of storage consumption and limits.
+func (f *FileStorage) Diagnostics() Diagnostics {
+	if f == nil {
+		return Diagnostics{Backend: "nil"}
+	}
+	usage := f.usage.Load()
+	maxQuota := f.maxQuota
+	var util float64
+	if maxQuota > 0 && usage > 0 {
+		util = (float64(usage) / float64(maxQuota)) * 100.0
+	}
+	return Diagnostics{
+		Backend:            "file",
+		Usage:              usage,
+		MaxQuota:           maxQuota,
+		UtilizationPercent: util,
+	}
+}
+
 // StorageHealth reports the in-memory health state of the storage owner without blocking I/O or mutex contention.
 func (f *FileStorage) StorageHealth() (string, string) {
 	if f == nil {

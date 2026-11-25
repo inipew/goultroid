@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -890,5 +891,538 @@ func TestSanitizeHealthReason_UntrustedInputs(t *testing.T) {
 		if len(got) > 48 {
 			t.Errorf("sanitizeHealthReason(%q) length %d > 48", tc.input, len(got))
 		}
+	}
+}
+
+func TestRuntime_Diagnostics(t *testing.T) {
+	r := New()
+
+	db := &mockComponent{name: "db"}
+	sensitiveErrMsg := "bot token revoked: https://api.telegram.org/bot123456789:ABCDEF1234567890abcdef1234567890/getMe token=secret123"
+	assistant := &optionalComponent{
+		mockComponent: mockComponent{
+			name:     "assistant",
+			startErr: errors.New(sensitiveErrMsg),
+		},
+		isCritical: false,
+	}
+
+	_ = r.Register(db)
+	_ = r.Register(assistant)
+
+	// 1. Diagnostics before Start
+	initDiag := r.Diagnostics()
+	if initDiag.State != StateCreated {
+		t.Fatalf("initial state = %s, want %s", initDiag.State, StateCreated)
+	}
+	if len(initDiag.Components) != 2 {
+		t.Fatalf("initial components len = %d, want 2", len(initDiag.Components))
+	}
+	if len(initDiag.StartupFailures) != 0 {
+		t.Fatalf("initial startup failures len = %d, want 0", len(initDiag.StartupFailures))
+	}
+	for _, c := range initDiag.Components {
+		if c.State != "registered" {
+			t.Errorf("component %q initial state = %q, want registered", c.Name, c.State)
+		}
+		if c.Status != "" {
+			t.Errorf("unstarted component %q must not report status healthy, got status = %q", c.Name, c.Status)
+		}
+	}
+
+	// 2. Start runtime (optional component fails, db succeeds)
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatalf("expected runtime start to succeed with optional failure: %v", err)
+	}
+	if r.State() != StateRunning {
+		t.Fatalf("runtime state = %s, want %s", r.State(), StateRunning)
+	}
+
+	runDiag := r.Diagnostics()
+	if runDiag.State != StateRunning {
+		t.Fatalf("running diag state = %s, want %s", runDiag.State, StateRunning)
+	}
+	if len(runDiag.StartupFailures) != 1 {
+		t.Fatalf("running startup failures len = %d, want 1", len(runDiag.StartupFailures))
+	}
+
+	fail := runDiag.StartupFailures[0]
+	if fail.Name != "assistant" {
+		t.Errorf("failure name = %q, want assistant", fail.Name)
+	}
+	if strings.Contains(fail.Error, "123456789:ABCDEF") || strings.Contains(fail.Error, "secret123") {
+		t.Errorf("sensitive credential leaked in StartupFailure error: %s", fail.Error)
+	}
+	if !strings.Contains(fail.Error, "[REDACTED_TOKEN]") || !strings.Contains(fail.Error, "token=[REDACTED]") {
+		t.Errorf("expected redacted tokens in StartupFailure error: %s", fail.Error)
+	}
+
+	// Verify components in running state
+	compMap := make(map[string]ComponentSnapshot)
+	for _, c := range runDiag.Components {
+		compMap[c.Name] = c
+	}
+
+	dbComp, ok := compMap["db"]
+	if !ok || dbComp.State != "running" || dbComp.Status != "healthy" || dbComp.Error != "" {
+		t.Errorf("unexpected db component: %+v", dbComp)
+	}
+
+	asstComp, ok := compMap["assistant"]
+	if !ok || asstComp.State != "failed" || asstComp.Status != "degraded" {
+		t.Errorf("unexpected assistant component: %+v", asstComp)
+	}
+	if strings.Contains(asstComp.Error, "123456789:ABCDEF") || !strings.Contains(asstComp.Error, "[REDACTED_TOKEN]") {
+		t.Errorf("assistant component error credential leakage or missing redaction: %s", asstComp.Error)
+	}
+
+	// 3. Stop runtime
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatalf("unexpected stop error: %v", err)
+	}
+
+	stopDiag := r.Diagnostics()
+	if stopDiag.State != StateStopped {
+		t.Fatalf("stopped diag state = %s, want %s", stopDiag.State, StateStopped)
+	}
+	stopCompMap := make(map[string]ComponentSnapshot)
+	for _, c := range stopDiag.Components {
+		stopCompMap[c.Name] = c
+	}
+	if stopCompMap["db"].State != "stopped" {
+		t.Errorf("expected db component state 'stopped', got %q", stopCompMap["db"].State)
+	}
+}
+
+func TestRuntime_DiagnosticsStartingState(t *testing.T) {
+	r := New()
+
+	comp1Started := make(chan struct{})
+	proceedComp2 := make(chan struct{})
+
+	comp1 := &callbackComponent{
+		name: "comp1",
+		startFn: func(ctx context.Context) error {
+			return nil
+		},
+	}
+	comp2 := &callbackComponent{
+		name: "comp2",
+		deps: []string{"comp1"},
+		startFn: func(ctx context.Context) error {
+			close(comp1Started)
+			<-proceedComp2
+			return nil
+		},
+	}
+
+	if err := r.Register(comp1); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(comp2); err != nil {
+		t.Fatal(err)
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- r.Start(context.Background())
+	}()
+
+	select {
+	case <-comp1Started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for comp2 Start to be entered")
+	}
+
+	diag := r.Diagnostics()
+	if diag.State != StateStarting {
+		t.Fatalf("diagnostics state during startup = %q, want %q", diag.State, StateStarting)
+	}
+
+	compMap := make(map[string]ComponentSnapshot)
+	for _, c := range diag.Components {
+		compMap[c.Name] = c
+	}
+
+	c1, ok1 := compMap["comp1"]
+	if !ok1 || c1.State != "starting" || c1.Status != "healthy" {
+		t.Fatalf("started component comp1 during StateStarting = %+v, want state=starting, status=healthy", c1)
+	}
+
+	c2, ok2 := compMap["comp2"]
+	if !ok2 || c2.State != "registered" || c2.Status != "" {
+		t.Fatalf("in-progress/unstarted component comp2 during StateStarting = %+v, want state=registered, status=\"\"", c2)
+	}
+
+	close(proceedComp2)
+	if err := <-startDone; err != nil {
+		t.Fatalf("runtime start failed: %v", err)
+	}
+
+	runDiag := r.Diagnostics()
+	if runDiag.State != StateRunning {
+		t.Fatalf("state after startup = %q, want %q", runDiag.State, StateRunning)
+	}
+	for _, c := range runDiag.Components {
+		if c.State != "running" || c.Status != "healthy" {
+			t.Errorf("running component %q snapshot = %+v, want state=running, status=healthy", c.Name, c)
+		}
+	}
+
+	_ = r.Stop(context.Background())
+}
+
+func TestRuntime_DiagnosticsStoppingState(t *testing.T) {
+	r := New()
+
+	stopEntered := make(chan struct{})
+	proceedStop := make(chan struct{})
+
+	comp := &callbackComponent{
+		name: "stopping-comp",
+		stopFn: func(ctx context.Context) error {
+			close(stopEntered)
+			<-proceedStop
+			return nil
+		},
+	}
+	if err := r.Register(comp); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- r.Stop(context.Background())
+	}()
+
+	select {
+	case <-stopEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for stopFn to be entered")
+	}
+
+	diag := r.Diagnostics()
+	if diag.State != StateStopping {
+		t.Fatalf("diagnostics state during stop = %q, want %q", diag.State, StateStopping)
+	}
+	if len(diag.Components) != 1 || diag.Components[0].State != "stopping" || diag.Components[0].Status != "healthy" {
+		t.Fatalf("component snapshot during stopping = %+v, want state=stopping, status=healthy", diag.Components)
+	}
+
+	close(proceedStop)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("stop failed: %v", err)
+	}
+
+	stoppedDiag := r.Diagnostics()
+	if stoppedDiag.State != StateStopped {
+		t.Fatalf("diagnostics state after stop = %q, want %q", stoppedDiag.State, StateStopped)
+	}
+	if len(stoppedDiag.Components) != 1 || stoppedDiag.Components[0].State != "stopped" || stoppedDiag.Components[0].Status != "healthy" {
+		t.Fatalf("component snapshot after stop = %+v, want state=stopped, status=healthy", stoppedDiag.Components)
+	}
+}
+
+func TestRuntime_DiagnosticsCriticalStartupFailure(t *testing.T) {
+	r := New()
+
+	comp1 := &mockComponent{name: "comp1"}
+	comp2 := &mockComponent{
+		name:         "comp2-critical",
+		dependencies: []string{"comp1"},
+		startErr:     errors.New("critical auth failed token=secret_token_12345"),
+	}
+	comp3 := &mockComponent{
+		name:         "comp3-unreached",
+		dependencies: []string{"comp2-critical"},
+	}
+
+	_ = r.Register(comp1)
+	_ = r.Register(comp2)
+	_ = r.Register(comp3)
+
+	err := r.Start(context.Background())
+	if err == nil {
+		t.Fatal("expected critical startup failure, got nil")
+	}
+	if r.State() != StateFailed {
+		t.Fatalf("runtime state = %q, want %q", r.State(), StateFailed)
+	}
+
+	diag := r.Diagnostics()
+	if diag.State != StateFailed {
+		t.Fatalf("diagnostics state = %q, want %q", diag.State, StateFailed)
+	}
+
+	// 1. Verify startup failure list
+	if len(diag.StartupFailures) != 1 {
+		t.Fatalf("expected 1 startup failure, got %d", len(diag.StartupFailures))
+	}
+	f := diag.StartupFailures[0]
+	if f.Name != "comp2-critical" {
+		t.Errorf("failure name = %q, want comp2-critical", f.Name)
+	}
+	if strings.Contains(f.Error, "secret_token_12345") || !strings.Contains(f.Error, "token=[REDACTED]") {
+		t.Errorf("critical failure error credential leakage: %s", f.Error)
+	}
+
+	// 2. Verify component snapshots
+	compMap := make(map[string]ComponentSnapshot)
+	for _, c := range diag.Components {
+		compMap[c.Name] = c
+	}
+
+	// comp1 was started and rolled back: runtime is failed -> comp1 state=failed, status=failed
+	c1 := compMap["comp1"]
+	if c1.State != "failed" || c1.Status != "failed" {
+		t.Errorf("started component comp1 under failed runtime: %+v, want state=failed, status=failed", c1)
+	}
+
+	// comp2 failed startup: state=failed, status=failed (critical)
+	c2 := compMap["comp2-critical"]
+	if c2.State != "failed" || c2.Status != "failed" || !c2.Critical {
+		t.Errorf("critical failing component: %+v, want state=failed, status=failed, critical=true", c2)
+	}
+	if strings.Contains(c2.Error, "secret_token_12345") || !strings.Contains(c2.Error, "token=[REDACTED]") {
+		t.Errorf("credential leaked in component snapshot error: %s", c2.Error)
+	}
+
+	// comp3 was never reached: state=registered, status=""
+	c3 := compMap["comp3-unreached"]
+	if c3.State != "registered" || c3.Status != "" {
+		t.Errorf("unreached component: %+v, want state=registered, status=\"\"", c3)
+	}
+}
+
+type barrierComponent struct {
+	name         string
+	dependencies []string
+	startFn      func(ctx context.Context) error
+	stopFn       func(ctx context.Context) error
+}
+
+func (b *barrierComponent) Name() string           { return b.name }
+func (b *barrierComponent) Dependencies() []string { return b.dependencies }
+func (b *barrierComponent) Start(ctx context.Context) error {
+	if b.startFn != nil {
+		return b.startFn(ctx)
+	}
+	return nil
+}
+func (b *barrierComponent) Stop(ctx context.Context) error {
+	if b.stopFn != nil {
+		return b.stopFn(ctx)
+	}
+	return nil
+}
+func (b *barrierComponent) Health(ctx context.Context) ComponentHealth {
+	return ComponentHealth{Status: HealthHealthy}
+}
+
+func TestRuntime_UptimeLifecycleSemantics(t *testing.T) {
+	// 1. Created state: Uptime must be strictly 0
+	r := New()
+	if st := r.State(); st != StateCreated {
+		t.Fatalf("expected StateCreated, got %v", st)
+	}
+	if u := r.Uptime(); u != 0 {
+		t.Fatalf("uptime in StateCreated = %v, want 0", u)
+	}
+
+	// 2. Initializing & Starting state: Uptime must be strictly 0
+	rInit := New()
+	rInit.mu.Lock()
+	if err := rInit.stateMachine.Transition(StateInitializing); err != nil {
+		rInit.mu.Unlock()
+		t.Fatalf("failed transition to StateInitializing: %v", err)
+	}
+	rInit.mu.Unlock()
+	if st := rInit.State(); st != StateInitializing {
+		t.Fatalf("expected StateInitializing, got %v", st)
+	}
+	if u := rInit.Uptime(); u != 0 {
+		t.Fatalf("uptime in StateInitializing = %v, want 0", u)
+	}
+
+	rInit.mu.Lock()
+	if err := rInit.stateMachine.Transition(StateStarting); err != nil {
+		rInit.mu.Unlock()
+		t.Fatalf("failed transition to StateStarting: %v", err)
+	}
+	rInit.mu.Unlock()
+	if st := rInit.State(); st != StateStarting {
+		t.Fatalf("expected StateStarting, got %v", st)
+	}
+	if u := rInit.Uptime(); u != 0 {
+		t.Fatalf("uptime in StateStarting = %v, want 0", u)
+	}
+
+	// 3. Dynamic lifecycle transitions controlled via channel barriers:
+	//    StateStarting -> StateRunning -> StateStopping -> StateStopped
+	startEntered := make(chan struct{})
+	startRelease := make(chan struct{})
+	stopEntered := make(chan struct{})
+	stopRelease := make(chan struct{})
+
+	barrierComp := &barrierComponent{
+		name: "barrier-comp",
+		startFn: func(ctx context.Context) error {
+			close(startEntered)
+			<-startRelease
+			return nil
+		},
+		stopFn: func(ctx context.Context) error {
+			close(stopEntered)
+			<-stopRelease
+			return nil
+		},
+	}
+
+	if err := r.Register(barrierComp); err != nil {
+		t.Fatal(err)
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		startDone <- r.Start(context.Background())
+	}()
+
+	// Wait until component Start is executing -> runtime is in StateStarting
+	<-startEntered
+	if st := r.State(); st != StateStarting {
+		t.Fatalf("expected StateStarting during component start, got %v", st)
+	}
+	if u := r.Uptime(); u != 0 {
+		t.Fatalf("uptime in StateStarting during active start = %v, want 0", u)
+	}
+
+	// Release Start barrier and wait for transition to StateRunning
+	close(startRelease)
+	if err := <-startDone; err != nil {
+		t.Fatalf("Start() returned unexpected error: %v", err)
+	}
+
+	if st := r.State(); st != StateRunning {
+		t.Fatalf("expected StateRunning, got %v", st)
+	}
+
+	// Running state: uptime must be > 0 and increasing without time.Sleep
+	uRun1 := r.Uptime()
+	var uRun2 time.Duration
+	runDeadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(runDeadline) {
+		uRun2 = r.Uptime()
+		if uRun2 > uRun1 {
+			break
+		}
+	}
+	if uRun2 <= uRun1 {
+		t.Fatalf("uptime in StateRunning did not increase: u1=%v, u2=%v", uRun1, uRun2)
+	}
+
+	// 4. Stopping state: uptime continues to be computed until shutdown completes
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- r.Stop(context.Background())
+	}()
+
+	// Wait until component Stop is executing -> runtime is in StateStopping
+	<-stopEntered
+	if st := r.State(); st != StateStopping {
+		t.Fatalf("expected StateStopping during component stop, got %v", st)
+	}
+	uStopping1 := r.Uptime()
+	if uStopping1 <= 0 || uStopping1 < uRun2 {
+		t.Fatalf("uptime in StateStopping = %v, want >= %v", uStopping1, uRun2)
+	}
+
+	// Verify uptime continues to tick/advance during StateStopping
+	var uStopping2 time.Duration
+	stopTickDeadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(stopTickDeadline) {
+		uStopping2 = r.Uptime()
+		if uStopping2 > uStopping1 {
+			break
+		}
+	}
+	if uStopping2 <= uStopping1 {
+		t.Fatalf("uptime in StateStopping did not increase: %v -> %v", uStopping1, uStopping2)
+	}
+
+	// Release Stop barrier and wait for transition to StateStopped
+	close(stopRelease)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("Stop() returned unexpected error: %v", err)
+	}
+
+	// 5. Stopped state: Uptime must freeze at stop time
+	if st := r.State(); st != StateStopped {
+		t.Fatalf("expected StateStopped, got %v", st)
+	}
+	stoppedUptime1 := r.Uptime()
+	if stoppedUptime1 < uStopping2 {
+		t.Fatalf("stopped uptime %v should be >= stopping uptime %v", stoppedUptime1, uStopping2)
+	}
+
+	freezeDeadline := time.Now().Add(10 * time.Millisecond)
+	for time.Now().Before(freezeDeadline) {
+		if u := r.Uptime(); u != stoppedUptime1 {
+			t.Fatalf("uptime should be frozen after stop: got %v then %v", stoppedUptime1, u)
+		}
+	}
+
+	// 6. Failed startup: Uptime must be strictly 0 (never ran)
+	rFail := New()
+	critFail := &mockComponent{name: "failing-comp", startErr: errors.New("boom")}
+	_ = rFail.Register(critFail)
+	_ = rFail.Start(context.Background())
+	if rFail.State() != StateFailed {
+		t.Fatalf("expected StateFailed, got %v", rFail.State())
+	}
+	if failUptime := rFail.Uptime(); failUptime != 0 {
+		t.Fatalf("uptime for failed startup = %v, want 0", failUptime)
+	}
+}
+
+func TestRuntime_LastShutdownReportDefensiveCopy(t *testing.T) {
+	r := New()
+	comp := &mockComponent{name: "test-comp"}
+	_ = r.Register(comp)
+	_ = r.Start(context.Background())
+	_ = r.Stop(context.Background())
+
+	rep1 := r.LastShutdownReport()
+	if len(rep1.Phases) == 0 {
+		t.Fatal("expected phases in shutdown report")
+	}
+
+	// Mutate returned slice
+	rep1.Phases[0].Component = "tampered"
+	rep1.Errors = append(rep1.Errors, errors.New("injected-error"))
+
+	rep2 := r.LastShutdownReport()
+	if rep2.Phases[0].Component == "tampered" {
+		t.Fatal("LastShutdownReport exposed mutable Phases slice")
+	}
+	if len(rep2.Errors) == len(rep1.Errors) && len(rep1.Errors) > 0 {
+		t.Fatal("LastShutdownReport exposed mutable Errors slice")
+	}
+}
+
+func BenchmarkRuntime_Diagnostics(b *testing.B) {
+	r := New()
+	for i := 0; i < 10; i++ {
+		_ = r.Register(&mockComponent{name: "comp-" + string(rune('a'+i))})
+	}
+	_ = r.Start(context.Background())
+	defer func() { _ = r.Stop(context.Background()) }()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = r.Diagnostics()
 	}
 }

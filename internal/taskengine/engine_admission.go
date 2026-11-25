@@ -17,6 +17,7 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 	timeout := e.decisionTimeout
 	e.mu.Unlock()
 	if rootCtx == nil {
+		e.admissionRejections.Add(1)
 		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
 	}
 	if timeout <= 0 {
@@ -32,6 +33,7 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 	req := engineRequest{op: opSubmit, ctx: ctx, spec: spec, decision: decision, reply: reply}
 	queued := e.acquireRequest(req)
 	if err := e.enqueueRequest(ctx, queued); err != nil {
+		e.admissionRejections.Add(1)
 		e.releaseRequest(queued)
 		return engineReply{}, err
 	}

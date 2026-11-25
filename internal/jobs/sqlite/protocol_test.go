@@ -342,3 +342,174 @@ func TestCommitAttemptDeferredHonorsCancellationAndLeaseFencing(t *testing.T) {
 		t.Fatalf("deferred commit revived cancelled occurrence: %+v", occ)
 	}
 }
+
+func TestDurableDiagnostics_ReadyOccurrences(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+	s := NewStore(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// 1. Nilai nol ketika tidak ada ready occurrence
+	snapEmpty, err := s.DurableDiagnostics(ctx, now)
+	if err != nil {
+		t.Fatalf("empty DB DurableDiagnostics error: %v", err)
+	}
+	if snapEmpty.ReadyOccurrences != 0 || snapEmpty.DeferredOccurrences != 0 || snapEmpty.BlockedOccurrences != 0 {
+		t.Fatalf("expected all zeros, got %+v", snapEmpty)
+	}
+
+	// Helper to insert an occurrence with specified state and ready_at
+	insertOcc := func(id, key, state string, readyAt time.Time) {
+		t.Helper()
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO job_occurrences (id, job_id, scheduled_for, occurrence_key, state, ready_at, cancel_epoch, revision, updated_at)
+			VALUES (?, 'job', ?, ?, ?, ?, 0, 1, ?)
+		`, id, now, key, state, readyAt, now)
+		if err != nil {
+			t.Fatalf("insert occurrence %s: %v", id, err)
+		}
+	}
+
+	// 2. Dispatched occurrence with ready_at <= now (ready occurrence yang sudah jatuh tempo)
+	dueReadyAt := now.Add(-10 * time.Second)
+	insertOcc("occ-ready-due-1", "key-ready-due-1", "dispatched", dueReadyAt)
+	insertOcc("occ-ready-due-2", "key-ready-due-2", "dispatched", now)
+
+	snap1, err := s.DurableDiagnostics(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap1.ReadyOccurrences != 2 {
+		t.Fatalf("ReadyOccurrences = %d, want 2", snap1.ReadyOccurrences)
+	}
+
+	// 3. Dispatched occurrence dengan ready_at di masa depan (future ready_at, deferred)
+	futureReadyAt := now.Add(5 * time.Minute)
+	insertOcc("occ-dispatched-future", "key-dispatched-future", "dispatched", futureReadyAt)
+
+	snap2, err := s.DurableDiagnostics(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap2.ReadyOccurrences != 2 {
+		t.Fatalf("ReadyOccurrences should still be 2, got %d", snap2.ReadyOccurrences)
+	}
+	if snap2.DeferredOccurrences != 1 {
+		t.Fatalf("DeferredOccurrences = %d, want 1", snap2.DeferredOccurrences)
+	}
+
+	// 4. Deferred occurrence (via CommitAttemptDeferred)
+	if err := s.MaterializeOccurrence(ctx, &jobs.JobOccurrence{
+		ID: "occ-deferred-attempt", JobID: "job", OccurrenceKey: "key-deferred-attempt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := s.PrepareAttemptLease(ctx, "occ-deferred-attempt", "task-def-1", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitAttemptDeferred(ctx, attempt.ID, attempt.LeaseEpoch, now.Add(10*time.Minute), "flood wait"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap3, err := s.DurableDiagnostics(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap3.ReadyOccurrences != 2 {
+		t.Fatalf("ReadyOccurrences should still be 2, got %d", snap3.ReadyOccurrences)
+	}
+	if snap3.DeferredOccurrences != 2 {
+		t.Fatalf("DeferredOccurrences = %d, want 2", snap3.DeferredOccurrences)
+	}
+	if snap3.RetainedDeferrals != 1 {
+		t.Fatalf("RetainedDeferrals = %d, want 1", snap3.RetainedDeferrals)
+	}
+
+	// 5. Blocked occurrence (ready_at in past, but state is blocked)
+	insertOcc("occ-blocked", "key-blocked", "blocked", dueReadyAt)
+
+	snap4, err := s.DurableDiagnostics(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap4.ReadyOccurrences != 2 {
+		t.Fatalf("ReadyOccurrences should still be 2, got %d", snap4.ReadyOccurrences)
+	}
+	if snap4.BlockedOccurrences != 1 {
+		t.Fatalf("BlockedOccurrences = %d, want 1", snap4.BlockedOccurrences)
+	}
+
+	// 6. Terminal occurrences (completed, failed, cancelled) with past ready_at
+	insertOcc("occ-completed", "key-completed", "completed", dueReadyAt)
+	insertOcc("occ-failed", "key-failed", "failed", dueReadyAt)
+	insertOcc("occ-cancelled", "key-cancelled", "cancelled", dueReadyAt)
+
+	// Occurrence with state = 'ready' (not yet dispatched) with past ready_at
+	insertOcc("occ-initial-ready", "key-initial-ready", "ready", dueReadyAt)
+
+	snap5, err := s.DurableDiagnostics(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap5.ReadyOccurrences != 2 {
+		t.Fatalf("terminal and non-dispatched occurrences must not be counted in ReadyOccurrences, got %d, want 2", snap5.ReadyOccurrences)
+	}
+
+	// 7. Verify via Manager.Diagnostics()
+	manager := jobs.NewManagerWithPorts(nil, Ports(s), nil)
+	mgrDiag := manager.Diagnostics()
+	if !mgrDiag.DurableSnapshotOK {
+		t.Fatal("expected DurableSnapshotOK to be true")
+	}
+	if mgrDiag.ReadyOccurrences != 2 {
+		t.Fatalf("manager Diagnostics ReadyOccurrences = %d, want 2", mgrDiag.ReadyOccurrences)
+	}
+	if mgrDiag.DeferredOccurrences != 2 {
+		t.Fatalf("manager Diagnostics DeferredOccurrences = %d, want 2", mgrDiag.DeferredOccurrences)
+	}
+	if mgrDiag.BlockedOccurrences != 1 {
+		t.Fatalf("manager Diagnostics BlockedOccurrences = %d, want 1", mgrDiag.BlockedOccurrences)
+	}
+
+	// 8. Context cancellation/timeout
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = s.DurableDiagnostics(cancelCtx, now)
+	if err == nil {
+		t.Fatal("expected DurableDiagnostics with cancelled context to fail")
+	}
+}
+
+func TestDurableDiagnostics_ContextDeadlineRespected(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	s := NewStore(db)
+	now := time.Now().UTC()
+
+	// 1. Expired deadline must fail immediately with context.DeadlineExceeded
+	expiredCtx, cancelDeadline := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelDeadline()
+
+	_, err := s.DurableDiagnostics(expiredCtx, now)
+	if err == nil {
+		t.Fatal("expected DurableDiagnostics with expired deadline to fail")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
+	}
+
+	// 2. Pre-cancelled context must fail immediately with context.Canceled
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = s.DurableDiagnostics(canceledCtx, now)
+	if err == nil {
+		t.Fatal("expected DurableDiagnostics with cancelled context to fail")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}

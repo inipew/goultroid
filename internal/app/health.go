@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/runtime"
+	"github.com/inipew/goultroid/internal/services/storage"
 )
 
 const (
@@ -236,8 +237,11 @@ func (a *App) HealthContext(ctx context.Context) HealthSnapshot {
 
 	// Storage and filesystem probes: evaluate owner in-memory state and physical mount
 	// independently without allowing physical probe to overwrite storage degradation.
-	if a.media != nil && a.media.Storage() != nil {
-		store := a.media.Storage()
+	var store storage.Storage = a.storage
+	if store == nil && a.media != nil {
+		store = a.media.Storage()
+	}
+	if store != nil {
 		basePath := store.BasePath()
 
 		// 1. Storage owner state (in-memory snapshot, lock-free, zero I/O)

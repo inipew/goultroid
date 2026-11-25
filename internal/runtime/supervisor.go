@@ -285,7 +285,7 @@ func (s *Supervisor) Health(ctx context.Context) ComponentHealth {
 
 		if st == WorkerStateDegraded || st == WorkerStateFailed {
 			if lastErr != nil {
-				degradedWorkers = append(degradedWorkers, fmt.Sprintf("%s (%v)", name, lastErr))
+				degradedWorkers = append(degradedWorkers, fmt.Sprintf("%s (%s)", name, SanitizeDiagnosticError(lastErr.Error())))
 			} else {
 				degradedWorkers = append(degradedWorkers, name)
 			}
@@ -524,7 +524,7 @@ func (w *workerEntry) snapshot() WorkerSnapshot {
 
 	var lastErrStr string
 	if w.lastError != nil {
-		lastErrStr = w.lastError.Error()
+		lastErrStr = SanitizeDiagnosticError(w.lastError.Error())
 	}
 
 	return WorkerSnapshot{

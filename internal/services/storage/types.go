@@ -82,6 +82,19 @@ type EnumerationPage struct {
 	NextCursor string
 }
 
+// Diagnostics provides a lock-free snapshot of storage consumption and limits.
+type Diagnostics struct {
+	Backend            string  `json:"backend"`
+	Usage              int64   `json:"usage_bytes"`
+	MaxQuota           int64   `json:"max_quota_bytes"`
+	UtilizationPercent float64 `json:"utilization_percent"`
+}
+
+// DiagnosticsProvider is an optional interface implemented by storages that support diagnostics reporting.
+type DiagnosticsProvider interface {
+	Diagnostics() Diagnostics
+}
+
 // Storage provides an abstraction for asset persistence.
 type Storage interface {
 	// Put writes the stream from src to storage under a generated asset ID.

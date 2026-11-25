@@ -23,14 +23,25 @@ func (e *Engine) Stats(ctx context.Context) (RuntimeStats, error) {
 	}
 	s := rep.stats
 	stats := RuntimeStats{
-		Accepting: s.accepting, Quiesced: s.quiesced,
-		ResultSlotsHeld: s.resultSlotsHeld, ResultCapacity: s.resultCapacity,
-		ActiveTasks: s.activeTasks, RetainedBytes: s.retainedBytes, RetainedCap: s.retainedCap,
-		TerminalCount: s.terminalCount, CommitPending: s.commitPending,
-		DeliveryQueued: s.deliveryQueued, DeliveryCap: s.deliveryCap, DeliveryFailed: s.deliveryFailed,
-		DurabilityQueue: s.durabilityQueue, DurabilityCap: s.durabilityCap, DurabilityFail: s.durabilityFail,
-		ScopeTombstones: s.scopeTombstones,
-		Pools:           s.pools, Resources: s.resources,
+		Accepting:           s.accepting,
+		Quiesced:            s.quiesced,
+		AdmissionRejections: s.admissionRejections,
+		ResultSlotsHeld:     s.resultSlotsHeld,
+		ResultCapacity:      s.resultCapacity,
+		ActiveTasks:         s.activeTasks,
+		RetainedBytes:       s.retainedBytes,
+		RetainedCap:         s.retainedCap,
+		TerminalCount:       s.terminalCount,
+		CommitPending:       s.commitPending,
+		DeliveryQueued:      s.deliveryQueued,
+		DeliveryCap:         s.deliveryCap,
+		DeliveryFailed:      s.deliveryFailed,
+		DurabilityQueue:     s.durabilityQueue,
+		DurabilityCap:       s.durabilityCap,
+		DurabilityFail:      s.durabilityFail,
+		ScopeTombstones:     s.scopeTombstones,
+		Pools:               s.pools,
+		Resources:           s.resources,
 	}
 	if e.delivery != nil {
 		stats.DeliveryLane = LaneRuntimeStats{

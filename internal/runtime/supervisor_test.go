@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -117,6 +118,57 @@ func TestSupervisor_NeverRestartPolicy_Failed(t *testing.T) {
 	}
 
 	_ = sup.Stop(context.Background())
+}
+
+func TestSupervisor_SnapshotLastErrorBounded(t *testing.T) {
+	sup := NewSupervisor(WithBaseBackoff(5 * time.Millisecond))
+	defer func() { _ = sup.Stop(context.Background()) }()
+
+	longErrText := strings.Repeat("A very long error message that exceeds boundary limits! ", 20)
+	if len(longErrText) <= 256 {
+		t.Fatalf("test setup error: longErrText length %d <= 256", len(longErrText))
+	}
+
+	workerDone := make(chan struct{})
+	err := sup.Register(WorkerSpec{
+		Name:    "long-err-worker",
+		Restart: NeverRestart,
+		Run: func(ctx context.Context) error {
+			defer close(workerDone)
+			return errors.New(longErrText)
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected register error: %v", err)
+	}
+
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("unexpected start error: %v", err)
+	}
+
+	// Deterministic synchronization: wait for worker Run to return, then gracefully join
+	select {
+	case <-workerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not run or return within deadline")
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := sup.Stop(stopCtx); err != nil {
+		t.Fatalf("unexpected stop error: %v", err)
+	}
+
+	snapshots := sup.Snapshot()
+	if len(snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(snapshots))
+	}
+	if len(snapshots[0].LastError) > 256 {
+		t.Fatalf("LastError length = %d, want <= 256", len(snapshots[0].LastError))
+	}
+	if snapshots[0].LastError != longErrText[:256] {
+		t.Fatalf("LastError does not match truncated prefix: %q", snapshots[0].LastError)
+	}
 }
 
 func TestSupervisor_RestartTransient_SuccessiveRestarts(t *testing.T) {

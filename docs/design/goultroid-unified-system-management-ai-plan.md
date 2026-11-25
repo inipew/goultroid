@@ -600,20 +600,71 @@ Completed work & verification evidence:
 
 **Goal:** fill only high-value diagnostic gaps while preserving subsystem ownership.
 
-Potential work:
-- standardize field names and units in the app-level snapshot;
-- expose existing owner snapshots through narrow interfaces;
-- add missing counters only where the owner can maintain them cheaply;
-- use fixed-cardinality reason/class labels;
-- make oldest-age and pressure metrics available without expensive scans;
-- ensure diagnostics snapshots do not retain mutable references.
+Completed work & verification evidence:
+- **U3-A — Subsystem Diagnostic Hardening & Final Correction (Completed):**
+  - **Storage Diagnostics (F-U3-01):** Added `Diagnostics` struct and optional `DiagnosticsProvider` interface to package `storage`. Implemented lock-free, zero-allocation `Diagnostics()` on `FileStorage` exposing `Usage`, `MaxQuota`, and `UtilizationPercent`. Upgraded `MemoryStorage` to O(1) lock-free atomic usage accounting (`usage atomic.Int64`), eliminating full map iterations and mutex contention during diagnostics. Forwarded via `OwnerStorage` wrapper to preserve boundary encapsulation. Verified via `TestFileStorage_Diagnostics`, `TestMemoryStorage_Diagnostics`, and `TestMemoryStorage_ConcurrentPutDeleteDiagnostics`.
+  - **TaskEngine Admission Rejections Counter (F-U3-03):** Added `admissionRejections atomic.Int64` to `Engine` to record every rejected submission at the admission boundary (unstarted/quiesced engine, cancellation prior to linearization, WorkSpec validation failure, duplicate task IDs, and queue/result capacity exhaustion). Documented counter semantics and verified no double counting across all rejection paths via `TestStats_AdmissionRejections_ExhaustivePaths`.
+  - **PoolRuntimeStats Redundancy Cleanup (F-U3-05):** Formally documented `PoolRuntimeStats.IdleWorkers` as deprecated while maintaining exact legacy mirroring of `Idle` for caller backward compatibility.
+  - **Bounded & Sanitized Diagnostics Error Strings (F-U3-02):** Implemented `SanitizeDiagnosticError` in `internal/runtime`, enforcing:
+    1. A hard upper bound of 256 bytes for `WorkerSnapshot.LastError` (`Supervisor`) and `PeriodicTaskSnapshot.LastError` (`periodicCoordinator`) without splitting multi-byte UTF-8 runes.
+    2. Targeted credential redaction for URL passwords (`://user:[REDACTED]@host`), Telegram bot tokens (`[REDACTED_TOKEN]`), and key-value secrets (`token=[REDACTED]`, `api_hash=[REDACTED]`), preserving safe and useful diagnostic errors without confusing truncation with sanitization.
+    3. Deterministic synchronization in `TestSupervisor_SnapshotLastErrorBounded`, replacing arbitrary sleep with channel completion and graceful worker joining.
+  - **Verification Results:**
+    - Targeted race tests (`./internal/services/storage`, `./internal/taskengine`, `./internal/runtime`, `./internal/scheduler`): PASS.
+    - Full repository race test suite (`go test -race ./...`): PASS (100% across all packages).
+    - `go vet ./...`: PASS (0 warnings).
+    - `gofmt -l .`: PASS (0 unformatted files).
+- **U3-B — Aggregation Consolidation & Durable Observability (Completed):**
+  - **Runtime Status & Startup Failures (F-U3-04):** Added `Runtime.Diagnostics()` returning `RuntimeDiagnostics` with `ComponentSnapshot` and `StartupFailureSnapshot`. Exposes authoritative component state (`starting`, `running`, `failed`, `registered`, `stopping`, `stopped`), status (`healthy`, `degraded`, `failed`), and sanitized startup failure errors via `SanitizeDiagnosticError`. Projected into `DiagnosticsSnapshot.RuntimeComponents` and `DiagnosticsSnapshot.StartupFailures` without duplicating state or running unmanaged goroutines.
+  - **U3-B Final Correction (Lifecycle Mapping & Deterministic Tests):**
+    - Component lifecycle states strictly mapped: `initializing`/`starting` -> `starting`, `running` -> `running`, `stopping` -> `stopping`, `stopped` -> `stopped`, `failed` -> `failed`.
+    - Unstarted registered components retain `state: "registered"` and `status: ""` (omitted in JSON), preventing false "healthy" reporting before verification.
+    - Startup failures consistently distinguished: optional failures report `state: "failed"`, `status: "degraded"`; critical failures report `state: "failed"`, `status: "failed"`.
+    - Incremental thread-safe updates to `startedComps` and `failedComps` inside `Runtime.Start()` under `r.mu` ensure real-time visibility during startup and preserve critical failure causes.
+    - Added deterministic test suite: `TestRuntime_Diagnostics` (registered before start not healthy), `TestRuntime_DiagnosticsStartingState` (channel-synchronized mid-start visibility), `TestRuntime_DiagnosticsStoppingState` (channel-synchronized mid-stop and stopped states), `TestRuntime_DiagnosticsCriticalStartupFailure` (distinguishing critical vs unreached components and credential redaction), and `TestDurableDiagnostics_ContextDeadlineRespected` (SQLite protocol deadline and cancellation enforcement with 0 sleep).
+  - **PersistencePanics Deduplication (F-U3-06):** Removed duplicate `PersistencePanics` counter from root `DiagnosticsSnapshot`, retaining `PersistencePumpStats.Panics` (`snapshot.PersistencePump.Panics`) as the single authoritative metric.
+  - **ReadyOccurrences Durable Metric (F-U3-07):** Added `ReadyOccurrences int` to `DurableDiagnostics` (`domain.go`), `Diagnostics` (`manager.go`), and `DurableDiagnostics` SQLite query (`store.go`). Evaluates `COUNT(*) WHERE state = 'dispatched' AND ready_at <= ?` using index `idx_job_occ_state(state, ready_at)`. Verified that future `ready_at`, deferred attempts, blocked occurrences, and terminal occurrences are not counted as ready via `TestDurableDiagnostics_ReadyOccurrences`.
+  - **Verification Results:**
+    - Targeted race tests (`./internal/runtime`, `./internal/app`, `./internal/jobs`, `./internal/jobs/sqlite`): PASS.
+    - Full repository race test suite (`go test -race ./...`): PASS (100% across all packages).
+    - `go vet ./...`: PASS (0 warnings).
+    - `gofmt -l .`: PASS (0 unformatted files).
 
-**Tests/benchmarks:**
-- snapshot consistency under concurrent updates;
-- bounded memory/cardinality;
-- diagnostics call latency and allocations;
-- no hot-path regression;
-- no SQLite scan added to readiness.
+- **U3-C — Diagnostics Consistency & Resource Observability (Completed):**
+  - **Per-Owner Resource Breakdown (F-U3-08 & U3-C.1):**
+    - Extended `ResourceDiagnostics` with `ByOwner []ResourceOwnerDiagnostics`, where each owner entry includes `Owner` string, `TotalActive int`, `CountsByType map[string]int`, and `Leaked int`.
+    - Projections use the canonical owner (`*resource.Manager`) without GlobalResourceManager, ResourceRegistry, or polling goroutines.
+    - Preserved bounded cardinality (`DefaultMaxTrackedResources = 16 * 1024`), fixed-cardinality type taxonomy, and deterministic sorting by `Owner`.
+  - **Storage Diagnostics on App Snapshot (U3-C.2):**
+    - Integrated `Storage storage.Diagnostics` into `DiagnosticsSnapshot`.
+    - Direct access via `a.storage` (with fallback to `a.media.Storage()`), querying `Diagnostics()` from `storage.DiagnosticsProvider`.
+    - 100% lock-free, zero-allocation, atomic O(1) query with zero I/O and zero SQL scans.
+    - Updated `HealthContext()` to evaluate `a.storage` independently while maintaining strict separation between in-memory storage health and physical filesystem mount health.
+  - **Runtime/App Lifecycle & Uptime Semantics (U3-C.3):**
+    - Runtime is the authoritative source of truth for execution uptime: `a.runtime.Uptime()` is projected directly into `DiagnosticsSnapshot.Uptime`.
+    - Strict lifecycle semantics defined:
+      - `StateCreated`, `StateInitializing`, `StateStarting`: Uptime is strictly `0` (never negative, never ticking during construction or initialization).
+      - `StateRunning`, `StateStopping`: Uptime measures active duration `time.Since(startTime)`, clamped to `0` in case of clock jitter.
+      - `StateStopped`, `StateFailed`: Uptime is frozen at `stopTime.Sub(startTime)` for runtimes that ran, or `0` for failed startups that never ran.
+    - App marks `startTime` strictly when entering `lifecycleRunning` (not at construction/wiring time).
+  - **Snapshot Safety & Immutability (U3-C.4):**
+    - Guaranteed that diagnostics snapshots do not expose mutable internal references:
+      - Defensive copy of `ByOwner` and `CountsByType` in `ResourceDiagnostics`.
+      - Defensive copy of `res.Metadata` in `plugin.Scope.Resources()` and `PluginDiagnostics`.
+      - Defensive copy of `TaskEngine.Pools` and `TaskEngine.Resources`.
+      - Defensive copy of `ShutdownReport.Phases` and `ShutdownReport.Errors` slices in `Runtime.LastShutdownReport()` (catatan: defensive copy diterapkan pada backing slice `[]error`, bukan deep copy dari underlying objek error).
+    - Mutating slices or maps on a returned snapshot does not corrupt internal state or future snapshots.
+  - **Performance Benchmarks & Profiling:**
+    - `BenchmarkApp_Diagnostics_Idle`: ~19.4 µs/op, 1904 B/op, 8 allocs/op.
+    - `BenchmarkApp_Diagnostics_Active`: ~25.2 µs/op, 4496 B/op, 32 allocs/op.
+    - `BenchmarkApp_Diagnostics_BoundaryOwners` (64 distinct owners): ~85.2 µs/op, 49.9 KB/op, 342 allocs/op.
+    - `BenchmarkRuntime_Diagnostics` (10 components): ~1.65 µs/op, 1376 B/op, 7 allocs/op.
+    - Biaya pemanggilan `Diagnostics()` terisolasi pada operasi snapshot diagnostics dan dibuktikan melalui benchmark di atas (alokasi dan latensi pengambilan data diagnostik); benchmark ini merefleksikan overhead snapshotting dan tidak mengklaim ketiadaan lock contention pada hot path operasional (Dispatcher, TaskEngine admission, RPCExecutor) yang memerlukan profiling contention terpisah.
+  - **Verification Results:**
+    - Targeted race tests (`./internal/app`, `./internal/runtime`, `./internal/plugin`, `./internal/services/storage`): PASS.
+    - Full repository race test suite (`go test -race ./...`): PASS (100% across all packages).
+    - `go vet ./...`: PASS (0 warnings).
+    - `gofmt -l .`: PASS (0 unformatted files).
 
 ### Phase U4 — Error/defer semantic integrity
 

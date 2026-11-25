@@ -232,8 +232,11 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 	switch req.op {
 	case opSubmit:
 		ticket, err := e.admitSubmit(ctx, req.ctx, req.spec, req.decision)
-		if err != nil && req.decision != nil {
-			req.decision.decide(decisionRejected)
+		if err != nil {
+			e.admissionRejections.Add(1)
+			if req.decision != nil {
+				req.decision.decide(decisionRejected)
+			}
 		}
 		req.reply <- engineReply{ticket: ticket, err: err}
 	case opCancel:
@@ -255,23 +258,24 @@ func (e *Engine) handleRequest(ctx context.Context, req engineRequest) {
 			resources[name] = ResourceRuntimeStats{Used: e.resourceUsed[name], Capacity: capacity}
 		}
 		req.reply <- engineReply{stats: engineStats{
-			resultSlotsHeld: e.resultSlotsHeld,
-			resultCapacity:  e.resultCapacity,
-			activeTasks:     e.activeTasks,
-			accepting:       e.lifecycleAccepting(),
-			quiesced:        e.lifecycleQuiesced(),
-			retainedBytes:   e.retainedBytes,
-			retainedCap:     e.maxRetainedBytes,
-			terminalCount:   len(e.terminalOrder),
-			commitPending:   e.commitPending,
-			deliveryQueued:  e.delivery.queueLen(),
-			deliveryCap:     e.delivery.queueCap(),
-			deliveryFailed:  e.delivery.fallbackCount(),
-			durabilityQueue: e.durability.queueLen(),
-			durabilityCap:   e.durability.queueCap(),
-			durabilityFail:  e.durability.failureCount(),
-			scopeTombstones: len(e.cancelledScopes),
-			pools:           pools, resources: resources,
+			admissionRejections: e.admissionRejections.Load(),
+			resultSlotsHeld:     e.resultSlotsHeld,
+			resultCapacity:      e.resultCapacity,
+			activeTasks:         e.activeTasks,
+			accepting:           e.lifecycleAccepting(),
+			quiesced:            e.lifecycleQuiesced(),
+			retainedBytes:       e.retainedBytes,
+			retainedCap:         e.maxRetainedBytes,
+			terminalCount:       len(e.terminalOrder),
+			commitPending:       e.commitPending,
+			deliveryQueued:      e.delivery.queueLen(),
+			deliveryCap:         e.delivery.queueCap(),
+			deliveryFailed:      e.delivery.fallbackCount(),
+			durabilityQueue:     e.durability.queueLen(),
+			durabilityCap:       e.durability.queueCap(),
+			durabilityFail:      e.durability.failureCount(),
+			scopeTombstones:     len(e.cancelledScopes),
+			pools:               pools, resources: resources,
 		}}
 	case opWorkerStarted:
 		e.applyWorkerStarted(req.taskID, req.permit, req.started)

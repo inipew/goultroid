@@ -125,6 +125,7 @@ type Diagnostics struct {
 	Definitions         int
 	Handlers            int
 	Accepting           bool
+	ReadyOccurrences    int
 	DeferredOccurrences int
 	BlockedOccurrences  int
 	RetainedDeferrals   int
@@ -837,6 +838,7 @@ func (m *Manager) Diagnostics() Diagnostics {
 		snapshot, err := durable.DurableDiagnostics(ctx, time.Now().UTC())
 		cancel()
 		if err == nil {
+			diagnostics.ReadyOccurrences = snapshot.ReadyOccurrences
 			diagnostics.DeferredOccurrences = snapshot.DeferredOccurrences
 			diagnostics.BlockedOccurrences = snapshot.BlockedOccurrences
 			diagnostics.RetainedDeferrals = snapshot.RetainedDeferrals

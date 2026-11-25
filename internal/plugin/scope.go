@@ -345,6 +345,14 @@ func (s *Scope) Resources() []Resource {
 	defer s.mu.Unlock()
 	resources := make([]Resource, 0, len(s.resources))
 	for _, res := range s.resources {
+		var metaCopy map[string]string
+		if len(res.Metadata) > 0 {
+			metaCopy = make(map[string]string, len(res.Metadata))
+			for k, v := range res.Metadata {
+				metaCopy[k] = v
+			}
+		}
+		res.Metadata = metaCopy
 		resources = append(resources, res)
 	}
 	return resources

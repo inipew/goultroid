@@ -160,4 +160,26 @@ func (s *OwnerStorage) BasePath() string {
 	return s.base.BasePath()
 }
 
+// Diagnostics forwards diagnostics to the underlying storage implementation if supported.
+func (s *OwnerStorage) Diagnostics() storage.Diagnostics {
+	if s == nil || s.base == nil {
+		return storage.Diagnostics{Backend: "nil"}
+	}
+	if dp, ok := s.base.(interface{ Diagnostics() storage.Diagnostics }); ok {
+		return dp.Diagnostics()
+	}
+	return storage.Diagnostics{Backend: "unknown"}
+}
+
+// StorageHealth forwards in-memory storage health to the underlying storage implementation if supported.
+func (s *OwnerStorage) StorageHealth() (string, string) {
+	if s == nil || s.base == nil {
+		return "unhealthy", "storage:nil"
+	}
+	if hp, ok := s.base.(interface{ StorageHealth() (string, string) }); ok {
+		return hp.StorageHealth()
+	}
+	return "healthy", ""
+}
+
 var _ storage.Storage = (*OwnerStorage)(nil)

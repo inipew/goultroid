@@ -38,6 +38,7 @@ import (
 	processSvc "github.com/inipew/goultroid/internal/services/process"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/services/savedresponse"
+	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/settings"
 	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/telegram"
@@ -69,6 +70,7 @@ type App struct {
 	savedResponseAdmin        *savedresponseadmin.Feature
 	pmRelayAdmin              *pmrelayadmin.Feature
 	media                     *mediaSvc.Service
+	storage                   storage.Storage
 	downloadRegistry          *download.Registry
 	processRunner             *processSvc.OSRunner
 	startTime                 time.Time
@@ -537,6 +539,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		savedResponseAdmin:        savedResponseAdmin,
 		pmRelayAdmin:              pmRelayAdmin,
 		media:                     domServices.mediaService,
+		storage:                   domServices.storage,
 		downloadRegistry:          domServices.downloadRegistry,
 		processRunner:             domServices.processRunner,
 		startTime:                 domServices.startTime,

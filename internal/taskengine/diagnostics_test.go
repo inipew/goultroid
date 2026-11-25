@@ -2,6 +2,7 @@ package taskengine
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -244,5 +245,245 @@ func TestRuntimeStatsExposeLifecycleState(t *testing.T) {
 	}
 	if stats.Accepting || !stats.Quiesced {
 		t.Fatalf("quiesced lifecycle stats = %+v, want not accepting and quiesced", stats)
+	}
+}
+
+func TestStats_AdmissionRejectionsCounter(t *testing.T) {
+	engine := NewEngine(Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general": {Concurrency: 1, BacklogLimit: 1, PayloadBudget: 1000},
+		},
+		ResultCapacity: 1,
+	})
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Stop(context.Background()) }()
+
+	// 1. Initial rejections must be 0
+	stats, err := engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 0 {
+		t.Fatalf("initial AdmissionRejections = %d, want 0", stats.AdmissionRejections)
+	}
+
+	blockCh := make(chan struct{})
+	defer close(blockCh)
+
+	// 2. Submit task 1 - succeeds and occupies ResultCapacity slot
+	spec1 := tasks.WorkSpec{
+		ID:         "t-rej-1",
+		QuotaOwner: "u1",
+		Pool:       "general",
+		Handler: func(ctx context.Context) error {
+			<-blockCh
+			return nil
+		},
+	}
+	_, err = engine.Submit(context.Background(), spec1)
+	if err != nil {
+		t.Fatalf("submit spec1 failed: %v", err)
+	}
+
+	// 3. Submit task 2 - rejected due to ResultCapacity full
+	spec2 := tasks.WorkSpec{
+		ID:         "t-rej-2",
+		QuotaOwner: "u2",
+		Pool:       "general",
+		Handler:    func(ctx context.Context) error { return nil },
+	}
+	_, err = engine.Submit(context.Background(), spec2)
+	if err == nil {
+		t.Fatal("expected submit spec2 to be rejected")
+	}
+
+	// 4. Verify AdmissionRejections incremented to 1
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 1 {
+		t.Fatalf("AdmissionRejections = %d, want 1", stats.AdmissionRejections)
+	}
+
+	// 5. Submit task 3 - also rejected
+	spec3 := tasks.WorkSpec{
+		ID:         "t-rej-3",
+		QuotaOwner: "u3",
+		Pool:       "general",
+		Handler:    func(ctx context.Context) error { return nil },
+	}
+	_, err = engine.Submit(context.Background(), spec3)
+	if err == nil {
+		t.Fatal("expected submit spec3 to be rejected")
+	}
+
+	// 6. Verify AdmissionRejections incremented to 2
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 2 {
+		t.Fatalf("AdmissionRejections = %d, want 2", stats.AdmissionRejections)
+	}
+}
+
+func TestStats_AdmissionRejections_ExhaustivePaths(t *testing.T) {
+	engine := NewEngine(Config{
+		Pools: map[tasks.PoolID]PoolEngineConfig{
+			"general": {Concurrency: 2, BacklogLimit: 10},
+		},
+		ResultCapacity: 10,
+	})
+
+	// 1. Submit on unstarted engine -> rejected with ReasonEngineQuiescing
+	specUnstarted := tasks.WorkSpec{
+		ID:         "t-unstarted",
+		QuotaOwner: "u1",
+		Pool:       "general",
+		Handler:    func(ctx context.Context) error { return nil },
+	}
+	if _, err := engine.Submit(context.Background(), specUnstarted); err == nil {
+		t.Fatal("expected submit to fail on unstarted engine")
+	}
+
+	// 2. Start engine and verify initial count from step 1 is preserved
+	if err := engine.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = engine.Stop(context.Background()) }()
+
+	stats, err := engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 1 {
+		t.Fatalf("after unstarted submit, AdmissionRejections = %d, want 1", stats.AdmissionRejections)
+	}
+
+	// 3. WorkSpec validation error: empty ID
+	specInvalidID := tasks.WorkSpec{
+		ID:         "",
+		QuotaOwner: "u1",
+		Pool:       "general",
+		Handler:    func(ctx context.Context) error { return nil },
+	}
+	if _, err := engine.Submit(context.Background(), specInvalidID); err == nil {
+		t.Fatal("expected submit to fail with empty ID")
+	}
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 2 {
+		t.Fatalf("after invalid ID, AdmissionRejections = %d, want 2", stats.AdmissionRejections)
+	}
+
+	// 4. Unknown pool error
+	specInvalidPool := tasks.WorkSpec{
+		ID:         "t-unknown-pool",
+		QuotaOwner: "u1",
+		Pool:       "non-existent-pool",
+		Handler:    func(ctx context.Context) error { return nil },
+	}
+	if _, err := engine.Submit(context.Background(), specInvalidPool); err == nil {
+		t.Fatal("expected submit to fail with unknown pool")
+	}
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 3 {
+		t.Fatalf("after unknown pool, AdmissionRejections = %d, want 3", stats.AdmissionRejections)
+	}
+
+	// 5. Pre-cancelled caller context (verify no double counting)
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	specCancelled := tasks.WorkSpec{
+		ID:         "t-cancelled",
+		QuotaOwner: "u1",
+		Pool:       "general",
+		Handler:    func(ctx context.Context) error { return nil },
+	}
+	if _, err := engine.Submit(cancelledCtx, specCancelled); err == nil {
+		t.Fatal("expected submit to fail with cancelled context")
+	}
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 4 {
+		t.Fatalf("after cancelled context, AdmissionRejections = %d, want 4", stats.AdmissionRejections)
+	}
+
+	// 6. Successful submission must NOT increment AdmissionRejections
+	taskDone := make(chan struct{})
+	specValid := tasks.WorkSpec{
+		ID:         "t-valid",
+		QuotaOwner: "u1",
+		Pool:       "general",
+		Handler: func(ctx context.Context) error {
+			close(taskDone)
+			return nil
+		},
+	}
+	if _, err := engine.Submit(context.Background(), specValid); err != nil {
+		t.Fatalf("unexpected submit failure: %v", err)
+	}
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 4 {
+		t.Fatalf("successful submit must not increment AdmissionRejections, got %d, want 4", stats.AdmissionRejections)
+	}
+
+	// Wait for task to finish
+	select {
+	case <-taskDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task did not complete in time")
+	}
+
+	// 7. Duplicate Task ID rejection
+	if _, err := engine.Submit(context.Background(), specValid); err == nil {
+		t.Fatal("expected duplicate task ID submit to fail")
+	}
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 5 {
+		t.Fatalf("after duplicate ID, AdmissionRejections = %d, want 5", stats.AdmissionRejections)
+	}
+
+	// 8. Execution failure must NOT increment AdmissionRejections
+	taskFailDone := make(chan struct{})
+	specFailing := tasks.WorkSpec{
+		ID:         "t-failing-exec",
+		QuotaOwner: "u1",
+		Pool:       "general",
+		Handler: func(ctx context.Context) error {
+			defer close(taskFailDone)
+			return errors.New("handler execution failure")
+		},
+	}
+	if _, err := engine.Submit(context.Background(), specFailing); err != nil {
+		t.Fatalf("submit for failing handler should succeed, got: %v", err)
+	}
+	select {
+	case <-taskFailDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("failing task did not run in time")
+	}
+	stats, err = engine.Stats(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.AdmissionRejections != 5 {
+		t.Fatalf("execution failure must not increment AdmissionRejections, got %d, want 5", stats.AdmissionRejections)
 	}
 }

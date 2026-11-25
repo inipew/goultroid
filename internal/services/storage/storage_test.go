@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -375,5 +377,221 @@ func TestFileStorage_StorageHealthQuotaExceeded(t *testing.T) {
 	_, err = store.Put(context.Background(), bytes.NewReader([]byte("allowed after recovery")), storage.Metadata{Name: "allowed.bin"})
 	if err != nil {
 		t.Fatalf("Put after delete recovery failed: %v", err)
+	}
+}
+
+func TestFileStorage_Diagnostics(t *testing.T) {
+	tempDir := t.TempDir()
+	store, err := storage.NewFileStorage(tempDir, 1000)
+	if err != nil {
+		t.Fatalf("NewFileStorage failed: %v", err)
+	}
+
+	// 1. Initial diagnostics
+	diag := store.Diagnostics()
+	if diag.Backend != "file" {
+		t.Errorf("backend = %q, want file", diag.Backend)
+	}
+	if diag.Usage != 0 {
+		t.Errorf("initial usage = %d, want 0", diag.Usage)
+	}
+	if diag.MaxQuota != 1000 {
+		t.Errorf("max quota = %d, want 1000", diag.MaxQuota)
+	}
+	if diag.UtilizationPercent != 0.0 {
+		t.Errorf("initial utilization = %v, want 0.0", diag.UtilizationPercent)
+	}
+
+	// 2. Put asset and verify diagnostics update
+	payload := bytes.Repeat([]byte("X"), 200)
+	asset, err := store.Put(context.Background(), bytes.NewReader(payload), storage.Metadata{Name: "diag.bin"})
+	if err != nil {
+		t.Fatalf("Put failed: %v", err)
+	}
+
+	diagAfter := store.Diagnostics()
+	if diagAfter.Usage <= 200 {
+		t.Errorf("expected usage > 200 (payload + metadata), got %d", diagAfter.Usage)
+	}
+	if diagAfter.UtilizationPercent <= 20.0 || diagAfter.UtilizationPercent > 100.0 {
+		t.Errorf("unexpected utilization percent = %v", diagAfter.UtilizationPercent)
+	}
+
+	// 3. Nil receiver safety
+	var nilStore *storage.FileStorage
+	nilDiag := nilStore.Diagnostics()
+	if nilDiag.Backend != "nil" {
+		t.Errorf("nil backend = %q, want nil", nilDiag.Backend)
+	}
+
+	// 4. Clean up
+	_ = store.Delete(context.Background(), asset.ID)
+}
+
+func TestMemoryStorage_Diagnostics(t *testing.T) {
+	memStore := storage.NewMemoryStorage()
+
+	// 1. Initial usage must be 0
+	diag := memStore.Diagnostics()
+	if diag.Backend != "memory" {
+		t.Errorf("backend = %q, want memory", diag.Backend)
+	}
+	if diag.Usage != 0 {
+		t.Errorf("initial usage = %d, want 0", diag.Usage)
+	}
+	if memStore.Usage() != 0 {
+		t.Errorf("initial Usage() = %d, want 0", memStore.Usage())
+	}
+
+	// 2. Multiple Puts
+	p1 := []byte("payload-one-100-bytes-------------------------------------------------------------------------------")
+	p2 := []byte("payload-two-longer-content-for-testing-storage-usage-accounting")
+	p3 := []byte("small-payload")
+
+	a1, err := memStore.Put(context.Background(), bytes.NewReader(p1), storage.Metadata{Name: "one.bin"})
+	if err != nil {
+		t.Fatalf("Put a1 failed: %v", err)
+	}
+	if u := memStore.Diagnostics().Usage; u != int64(len(p1)) {
+		t.Fatalf("usage after a1 = %d, want %d", u, len(p1))
+	}
+
+	a2, err := memStore.Put(context.Background(), bytes.NewReader(p2), storage.Metadata{Name: "two.bin"})
+	if err != nil {
+		t.Fatalf("Put a2 failed: %v", err)
+	}
+	if u := memStore.Diagnostics().Usage; u != int64(len(p1)+len(p2)) {
+		t.Fatalf("usage after a2 = %d, want %d", u, len(p1)+len(p2))
+	}
+
+	a3, err := memStore.Put(context.Background(), bytes.NewReader(p3), storage.Metadata{Name: "three.bin"})
+	if err != nil {
+		t.Fatalf("Put a3 failed: %v", err)
+	}
+	expectedTotal := int64(len(p1) + len(p2) + len(p3))
+	if u := memStore.Diagnostics().Usage; u != expectedTotal {
+		t.Fatalf("usage after a3 = %d, want %d", u, expectedTotal)
+	}
+
+	// 3. Delete non-existent ID does not affect usage
+	_ = memStore.Delete(context.Background(), "non-existent-id")
+	if u := memStore.Diagnostics().Usage; u != expectedTotal {
+		t.Fatalf("usage after non-existent delete = %d, want %d", u, expectedTotal)
+	}
+
+	// 4. Delete sequential and observe exact accounting
+	if err := memStore.Delete(context.Background(), a1.ID); err != nil {
+		t.Fatalf("Delete a1 failed: %v", err)
+	}
+	expectedAfterA1 := int64(len(p2) + len(p3))
+	if u := memStore.Diagnostics().Usage; u != expectedAfterA1 {
+		t.Fatalf("usage after deleting a1 = %d, want %d", u, expectedAfterA1)
+	}
+
+	if err := memStore.Delete(context.Background(), a2.ID); err != nil {
+		t.Fatalf("Delete a2 failed: %v", err)
+	}
+	expectedAfterA2 := int64(len(p3))
+	if u := memStore.Diagnostics().Usage; u != expectedAfterA2 {
+		t.Fatalf("usage after deleting a2 = %d, want %d", u, expectedAfterA2)
+	}
+
+	if err := memStore.Delete(context.Background(), a3.ID); err != nil {
+		t.Fatalf("Delete a3 failed: %v", err)
+	}
+	if u := memStore.Diagnostics().Usage; u != 0 {
+		t.Fatalf("usage after deleting all = %d, want 0", u)
+	}
+
+	// 5. Nil receiver safety
+	var nilMem *storage.MemoryStorage
+	nilDiag := nilMem.Diagnostics()
+	if nilDiag.Backend != "nil" {
+		t.Errorf("nil backend = %q, want nil", nilDiag.Backend)
+	}
+	if nilMem.Usage() != 0 {
+		t.Errorf("nil Usage() = %d, want 0", nilMem.Usage())
+	}
+}
+
+func TestMemoryStorage_ConcurrentPutDeleteDiagnostics(t *testing.T) {
+	memStore := storage.NewMemoryStorage()
+	var wg sync.WaitGroup
+	startCh := make(chan struct{})
+
+	const workers = 8
+	const opsPerWorker = 30
+
+	var createdIDs sync.Map
+
+	// Writers doing Put
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			<-startCh
+			for i := 0; i < opsPerWorker; i++ {
+				data := []byte(fmt.Sprintf("worker-%d-op-%d-data", workerID, i))
+				asset, err := memStore.Put(context.Background(), bytes.NewReader(data), storage.Metadata{
+					Name: fmt.Sprintf("w%d_op%d.bin", workerID, i),
+				})
+				if err == nil && asset != nil {
+					createdIDs.Store(asset.ID, int64(len(data)))
+				}
+			}
+		}(w)
+	}
+
+	// Readers calling Diagnostics and Usage concurrently
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-startCh
+			for i := 0; i < opsPerWorker*2; i++ {
+				d := memStore.Diagnostics()
+				if d.Backend != "memory" {
+					t.Errorf("unexpected backend: %s", d.Backend)
+				}
+				if d.Usage < 0 {
+					t.Errorf("usage should never be negative: %d", d.Usage)
+				}
+			}
+		}()
+	}
+
+	close(startCh)
+	wg.Wait()
+
+	// Verify total usage matches sum of remaining assets
+	finalDiag := memStore.Diagnostics()
+	if finalDiag.Usage <= 0 {
+		t.Fatalf("expected positive usage after concurrent puts, got %d", finalDiag.Usage)
+	}
+
+	// Now delete all created IDs concurrently
+	var deleteWg sync.WaitGroup
+	deleteStart := make(chan struct{})
+
+	for w := 0; w < workers; w++ {
+		deleteWg.Add(1)
+		go func() {
+			defer deleteWg.Done()
+			<-deleteStart
+			createdIDs.Range(func(key, value any) bool {
+				id := key.(string)
+				if createdIDs.CompareAndDelete(id, value) {
+					_ = memStore.Delete(context.Background(), id)
+				}
+				return true
+			})
+		}()
+	}
+
+	close(deleteStart)
+	deleteWg.Wait()
+
+	if u := memStore.Usage(); u != 0 {
+		t.Fatalf("final usage after deleting all = %d, want 0", u)
 	}
 }

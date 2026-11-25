@@ -126,31 +126,33 @@ type engineReply struct {
 }
 
 type engineStats struct {
-	resultSlotsHeld int
-	resultCapacity  int
-	activeTasks     int
-	accepting       bool
-	quiesced        bool
-	retainedBytes   int64
-	retainedCap     int64
-	terminalCount   int
-	commitPending   int
-	deliveryQueued  int
-	deliveryCap     int
-	deliveryFailed  int64
-	durabilityQueue int
-	durabilityCap   int
-	durabilityFail  int64
-	scopeTombstones int
-	pools           map[tasks.PoolID]PoolRuntimeStats
-	resources       map[string]ResourceRuntimeStats
+	admissionRejections int64
+	resultSlotsHeld     int
+	resultCapacity      int
+	activeTasks         int
+	accepting           bool
+	quiesced            bool
+	retainedBytes       int64
+	retainedCap         int64
+	terminalCount       int
+	commitPending       int
+	deliveryQueued      int
+	deliveryCap         int
+	deliveryFailed      int64
+	durabilityQueue     int
+	durabilityCap       int
+	durabilityFail      int64
+	scopeTombstones     int
+	pools               map[tasks.PoolID]PoolRuntimeStats
+	resources           map[string]ResourceRuntimeStats
 }
 
 type PoolRuntimeStats struct {
-	Workers      int
-	MinWorkers   int
-	MaxWorkers   int
-	Idle         int
+	Workers    int
+	MinWorkers int
+	MaxWorkers int
+	Idle       int
+	// IdleWorkers is deprecated and mirrors Idle for backward compatibility. Use Idle instead.
 	IdleWorkers  int
 	Running      int
 	Dispatching  int
@@ -170,26 +172,37 @@ type LaneRuntimeStats struct {
 
 // RuntimeStats is a bounded-cardinality snapshot of execution coordination.
 type RuntimeStats struct {
-	Accepting       bool
-	Quiesced        bool
-	ResultSlotsHeld int
-	ResultCapacity  int
-	ActiveTasks     int
-	RetainedBytes   int64
-	RetainedCap     int64
-	TerminalCount   int
-	CommitPending   int
-	DeliveryQueued  int
-	DeliveryCap     int
-	DeliveryFailed  int64
-	DurabilityQueue int
-	DurabilityCap   int
-	DurabilityFail  int64
-	DeliveryLane    LaneRuntimeStats
-	DurabilityLane  LaneRuntimeStats
-	ScopeTombstones int
-	Pools           map[tasks.PoolID]PoolRuntimeStats
-	Resources       map[string]ResourceRuntimeStats
+	Accepting bool
+	Quiesced  bool
+	// AdmissionRejections counts the cumulative number of task submissions rejected
+	// at the admission boundary before work is admitted, queued, or dispatched.
+	// This covers:
+	//   - Engine not accepting work (unstarted, stopping, or quiesced)
+	//   - Context cancellation or timeout prior to admission linearization
+	//   - WorkSpec validation errors (missing ID, unknown pool, invalid priority)
+	//   - Duplicate task ID registrations
+	//   - Resource gate or queue capacity saturation (e.g. result slot exhaustion)
+	// Completed or running task failures, panics, and cancellations of already-admitted
+	// tasks do NOT increment this counter.
+	AdmissionRejections int64
+	ResultSlotsHeld     int
+	ResultCapacity      int
+	ActiveTasks         int
+	RetainedBytes       int64
+	RetainedCap         int64
+	TerminalCount       int
+	CommitPending       int
+	DeliveryQueued      int
+	DeliveryCap         int
+	DeliveryFailed      int64
+	DurabilityQueue     int
+	DurabilityCap       int
+	DurabilityFail      int64
+	DeliveryLane        LaneRuntimeStats
+	DurabilityLane      LaneRuntimeStats
+	ScopeTombstones     int
+	Pools               map[tasks.PoolID]PoolRuntimeStats
+	Resources           map[string]ResourceRuntimeStats
 }
 
 // Engine coordinates admission, fairness, physical worker permits, result credits, and lifecycles.
@@ -261,7 +274,8 @@ type Engine struct {
 	drainDone   chan struct{}
 	runStarted  bool
 
-	runtimeRemaining atomic.Int64
-	runtimeDone      chan struct{}
-	runtimeDoneOnce  sync.Once
+	admissionRejections atomic.Int64
+	runtimeRemaining    atomic.Int64
+	runtimeDone         chan struct{}
+	runtimeDoneOnce     sync.Once
 }

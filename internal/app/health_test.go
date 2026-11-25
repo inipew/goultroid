@@ -135,11 +135,12 @@ type testHealthComp struct {
 	deps       []string
 	isCritical bool
 	health     runtime.ComponentHealth
+	startErr   error
 }
 
 func (c *testHealthComp) Name() string                                   { return c.name }
 func (c *testHealthComp) Dependencies() []string                         { return c.deps }
-func (c *testHealthComp) Start(context.Context) error                    { return nil }
+func (c *testHealthComp) Start(context.Context) error                    { return c.startErr }
 func (c *testHealthComp) Stop(context.Context) error                     { return nil }
 func (c *testHealthComp) Health(context.Context) runtime.ComponentHealth { return c.health }
 func (c *testHealthComp) IsCritical() bool                               { return c.isCritical }

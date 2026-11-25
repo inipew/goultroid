@@ -138,6 +138,7 @@ type AttemptSummary struct {
 // It intentionally contains bounded aggregate values rather than occurrence IDs
 // so application diagnostics cannot grow with workload cardinality.
 type DurableDiagnostics struct {
+	ReadyOccurrences    int
 	DeferredOccurrences int
 	BlockedOccurrences  int
 	RetainedDeferrals   int

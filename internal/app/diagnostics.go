@@ -13,7 +13,9 @@ import (
 	"github.com/inipew/goultroid/internal/services/inline"
 	"github.com/inipew/goultroid/internal/services/media"
 	processSvc "github.com/inipew/goultroid/internal/services/process"
+	"github.com/inipew/goultroid/internal/services/storage"
 	"github.com/inipew/goultroid/internal/taskengine"
+	"github.com/inipew/goultroid/internal/tasks"
 	"github.com/inipew/goultroid/internal/telegram"
 )
 
@@ -33,9 +35,9 @@ type DiagnosticsSnapshot struct {
 	Plugins              []PluginDiagnostics
 	Media                media.DiagnosticsSnapshot
 	Process              processSvc.DiagnosticsSnapshot
+	Storage              storage.Diagnostics
 	Jobs                 jobs.Diagnostics
 	Scheduler            scheduler.Diagnostics
-	PersistencePanics    uint64
 	PersistencePump      jobs.PersistencePumpStats
 	LifecycleCallbacks   runtime.CallbackExecutorStats
 	TaskEngine           taskengine.RuntimeStats
@@ -45,12 +47,23 @@ type DiagnosticsSnapshot struct {
 	ResolverCacheCount   int
 	PeerStorageCache     telegram.PeerStorageCacheStats
 	Workers              []runtime.WorkerSnapshot
+	RuntimeComponents    []runtime.ComponentSnapshot
+	StartupFailures      []runtime.StartupFailureSnapshot
 	LastShutdownReport   runtime.ShutdownReport
 }
 
+// ResourceOwnerDiagnostics describes active resource consumption for a single owner.
+type ResourceOwnerDiagnostics struct {
+	Owner        string         `json:"owner"`
+	TotalActive  int            `json:"total_active"`
+	CountsByType map[string]int `json:"counts_by_type,omitempty"`
+	Leaked       int            `json:"leaked,omitempty"`
+}
+
 type ResourceDiagnostics struct {
-	TotalActive int
-	Leaked      int
+	TotalActive int                        `json:"total_active"`
+	Leaked      int                        `json:"leaked"`
+	ByOwner     []ResourceOwnerDiagnostics `json:"by_owner,omitempty"`
 }
 
 type DBDiagnostics struct {
@@ -100,8 +113,13 @@ type PluginDiagnostics struct {
 // subsystems. It is safe to call while the application is running or stopping.
 func (a *App) Diagnostics() DiagnosticsSnapshot {
 	snapshot := DiagnosticsSnapshot{Lifecycle: a.LifecycleState(), ProcessMemory: processMemoryDiagnostics()}
-	if !a.startTime.IsZero() {
-		snapshot.Uptime = time.Since(a.startTime)
+	if a.runtime != nil {
+		snapshot.Uptime = a.runtime.Uptime()
+	} else if a.state() == lifecycleRunning && !a.startTime.IsZero() {
+		d := time.Since(a.startTime)
+		if d > 0 {
+			snapshot.Uptime = d
+		}
 	}
 	if a.eventBus != nil {
 		stats := a.eventBus.Stats()
@@ -141,8 +159,21 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 		for _, p := range a.plugins.Plugins() {
 			entry := PluginDiagnostics{Name: p.Name()}
 			if scope, ok := a.plugins.Scope(p.Name()); ok && scope != nil {
-				entry.Resources = scope.Resources()
-				sort.Slice(entry.Resources, func(i, j int) bool { return entry.Resources[i].ID < entry.Resources[j].ID })
+				resList := scope.Resources()
+				copiedRes := make([]plugin.Resource, len(resList))
+				for i, res := range resList {
+					var metaCopy map[string]string
+					if len(res.Metadata) > 0 {
+						metaCopy = make(map[string]string, len(res.Metadata))
+						for mk, mv := range res.Metadata {
+							metaCopy[mk] = mv
+						}
+					}
+					res.Metadata = metaCopy
+					copiedRes[i] = res
+				}
+				sort.Slice(copiedRes, func(i, j int) bool { return copiedRes[i].ID < copiedRes[j].ID })
+				entry.Resources = copiedRes
 			}
 			snapshot.Plugins = append(snapshot.Plugins, entry)
 		}
@@ -152,9 +183,26 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 		snapshot.Inline = a.inlineEngine.RuntimeStats()
 	}
 	if a.resources != nil {
-		for _, owner := range a.resources.AllSnapshots() {
+		owners := a.resources.AllSnapshots()
+		sort.Slice(owners, func(i, j int) bool { return owners[i].Owner < owners[j].Owner })
+		snapshot.Resources.ByOwner = make([]ResourceOwnerDiagnostics, 0, len(owners))
+		for _, owner := range owners {
 			snapshot.Resources.TotalActive += owner.TotalActive
 			snapshot.Resources.Leaked += owner.Leaked
+
+			var countsCopy map[string]int
+			if len(owner.CountsByType) > 0 {
+				countsCopy = make(map[string]int, len(owner.CountsByType))
+				for k, v := range owner.CountsByType {
+					countsCopy[k] = v
+				}
+			}
+			snapshot.Resources.ByOwner = append(snapshot.Resources.ByOwner, ResourceOwnerDiagnostics{
+				Owner:        owner.Owner,
+				TotalActive:  owner.TotalActive,
+				CountsByType: countsCopy,
+				Leaked:       owner.Leaked,
+			})
 		}
 	}
 	if a.media != nil {
@@ -163,16 +211,40 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 	if a.processRunner != nil {
 		snapshot.Process = a.processRunner.Diagnostics()
 	}
+	var store storage.Storage = a.storage
+	if store == nil && a.media != nil {
+		store = a.media.Storage()
+	}
+	if dp, ok := store.(storage.DiagnosticsProvider); ok {
+		snapshot.Storage = dp.Diagnostics()
+	}
 	if a.jobs != nil {
 		snapshot.Jobs = a.jobs.Diagnostics()
 	}
 	if a.persistencePump != nil {
-		snapshot.PersistencePanics = a.persistencePump.Panics()
 		snapshot.PersistencePump = a.persistencePump.Stats()
 	}
 	if a.taskEngine != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		if stats, err := a.taskEngine.Stats(ctx); err == nil {
+			var poolsCopy map[tasks.PoolID]taskengine.PoolRuntimeStats
+			if len(stats.Pools) > 0 {
+				poolsCopy = make(map[tasks.PoolID]taskengine.PoolRuntimeStats, len(stats.Pools))
+				for k, v := range stats.Pools {
+					poolsCopy[k] = v
+				}
+			}
+			stats.Pools = poolsCopy
+
+			var resCopy map[string]taskengine.ResourceRuntimeStats
+			if len(stats.Resources) > 0 {
+				resCopy = make(map[string]taskengine.ResourceRuntimeStats, len(stats.Resources))
+				for k, v := range stats.Resources {
+					resCopy[k] = v
+				}
+			}
+			stats.Resources = resCopy
+
 			snapshot.TaskEngine = stats
 			snapshot.TaskEngineSnapshotOK = true
 			if interactivePool, ok := stats.Pools["interactive"]; ok && interactivePool.MaxWorkers > 0 {
@@ -204,6 +276,9 @@ func (a *App) Diagnostics() DiagnosticsSnapshot {
 	}
 	if a.runtime != nil {
 		snapshot.LastShutdownReport = a.runtime.LastShutdownReport()
+		rtDiag := a.runtime.Diagnostics()
+		snapshot.RuntimeComponents = rtDiag.Components
+		snapshot.StartupFailures = rtDiag.StartupFailures
 	}
 	return snapshot
 }

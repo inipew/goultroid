@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/inipew/goultroid/internal/core"
@@ -18,6 +19,7 @@ type memItem struct {
 
 type MemoryStorage struct {
 	items map[string]*memItem
+	usage atomic.Int64
 	mu    sync.RWMutex
 }
 
@@ -28,6 +30,29 @@ func NewMemoryStorage() *MemoryStorage {
 }
 
 func (m *MemoryStorage) BasePath() string { return "memory://" }
+
+// Diagnostics returns an in-memory snapshot of memory storage consumption in O(1) without acquiring locks.
+func (m *MemoryStorage) Diagnostics() Diagnostics {
+	if m == nil {
+		return Diagnostics{Backend: "nil"}
+	}
+	return Diagnostics{
+		Backend: "memory",
+		Usage:   m.Usage(),
+	}
+}
+
+// Usage returns the current total stored bytes in memory in O(1) without acquiring locks.
+func (m *MemoryStorage) Usage() int64 {
+	if m == nil {
+		return 0
+	}
+	u := m.usage.Load()
+	if u < 0 {
+		return 0
+	}
+	return u
+}
 
 // StorageHealth reports the in-memory health state of the storage owner without blocking I/O.
 func (m *MemoryStorage) StorageHealth() (string, string) {
@@ -66,7 +91,11 @@ func (m *MemoryStorage) Put(ctx context.Context, src io.Reader, meta Metadata) (
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if old, exists := m.items[id]; exists && old != nil {
+		m.usage.Add(-int64(len(old.data)))
+	}
 	m.items[id] = &memItem{asset: asset, data: data}
+	m.usage.Add(int64(len(data)))
 	res := asset
 	return &res, nil
 }
@@ -90,10 +119,14 @@ func (m *MemoryStorage) Delete(ctx context.Context, id string) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.items[id]; !exists {
+	item, exists := m.items[id]
+	if !exists {
 		return ErrNotFound
 	}
 	delete(m.items, id)
+	if item != nil {
+		m.usage.Add(-int64(len(item.data)))
+	}
 	return nil
 }
 

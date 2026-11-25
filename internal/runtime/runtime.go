@@ -60,6 +60,7 @@ type Runtime struct {
 	stopErr      error
 	stopTimeout  time.Duration
 	startTime    time.Time
+	stopTime     time.Time
 	lastShutdown ShutdownReport
 }
 
@@ -87,21 +88,55 @@ func (r *Runtime) State() State {
 	return r.stateMachine.Current()
 }
 
-// Uptime returns the duration since the runtime reached StateRunning.
+// Uptime returns the elapsed runtime since entering StateRunning until shutdown finishes.
+// It returns 0 if the runtime has not entered StateRunning.
+// During StateRunning and StateStopping, it returns the active duration since startTime.
+// For stopped or failed runtimes that previously ran, it returns the frozen
+// duration from start until stop.
 func (r *Runtime) Uptime() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.startTime.IsZero() {
 		return 0
 	}
-	return time.Since(r.startTime)
+	switch r.stateMachine.Current() {
+	case StateCreated, StateInitializing, StateStarting:
+		return 0
+	case StateRunning, StateStopping:
+		d := time.Since(r.startTime)
+		if d < 0 {
+			return 0
+		}
+		return d
+	case StateStopped, StateFailed:
+		var end time.Time
+		if !r.stopTime.IsZero() {
+			end = r.stopTime
+		} else {
+			end = time.Now()
+		}
+		d := end.Sub(r.startTime)
+		if d < 0 {
+			return 0
+		}
+		return d
+	default:
+		return 0
+	}
 }
 
-// LastShutdownReport returns the metrics and phase breakdown from the most recent shutdown.
+// LastShutdownReport returns a defensive copy of metrics and phase breakdown from the most recent shutdown.
 func (r *Runtime) LastShutdownReport() ShutdownReport {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.lastShutdown
+	rep := r.lastShutdown
+	if len(r.lastShutdown.Phases) > 0 {
+		rep.Phases = append([]ShutdownPhaseReport(nil), r.lastShutdown.Phases...)
+	}
+	if len(r.lastShutdown.Errors) > 0 {
+		rep.Errors = append([]error(nil), r.lastShutdown.Errors...)
+	}
+	return rep
 }
 
 // Register registers a component with the runtime. Components must be registered
@@ -154,10 +189,13 @@ func (r *Runtime) Start(ctx context.Context) error {
 		r.mu.Unlock()
 		return fmt.Errorf("runtime state transition failed: %w", err)
 	}
+	r.startedComps = nil
+	r.failedComps = make(map[string]error)
+	r.startTime = time.Time{}
+	r.stopTime = time.Time{}
 	r.mu.Unlock()
 
 	var started []Component
-	failed := make(map[string]error)
 	for _, comp := range order {
 		if err := ctx.Err(); err != nil {
 			return r.failStartAndRollback(fmt.Errorf("runtime startup cancelled: %w", err), started)
@@ -177,12 +215,18 @@ func (r *Runtime) Start(ctx context.Context) error {
 				isCritical = cc.IsCritical()
 			}
 
+			r.mu.Lock()
+			r.failedComps[comp.Name()] = err
+			r.mu.Unlock()
+
 			if isCritical {
 				return r.failStartAndRollback(fmt.Errorf("component %q failed to start: %w", comp.Name(), err), started)
 			}
-			failed[comp.Name()] = err
 		} else {
 			started = append(started, comp)
+			r.mu.Lock()
+			r.startedComps = append(r.startedComps, comp)
+			r.mu.Unlock()
 		}
 	}
 
@@ -195,8 +239,6 @@ func (r *Runtime) Start(ctx context.Context) error {
 		r.mu.Unlock()
 		return r.failStartAndRollback(fmt.Errorf("runtime startup cancelled: %w", err), started)
 	}
-	r.startedComps = append([]Component(nil), started...)
-	r.failedComps = failed
 	if err := r.stateMachine.Transition(StateRunning); err != nil {
 		r.stateMachine.SetFailed()
 		r.mu.Unlock()
@@ -222,7 +264,131 @@ func (r *Runtime) StartupFailures() map[string]error {
 	return res
 }
 
+// ComponentSnapshot describes the state of a registered component in Runtime diagnostics.
+type ComponentSnapshot struct {
+	Name     string `json:"name"`
+	Critical bool   `json:"critical"`
+	State    string `json:"state"`            // "starting", "running", "failed", "registered", "stopping", "stopped"
+	Status   string `json:"status,omitempty"` // "healthy", "degraded", "failed"
+	Error    string `json:"error,omitempty"`
+}
+
+// StartupFailureSnapshot describes an optional component that failed to start.
+type StartupFailureSnapshot struct {
+	Name  string `json:"name"`
+	Error string `json:"error,omitempty"`
+}
+
+// RuntimeDiagnostics captures a bounded, point-in-time view of runtime components and startup failures.
+type RuntimeDiagnostics struct {
+	State           State                    `json:"state"`
+	Components      []ComponentSnapshot      `json:"components"`
+	StartupFailures []StartupFailureSnapshot `json:"startup_failures,omitempty"`
+}
+
+// Diagnostics returns a thread-safe, bounded snapshot of runtime component states
+// and startup failures without performing blocking I/O.
+func (r *Runtime) Diagnostics() RuntimeDiagnostics {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	currentState := r.stateMachine.Current()
+
+	// 1. Startup failures (sanitized and bounded)
+	var startupFailures []StartupFailureSnapshot
+	if len(r.failedComps) > 0 {
+		startupFailures = make([]StartupFailureSnapshot, 0, len(r.failedComps))
+		for name, err := range r.failedComps {
+			var errStr string
+			if err != nil {
+				errStr = SanitizeDiagnosticError(err.Error())
+			}
+			startupFailures = append(startupFailures, StartupFailureSnapshot{
+				Name:  name,
+				Error: errStr,
+			})
+		}
+		sort.Slice(startupFailures, func(i, j int) bool {
+			return startupFailures[i].Name < startupFailures[j].Name
+		})
+	}
+
+	// 2. Components
+	var components []ComponentSnapshot
+	if r.graph != nil && len(r.graph.components) > 0 {
+		components = make([]ComponentSnapshot, 0, len(r.graph.components))
+
+		startedMap := make(map[string]bool, len(r.startedComps))
+		for _, c := range r.startedComps {
+			startedMap[c.Name()] = true
+		}
+
+		for name, c := range r.graph.components {
+			isCritical := true
+			if cc, ok := c.(CriticalComponent); ok {
+				isCritical = cc.IsCritical()
+			}
+
+			state := "registered"
+			status := ""
+			var errStr string
+			if err, failed := r.failedComps[name]; failed {
+				state = "failed"
+				if isCritical {
+					status = "failed"
+				} else {
+					status = "degraded"
+				}
+				if err != nil {
+					errStr = SanitizeDiagnosticError(err.Error())
+				}
+			} else if startedMap[name] {
+				switch currentState {
+				case StateInitializing, StateStarting:
+					state = "starting"
+					status = "healthy"
+				case StateRunning:
+					state = "running"
+					status = "healthy"
+				case StateStopping:
+					state = "stopping"
+					status = "healthy"
+				case StateStopped:
+					state = "stopped"
+					status = "healthy"
+				case StateFailed:
+					state = "failed"
+					status = "failed"
+				default:
+					state = "starting"
+					status = "healthy"
+				}
+			}
+
+			components = append(components, ComponentSnapshot{
+				Name:     name,
+				Critical: isCritical,
+				State:    state,
+				Status:   status,
+				Error:    errStr,
+			})
+		}
+		sort.Slice(components, func(i, j int) bool {
+			return components[i].Name < components[j].Name
+		})
+	}
+
+	return RuntimeDiagnostics{
+		State:           currentState,
+		Components:      components,
+		StartupFailures: startupFailures,
+	}
+}
+
 func (r *Runtime) failStartAndRollback(startErr error, started []Component) error {
+	r.mu.Lock()
+	r.stopTime = time.Now()
+	r.mu.Unlock()
 	r.stateMachine.SetFailed()
 	rollbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	rollbackErrs := r.graph.Rollback(rollbackCtx, started)
@@ -423,6 +589,7 @@ func (r *Runtime) performStop(ctx context.Context) error {
 	report.TotalDuration = time.Since(stopStart)
 	report.Errors = append([]error(nil), stopErrs...)
 	r.mu.Lock()
+	r.stopTime = time.Now()
 	r.lastShutdown = report
 	r.mu.Unlock()
 

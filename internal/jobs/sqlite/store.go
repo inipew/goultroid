@@ -1342,13 +1342,16 @@ func (s *Store) EarliestScheduleDue(ctx context.Context) (time.Time, bool, error
 func (s *Store) DurableDiagnostics(ctx context.Context, now time.Time) (jobs.DurableDiagnostics, error) {
 	var snapshot jobs.DurableDiagnostics
 	var rawEarliest any
+	nowUTC := now.UTC()
 	err := s.db.QueryRowContext(ctx, `
 		SELECT
+			(SELECT COUNT(*) FROM job_occurrences WHERE state = 'dispatched' AND ready_at <= ?),
 			(SELECT COUNT(*) FROM job_occurrences WHERE state = 'dispatched' AND ready_at > ?),
 			(SELECT COUNT(*) FROM job_attempts WHERE state = 'deferred'),
 			(SELECT COUNT(*) FROM job_occurrences WHERE state = 'blocked'),
 			(SELECT MIN(ready_at) FROM job_occurrences WHERE state = 'dispatched' AND ready_at > ?)
-	`, now.UTC(), now.UTC()).Scan(
+	`, nowUTC, nowUTC, nowUTC).Scan(
+		&snapshot.ReadyOccurrences,
 		&snapshot.DeferredOccurrences,
 		&snapshot.RetainedDeferrals,
 		&snapshot.BlockedOccurrences,
