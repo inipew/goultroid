@@ -3,9 +3,9 @@ package taskengine
 import "github.com/inipew/goultroid/internal/tasks"
 
 // snapshotPoolRuntimeStats builds one internally-consistent pool snapshot from
-// state owned by the TaskEngine run loop. Waiting is sourced from admission,
-// while Running/Dispatching are sourced from the task registry so those states
-// reflect the task lifecycle rather than physical worker liveness.
+// state owned by the TaskEngine run loop in O(|pools|). Waiting is sourced
+// from admission, while Running/Dispatching are maintained incrementally on
+// task state transitions so diagnostic polling never scans retained records.
 func (e *Engine) snapshotPoolRuntimeStats() map[tasks.PoolID]PoolRuntimeStats {
 	pools := make(map[tasks.PoolID]PoolRuntimeStats, len(e.poolConcurrencies))
 	for pool, maximum := range e.poolConcurrencies {
@@ -18,28 +18,11 @@ func (e *Engine) snapshotPoolRuntimeStats() map[tasks.PoolID]PoolRuntimeStats {
 			MaxWorkers:   maximum,
 			Idle:         idle,
 			IdleWorkers:  idle,
+			Running:      e.poolRunning[pool],
+			Dispatching:  e.poolDispatching[pool],
 			Waiting:      waiting,
 			WaitingBytes: waitingBytes,
 		}
-	}
-
-	for _, rec := range e.registry {
-		if rec == nil {
-			continue
-		}
-		stats, ok := pools[rec.spec.Pool]
-		if !ok {
-			continue
-		}
-		switch rec.state {
-		case tasks.StateRunning:
-			stats.Running++
-		case tasks.StateDispatching:
-			stats.Dispatching++
-		default:
-			continue
-		}
-		pools[rec.spec.Pool] = stats
 	}
 	return pools
 }

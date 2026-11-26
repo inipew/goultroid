@@ -18,7 +18,7 @@ func (e *Engine) sweepExpired(pool tasks.PoolID, now time.Time) {
 		if !ok || rec.state != tasks.StateQueued {
 			continue
 		}
-		rec.state = tasks.StateTimedOut
+		e.setTaskState(rec, tasks.StateTimedOut)
 		rec.finishedAt = now
 		rec.errorMsg = "queue deadline expired before execution"
 		rec.result = tasks.TaskResult{TaskID: entry.Spec.ID, Outcome: tasks.OutcomeTimedOut, Cause: tasks.CauseQueueExpired, Disposition: execution.DispositionRetryable, FinishedAt: now, Failure: tasks.FailureInfo{Code: "queue_expired", Message: rec.errorMsg}}
@@ -56,7 +56,7 @@ func (e *Engine) tryDispatch(pool tasks.PoolID) {
 		permit := newPermit(pool, rec.spec.ID, e.dispatchEpoch, nil)
 		rec.permit = permit
 		rec.dispatchEpoch = e.dispatchEpoch
-		rec.state = tasks.StateDispatching
+		e.setTaskState(rec, tasks.StateDispatching)
 		e.reserveResources(rec.spec)
 
 		taskCtx, cancel := context.WithCancel(e.rootCtx)
@@ -298,7 +298,7 @@ func (e *Engine) applyWorkerStarted(id tasks.TaskID, grant *permit, startedAt ti
 	if grant.dispatchEpoch != rec.dispatchEpoch {
 		return
 	}
-	rec.state = tasks.StateRunning
+	e.setTaskState(rec, tasks.StateRunning)
 	rec.startedAt = startedAt
 }
 

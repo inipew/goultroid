@@ -176,7 +176,7 @@ func (e *Engine) admitSubmit(loopCtx context.Context, callerCtx context.Context,
 	e.resultSlotsHeld++
 	e.retainedBytes += retainedCharge
 	e.syncActiveTasks(1)
-	rec.state = tasks.StateQueued
+	e.setTaskState(rec, tasks.StateQueued)
 	e.adm.Enqueue(&admission.QueueEntry{Spec: spec, EnqueuedAt: now, PayloadSize: admissionBytes})
 	e.tryDispatch(spec.Pool)
 	return ticket, nil

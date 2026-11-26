@@ -18,14 +18,12 @@ func TestSnapshotPoolRuntimeStatsSeparatesLifecycleStates(t *testing.T) {
 
 	engine.workerRunning["diag"] = []bool{true, true, true}
 	engine.idleSlots["diag"] = []int{2}
-	engine.registry["running"] = &taskRecord{
-		spec:  tasks.WorkSpec{ID: "running", Pool: "diag"},
-		state: tasks.StateRunning,
-	}
-	engine.registry["dispatching"] = &taskRecord{
-		spec:  tasks.WorkSpec{ID: "dispatching", Pool: "diag"},
-		state: tasks.StateDispatching,
-	}
+	runningRec := &taskRecord{spec: tasks.WorkSpec{ID: "running", Pool: "diag"}}
+	engine.setTaskState(runningRec, tasks.StateRunning)
+	engine.registry["running"] = runningRec
+	dispatchingRec := &taskRecord{spec: tasks.WorkSpec{ID: "dispatching", Pool: "diag"}}
+	engine.setTaskState(dispatchingRec, tasks.StateDispatching)
+	engine.registry["dispatching"] = dispatchingRec
 	engine.adm.Enqueue(&admission.QueueEntry{
 		Spec:        tasks.WorkSpec{ID: "waiting", Pool: "diag", QuotaOwner: "owner", Class: tasks.PriorityNormal},
 		EnqueuedAt:  time.Now(),
@@ -45,6 +43,61 @@ func TestSnapshotPoolRuntimeStatsSeparatesLifecycleStates(t *testing.T) {
 	if stats.WaitingBytes != 17 {
 		t.Fatalf("WaitingBytes=%d, want 17", stats.WaitingBytes)
 	}
+}
+
+func TestPoolRuntimeCountersMatchRegistryAcrossTransitions(t *testing.T) {
+	engine := NewEngine(Config{Pools: map[tasks.PoolID]PoolEngineConfig{
+		"p1": {Concurrency: 4, BacklogLimit: 10},
+		"p2": {Concurrency: 2, BacklogLimit: 10},
+	}, ResultCapacity: 10})
+
+	assertMatchesRegistry := func(step string) {
+		t.Helper()
+		wantRunning := make(map[tasks.PoolID]int)
+		wantDispatching := make(map[tasks.PoolID]int)
+		for _, rec := range engine.registry {
+			switch rec.state {
+			case tasks.StateRunning:
+				wantRunning[rec.spec.Pool]++
+			case tasks.StateDispatching:
+				wantDispatching[rec.spec.Pool]++
+			}
+		}
+		got := engine.snapshotPoolRuntimeStats()
+		for _, pool := range []tasks.PoolID{"p1", "p2"} {
+			if got[pool].Running != wantRunning[pool] || got[pool].Dispatching != wantDispatching[pool] {
+				t.Fatalf("%s pool=%s: got running=%d dispatching=%d, want running=%d dispatching=%d",
+					step, pool, got[pool].Running, got[pool].Dispatching, wantRunning[pool], wantDispatching[pool])
+			}
+		}
+	}
+
+	r1 := &taskRecord{spec: tasks.WorkSpec{ID: "t1", Pool: "p1"}}
+	r2 := &taskRecord{spec: tasks.WorkSpec{ID: "t2", Pool: "p1"}}
+	r3 := &taskRecord{spec: tasks.WorkSpec{ID: "t3", Pool: "p2"}}
+	engine.registry["t1"], engine.registry["t2"], engine.registry["t3"] = r1, r2, r3
+
+	engine.setTaskState(r1, tasks.StateQueued)
+	engine.setTaskState(r2, tasks.StateDispatching)
+	engine.setTaskState(r3, tasks.StateDispatching)
+	assertMatchesRegistry("initial_dispatching")
+
+	// Idempotent transition must not double increment.
+	engine.setTaskState(r2, tasks.StateDispatching)
+	assertMatchesRegistry("idempotent_dispatching")
+
+	engine.setTaskState(r2, tasks.StateRunning)
+	engine.setTaskState(r3, tasks.StateCommitPending)
+	assertMatchesRegistry("running_and_commit_pending")
+
+	// Idempotent running transition must not double increment.
+	engine.setTaskState(r2, tasks.StateRunning)
+	assertMatchesRegistry("idempotent_running")
+
+	engine.setTaskState(r2, tasks.StateCompleted)
+	engine.setTaskState(r3, tasks.StateRecoveryRequired)
+	engine.setTaskState(r1, tasks.StateCancelled)
+	assertMatchesRegistry("all_terminal")
 }
 
 func TestStats_LaneWorkers(t *testing.T) {

@@ -111,7 +111,7 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult, grant *permit) {
 	e.retainedBytes += delta
 
 	if !spec.RequiresDurability() {
-		rec.state = terminalStateFor(rec.result.Outcome)
+		e.setTaskState(rec, terminalStateFor(rec.result.Outcome))
 		switch rec.state {
 		case tasks.StateTimedOut, tasks.StateCancelled, tasks.StateFailed:
 			rec.errorMsg = rec.result.Failure.Message
@@ -133,7 +133,7 @@ func (e *Engine) applyCancel(id tasks.TaskID, reason tasks.Cause) (tasks.CancelR
 	switch rec.state {
 	case tasks.StateCreated, tasks.StateAdmitted, tasks.StateQueued:
 		e.adm.RemoveTask(id)
-		rec.state = tasks.StateCancelled
+		e.setTaskState(rec, tasks.StateCancelled)
 		rec.cancelRequested = true
 		rec.cancelReason = reason
 		rec.finishedAt = time.Now().UTC()
@@ -258,7 +258,7 @@ func (e *Engine) forceCancelInFlight(rec *taskRecord) {
 	e.adm.OnTaskTerminal(rec.spec)
 
 	now := time.Now().UTC()
-	rec.state = tasks.StateCancelled
+	nextState := tasks.StateCancelled
 	rec.finishedAt = now
 	failureMessage := "task cancelled by forced shutdown"
 	if rec.spec.RequiresDurability() {
@@ -266,9 +266,10 @@ func (e *Engine) forceCancelInFlight(rec *taskRecord) {
 		// before the hard shutdown deadline. Without a durable acknowledgement we
 		// must preserve that uncertainty instead of claiming cancellation was
 		// committed. The persisted attempt/lease remains the recovery authority.
-		rec.state = tasks.StateRecoveryRequired
+		nextState = tasks.StateRecoveryRequired
 		failureMessage = "durable in-flight task abandoned by forced shutdown; effect unknown; recovery required"
 	}
+	e.setTaskState(rec, nextState)
 	res := tasks.TaskResult{
 		TaskID: rec.spec.ID, Outcome: tasks.OutcomeCancelled, Cause: tasks.CauseShutdown,
 		Disposition: execution.DispositionCancelled,

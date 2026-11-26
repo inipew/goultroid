@@ -114,7 +114,7 @@ func terminalStateFor(outcome tasks.Outcome) tasks.TaskState {
 // caller must have stored the bounded physical result in rec.pendingResult,
 // released quota/ordering, and dispatched further work already.
 func (e *Engine) beginCommit(rec *taskRecord) {
-	rec.state = tasks.StateCommitPending
+	e.setTaskState(rec, tasks.StateCommitPending)
 	rec.durability = durPending
 	e.commitPending++
 
@@ -228,7 +228,7 @@ func (e *Engine) applyCommitAck(id tasks.TaskID, seq uint64, ackErr error) {
 	e.commitPending--
 	if ackErr == nil {
 		rec.durability = durCommitted
-		rec.state = terminalStateFor(rec.execOutcome)
+		e.setTaskState(rec, terminalStateFor(rec.execOutcome))
 		rec.result = rec.pendingResult
 		switch rec.state {
 		case tasks.StateTimedOut, tasks.StateCancelled, tasks.StateFailed:
@@ -236,7 +236,7 @@ func (e *Engine) applyCommitAck(id tasks.TaskID, seq uint64, ackErr error) {
 		}
 	} else {
 		rec.durability = durRecovery
-		rec.state = tasks.StateRecoveryRequired
+		e.setTaskState(rec, tasks.StateRecoveryRequired)
 		res := rec.pendingResult
 		note := "durable commit failed or uncertain: " + ackErr.Error()
 		if res.Failure.Message == "" {
@@ -271,7 +271,7 @@ func (e *Engine) abandonPending(rec *taskRecord, reason string) {
 	e.releaseCommitWaiter(rec.commitSeq)
 	e.commitPending--
 	rec.durability = durRecovery
-	rec.state = tasks.StateRecoveryRequired
+	e.setTaskState(rec, tasks.StateRecoveryRequired)
 	res := rec.pendingResult
 	note := "engine shutdown before durable acknowledgement: " + reason
 	if res.Failure.Message == "" {

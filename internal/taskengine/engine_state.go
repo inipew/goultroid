@@ -67,6 +67,35 @@ func (r *taskRecord) isTerminal() bool {
 	return r.state == tasks.StateCompleted || r.state == tasks.StateFailed || r.state == tasks.StateTimedOut || r.state == tasks.StateCancelled || r.state == tasks.StateRecoveryRequired
 }
 
+// setTaskState updates rec.state while maintaining the runLoop-owned per-pool
+// Dispatching and Running counters in O(1).
+func (e *Engine) setTaskState(rec *taskRecord, next tasks.TaskState) {
+	if rec == nil || rec.state == next {
+		return
+	}
+	switch rec.state {
+	case tasks.StateDispatching:
+		if e.poolDispatching != nil {
+			e.poolDispatching[rec.spec.Pool]--
+		}
+	case tasks.StateRunning:
+		if e.poolRunning != nil {
+			e.poolRunning[rec.spec.Pool]--
+		}
+	}
+	rec.state = next
+	switch next {
+	case tasks.StateDispatching:
+		if e.poolDispatching != nil {
+			e.poolDispatching[rec.spec.Pool]++
+		}
+	case tasks.StateRunning:
+		if e.poolRunning != nil {
+			e.poolRunning[rec.spec.Pool]++
+		}
+	}
+}
+
 // opKind identifies a control message delivered to the single-writer runLoop.
 type opKind int
 
@@ -220,6 +249,8 @@ type Engine struct {
 	poolConcurrencies map[tasks.PoolID]int
 	poolMinWorkers    map[tasks.PoolID]int
 	poolIdleTimeouts  map[tasks.PoolID]time.Duration
+	poolDispatching   map[tasks.PoolID]int
+	poolRunning       map[tasks.PoolID]int
 	workerRunning     map[tasks.PoolID][]bool
 	workerIdleSince   map[tasks.PoolID][]time.Time
 	workerCancels     map[tasks.PoolID][]context.CancelFunc

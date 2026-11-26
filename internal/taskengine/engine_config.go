@@ -284,6 +284,8 @@ func NewEngine(cfg Config) *Engine {
 		poolConcurrencies:   concurrencies,
 		poolMinWorkers:      minimums,
 		poolIdleTimeouts:    idleTimeouts,
+		poolDispatching:     make(map[tasks.PoolID]int, len(cfg.Pools)),
+		poolRunning:         make(map[tasks.PoolID]int, len(cfg.Pools)),
 		workerRunning:       workerRunning,
 		workerIdleSince:     workerIdleSince,
 		workerCancels:       workerCancels,
