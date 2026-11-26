@@ -8,6 +8,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/inipew/goultroid/internal/logging"
 	"go.uber.org/zap"
 )
 
@@ -42,16 +43,17 @@ func RecoveryMiddleware(logger *zap.Logger) Middleware {
 		return func(ctx *Context) (err error) {
 			defer func() {
 				if r := recover(); r != nil {
-					stack := string(debug.Stack())
+					pType, summary, safeStack := logging.RedactPanic(r, debug.Stack())
 					if logger != nil {
 						logger.Error("panic recovered in command handler",
 							zap.String("correlation_id", ctx.CorrelationID),
 							zap.String("command", ctx.Command),
-							zap.Any("recover", r),
-							zap.String("stack", stack),
+							zap.String("panic_type", pType),
+							zap.String("panic_summary", summary),
+							zap.String("stack", safeStack),
 						)
 					}
-					err = fmt.Errorf("%w: panic in command %s: %v", ErrInternal, ctx.Command, r)
+					err = fmt.Errorf("%w: panic in command %s (%s)", ErrInternal, ctx.Command, pType)
 				}
 			}()
 			return next(ctx)
@@ -94,7 +96,7 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 					zap.String("command", ctx.Command),
 					zap.Int64("user_id", userID),
 					zap.Int64("chat_id", chatID),
-					zap.Strings("args", ctx.Args),
+					zap.Int("arg_count", len(ctx.Args)),
 				)
 			}
 
@@ -110,21 +112,21 @@ func LoggingMiddleware(logger *zap.Logger) Middleware {
 							zap.String("command", ctx.Command),
 							zap.Duration("flood_wait", rle.Wait),
 							zap.Duration("duration", duration),
-							zap.Error(err),
+							zap.String("error", logging.RedactError(err)),
 						)
 					} else if errors.Is(err, ErrInvalidArgs) || CategoryOf(err) == CategoryInvalidInput || errors.Is(err, ErrInvocationDenied) || errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrCooldownActive) {
 						logger.Debug("command rejected due to client or usage constraint",
 							zap.String("correlation_id", ctx.CorrelationID),
 							zap.String("command", ctx.Command),
 							zap.Duration("duration", duration),
-							zap.Error(err),
+							zap.String("error", logging.RedactError(err)),
 						)
 					} else {
 						logger.Warn("command executed with error",
 							zap.String("correlation_id", ctx.CorrelationID),
 							zap.String("command", ctx.Command),
 							zap.Duration("duration", duration),
-							zap.Error(err),
+							zap.String("error", logging.RedactError(err)),
 						)
 					}
 				} else {

@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/feature"
 	rootinteraction "github.com/inipew/goultroid/internal/interaction"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/presentation"
 	"github.com/inipew/goultroid/internal/services/ratelimit"
 	"github.com/inipew/goultroid/internal/tasks"
@@ -816,7 +817,7 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc TelegramAnswerer, 
 	if e.limiter != nil {
 		key := fmt.Sprintf("%d", userID)
 		if !e.limiter.Allow(ratelimit.DimensionOperation, "inline:"+key) {
-			e.logger.Debug("inline rate limited", zap.Int64("user_id", userID), zap.String("query", trimmed))
+			e.logger.Debug("inline rate limited", zap.Int64("user_id", userID), zap.Int("query_len", len(trimmed)))
 			if e.metrics != nil {
 				e.metrics.RecordInline(false, 0, time.Since(start), fmt.Errorf("rate limited"))
 			}
@@ -843,7 +844,7 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc TelegramAnswerer, 
 		resolved, ok = e.registry.ResolveOwned(trimmed)
 	}
 	if !ok {
-		e.logger.Debug("no inline handler matched query", zap.String("query", trimmed), zap.String("correlation_id", correlationID))
+		e.logger.Debug("no inline handler matched query", zap.Int("query_len", len(trimmed)), zap.String("correlation_id", correlationID))
 		if e.metrics != nil {
 			e.metrics.RecordInline(false, 0, time.Since(start), ErrNoMatchingHandler)
 		}
@@ -947,8 +948,9 @@ func (e *Engine) executeWithPeerType(ctx context.Context, svc TelegramAnswerer, 
 		}
 		defer func() {
 			if rec := recover(); rec != nil {
-				e.logger.Error("inline handler panic", zap.Any("panic", rec), zap.String("pattern", handler.Pattern()), zap.String("correlation_id", correlationID))
-				err = fmt.Errorf("%w: handler panic: %v", core.ErrInternal, rec)
+				pType, summary, _ := logging.RedactPanic(rec, nil)
+				e.logger.Error("inline handler panic", zap.String("panic_type", pType), zap.String("panic_summary", summary), zap.String("pattern", handler.Pattern()), zap.String("correlation_id", correlationID))
+				err = fmt.Errorf("%w: handler panic (%s)", core.ErrInternal, pType)
 			}
 		}()
 		timeout := e.timeout

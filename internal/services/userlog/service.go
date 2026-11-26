@@ -13,6 +13,7 @@ import (
 
 	"github.com/gotd/td/tg"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/logging"
 	"go.uber.org/zap"
 )
 
@@ -466,7 +467,7 @@ func (s *Service) LogMention(ctx context.Context, chatTitle string, senderName s
 		return nil
 	}
 
-	snippet := truncateRunes(messageText, 250)
+	snippet := truncateRunes(logging.RedactString(messageText), 250)
 
 	var fromStr string
 	if senderID > 0 {
@@ -500,7 +501,7 @@ func (s *Service) LogPM(ctx context.Context, senderName string, senderID int64, 
 		return nil
 	}
 
-	snippet := truncateRunes(messageText, 250)
+	snippet := truncateRunes(logging.RedactString(messageText), 250)
 
 	var senderStr string
 	if senderID > 0 {
@@ -541,7 +542,7 @@ func (s *Service) LogActionDetailed(ctx context.Context, action string, targetID
 	if !success {
 		statusStr = "❌ Failed"
 		if errDetail != "" {
-			statusStr += fmt.Sprintf(" (<i>%s</i>)", core.EscapeHTML(errDetail))
+			statusStr += fmt.Sprintf(" (<i>%s</i>)", core.EscapeHTML(logging.RedactString(errDetail)))
 		}
 	}
 
@@ -564,6 +565,8 @@ func (s *Service) LogActionDetailed(ctx context.Context, action string, targetID
 
 	if reason == "" {
 		reason = "None specified"
+	} else {
+		reason = logging.RedactString(reason)
 	}
 
 	text := fmt.Sprintf(
