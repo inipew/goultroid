@@ -12,6 +12,7 @@ import (
 	"github.com/inipew/goultroid/internal/idempotency"
 	"github.com/inipew/goultroid/internal/jobs"
 	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
+	"github.com/inipew/goultroid/internal/logging/zaplog"
 	"github.com/inipew/goultroid/internal/platform/audit"
 	"github.com/inipew/goultroid/internal/platform/filesystem"
 	"github.com/inipew/goultroid/internal/platform/network"
@@ -96,7 +97,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 		return nil, fmt.Errorf("initialize job schema: %w", err)
 	}
 	persistencePump := jobs.NewPersistencePump(2, 256)
-	persistencePump.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("persistence-pump")})
+	persistencePump.SetPanicReporter(safeCorePanicReporter{logger: zaplog.Wrap(logger).Named("persistence-pump")})
 	// Durable commit transport (Phase C): the engine holds CommitPending
 	// result credits until the pump acknowledges each attempt commit.
 	taskEngine.SetCommitPump(persistencePump)

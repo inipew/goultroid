@@ -8,6 +8,8 @@ import (
 	"runtime/debug"
 	"sync"
 	"time"
+
+	"github.com/inipew/goultroid/internal/logging"
 )
 
 // PanicReport contains structured details about a recovered panic.
@@ -79,6 +81,7 @@ type Supervisor struct {
 	name        string
 	maxWorkers  int
 	reporter    PanicReporter
+	logger      logging.Logger
 	baseBackoff time.Duration
 
 	mu       sync.RWMutex
@@ -127,6 +130,15 @@ func WithPanicReporter(reporter PanicReporter) SupervisorOption {
 	}
 }
 
+// WithSupervisorLogger attaches an operational logging.Logger to Supervisor.
+func WithSupervisorLogger(logger logging.Logger) SupervisorOption {
+	return func(s *Supervisor) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
+}
+
 // WithBaseBackoff sets the base restart backoff duration.
 func WithBaseBackoff(backoff time.Duration) SupervisorOption {
 	return func(s *Supervisor) {
@@ -141,13 +153,19 @@ func NewSupervisor(opts ...SupervisorOption) *Supervisor {
 	s := &Supervisor{
 		name:        DefaultSupervisorName,
 		maxWorkers:  DefaultMaxWorkers,
+		logger:      logging.Nop(),
 		baseBackoff: DefaultBaseBackoff,
 		state:       StateCreated,
 		workers:     make(map[string]*workerEntry),
 		stopDone:    make(chan struct{}),
 	}
 	for _, opt := range opts {
-		opt(s)
+		if opt != nil {
+			opt(s)
+		}
+	}
+	if s.logger == nil {
+		s.logger = logging.Nop()
 	}
 	return s
 }
@@ -474,6 +492,16 @@ func (s *Supervisor) runWorker(w *workerEntry) {
 		w.recordFailure(err, panicked)
 
 		if w.spec.Restart == NeverRestart {
+			cat, retryable := logging.ClassifyError(err)
+			s.logger.Error("supervisor worker failed",
+				logging.Component("supervisor"),
+				logging.Operation("run_worker"),
+				logging.Event("worker_failed"),
+				logging.String("worker", w.spec.Name),
+				logging.ErrorCategoryField(cat),
+				logging.Retryable(retryable),
+				logging.Error(err),
+			)
 			w.markFailed(err)
 			return
 		}
@@ -491,12 +519,34 @@ func (s *Supervisor) runWorker(w *workerEntry) {
 
 		allowed, attemptInWindow := w.checkAndRecordRestart(now, window, maxRestarts)
 		if !allowed {
+			cat, _ := logging.ClassifyError(err)
+			s.logger.Error("supervisor worker exhausted restart budget",
+				logging.Component("supervisor"),
+				logging.Operation("run_worker"),
+				logging.Event("worker_exhausted_restarts"),
+				logging.String("worker", w.spec.Name),
+				logging.Int("max_restarts", maxRestarts),
+				logging.ErrorCategoryField(cat),
+				logging.Error(err),
+			)
 			w.markDegraded(fmt.Errorf("worker %s exceeded restart budget (%d restarts within %v): %w", w.spec.Name, maxRestarts, window, err))
 			return
 		}
 
 		// Calculate exponential backoff with jitter
 		backoff := s.calculateBackoff(attemptInWindow)
+		cat, retryable := logging.ClassifyError(err)
+		s.logger.Warn("supervisor worker restarting",
+			logging.Component("supervisor"),
+			logging.Operation("run_worker"),
+			logging.Event("worker_restarting"),
+			logging.String("worker", w.spec.Name),
+			logging.Int("attempt", attemptInWindow),
+			logging.Duration("backoff", backoff),
+			logging.ErrorCategoryField(cat),
+			logging.Retryable(retryable),
+			logging.Error(err),
+		)
 		timer := time.NewTimer(backoff)
 		select {
 		case <-timer.C:
@@ -515,9 +565,18 @@ func (s *Supervisor) invokeWorker(ctx context.Context, w *workerEntry) (panicked
 		if r := recover(); r != nil {
 			panicked = true
 			err = fmt.Errorf("panic: %v", r)
+			stack := debug.Stack()
 			w.mu.Lock()
 			w.panics++
 			w.mu.Unlock()
+
+			s.logger.Error("supervisor worker panic recovered",
+				logging.Component("supervisor"),
+				logging.Operation("run_worker"),
+				logging.Event("worker_panic_recovered"),
+				logging.String("worker", w.spec.Name),
+				logging.Panic(r, stack),
+			)
 
 			s.mu.RLock()
 			rep := s.reporter
@@ -529,7 +588,7 @@ func (s *Supervisor) invokeWorker(ctx context.Context, w *workerEntry) (panicked
 					Owner:     name,
 					Component: w.spec.Name,
 					Value:     r,
-					Stack:     debug.Stack(),
+					Stack:     stack,
 					At:        time.Now().UTC(),
 				})
 			}

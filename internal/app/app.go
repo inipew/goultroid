@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/inipew/goultroid/internal/addon"
@@ -27,6 +26,8 @@ import (
 	nativeinteraction "github.com/inipew/goultroid/internal/interaction/native"
 	interactionsqlite "github.com/inipew/goultroid/internal/interaction/sqlite"
 	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/logging"
+	"github.com/inipew/goultroid/internal/logging/zaplog"
 	"github.com/inipew/goultroid/internal/module"
 	"github.com/inipew/goultroid/internal/plugin"
 	"github.com/inipew/goultroid/internal/resource"
@@ -43,11 +44,11 @@ import (
 	"github.com/inipew/goultroid/internal/taskengine"
 	"github.com/inipew/goultroid/internal/telegram"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 type App struct {
 	cfg                       *config.Config
+	opLogger                  *zaplog.Adapter
 	logger                    *zap.Logger
 	db                        *database.DB
 	client                    *telegram.Client
@@ -97,21 +98,19 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
-	logger, logLevel, err := initLogger(cfg.LogLevel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build logger: %w", err)
-	}
+	opLogger, logger, logLevel := initAppLogger(cfg)
 	var coreDeps *coreDependencies
 	defer func() {
 		if retErr == nil {
 			return
 		}
 		cleanupCore(coreDeps, logger)
-		if err := logger.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		if err := syncAppLogger(opLogger, nil); err != nil {
 			retErr = errors.Join(retErr, fmt.Errorf("sync logger after construction failure: %w", err))
 		}
 	}()
 
+	var err error
 	coreDeps, err = buildCore(cfg, logger)
 	if err != nil {
 		return nil, err
@@ -134,7 +133,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		return nil, fmt.Errorf("configure durable interactions: %w", err)
 	}
 	pluginManager.SetCleanupExecutor(coreDeps.cleanupExecutor)
-	pluginManager.SetPanicReporter(zapCorePanicReporter{logger: logger.Named("plugin.panic")})
+	pluginManager.SetPanicReporter(safeCorePanicReporter{logger: opLogger.Named("plugin.panic")})
 	coreDeps.eventBus.SetTasks(coreDeps.taskEngine)
 	pluginManager.SetHookRegistrar(tgRuntime.dispatcher)
 	pluginManager.SetInlineRegistry(coreDeps.inlineEngine.Registry())
@@ -400,7 +399,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 		tgRuntime.assistant.SetInteractionFoundation(pluginManager.FeatureCatalog(), pluginManager.InteractionRuntime(), pluginManager.ActionDispatcher())
 	}
 
-	rt := runtime.New()
+	rt := runtime.New(runtime.WithLogger(opLogger.Named("runtime")))
 	resources := []resourceComponent{
 		{
 			name: "database",
@@ -473,7 +472,8 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	}
 	supervisor := runtime.NewSupervisor(
 		runtime.WithSupervisorName("lifecycle-supervisor"),
-		runtime.WithPanicReporter(zapRuntimePanicReporter{logger: logger.Named("supervisor")}),
+		runtime.WithSupervisorLogger(opLogger.Named("supervisor")),
+		runtime.WithPanicReporter(safeRuntimePanicReporter{logger: opLogger.Named("supervisor.panic")}),
 	)
 	if tgRuntime.client != nil {
 		if err := supervisor.Register(runtime.WorkerSpec{
@@ -517,6 +517,7 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 
 	app := &App{
 		cfg:                       cfg,
+		opLogger:                  opLogger,
 		logger:                    logger,
 		db:                        coreDeps.db,
 		client:                    tgRuntime.client,
@@ -557,28 +558,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 }
 
 func (a *App) Run(ctx context.Context) error { return a.runLifecycle(ctx) }
-
-func initLogger(logLevel string) (*zap.Logger, zap.AtomicLevel, error) {
-	var zapLevel zapcore.Level
-	switch logLevel {
-	case "debug":
-		zapLevel = zap.DebugLevel
-	case "warn":
-		zapLevel = zap.WarnLevel
-	case "error":
-		zapLevel = zap.ErrorLevel
-	default:
-		zapLevel = zap.InfoLevel
-	}
-	atomicLevel := zap.NewAtomicLevelAt(zapLevel)
-	zapCfg := zap.NewDevelopmentConfig()
-	zapCfg.Level = atomicLevel
-	logger, err := zapCfg.Build()
-	if err != nil {
-		return nil, atomicLevel, err
-	}
-	return logger, atomicLevel, nil
-}
 
 type lifecycleState uint32
 
@@ -683,36 +662,40 @@ func (a *App) RPCMetrics() telegram.RPCMetrics {
 	return telegram.NoopRPCMetrics{}
 }
 
-type zapCorePanicReporter struct {
-	logger *zap.Logger
+type safeCorePanicReporter struct {
+	logger logging.Logger
 }
 
-func (r zapCorePanicReporter) ReportPanic(report core.PanicReport) {
+func (r safeCorePanicReporter) ReportPanic(report core.PanicReport) {
 	if r.logger == nil {
 		return
 	}
 	r.logger.Error("recovered panic",
-		zap.String("owner", report.Owner),
-		zap.String("component", report.Component),
-		zap.Any("value", report.Value),
-		zap.ByteString("stack", report.Stack),
-		zap.Time("at", report.At),
+		logging.Component("plugin"),
+		logging.Operation("panic_recovery"),
+		logging.Event("panic_recovered"),
+		logging.String("owner", report.Owner),
+		logging.String("target_component", report.Component),
+		logging.Panic(report.Value, report.Stack),
+		logging.Time("at", report.At),
 	)
 }
 
-type zapRuntimePanicReporter struct {
-	logger *zap.Logger
+type safeRuntimePanicReporter struct {
+	logger logging.Logger
 }
 
-func (r zapRuntimePanicReporter) ReportPanic(report runtime.PanicReport) {
+func (r safeRuntimePanicReporter) ReportPanic(report runtime.PanicReport) {
 	if r.logger == nil {
 		return
 	}
 	r.logger.Error("recovered panic",
-		zap.String("owner", report.Owner),
-		zap.String("component", report.Component),
-		zap.Any("value", report.Value),
-		zap.ByteString("stack", report.Stack),
-		zap.Time("at", report.At),
+		logging.Component("runtime"),
+		logging.Operation("panic_recovery"),
+		logging.Event("panic_recovered"),
+		logging.String("owner", report.Owner),
+		logging.String("target_component", report.Component),
+		logging.Panic(report.Value, report.Stack),
+		logging.Time("at", report.At),
 	)
 }

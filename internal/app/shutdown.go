@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"syscall"
 	"time"
 )
 
@@ -85,11 +84,6 @@ func (a *App) performShutdown() {
 	if appCancel != nil {
 		appCancel()
 	}
-	if a.logger != nil {
-		if err := a.logger.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
-			errs = append(errs, fmt.Errorf("logger: %w", err))
-		}
-	}
 	if a.resources != nil {
 		if cleanupErrs := a.resources.ForceCleanupAllContext(shutdownCtx); len(cleanupErrs) > 0 {
 			errs = append(errs, fmt.Errorf("resource cleanup: %w", errors.Join(cleanupErrs...)))
@@ -97,6 +91,11 @@ func (a *App) performShutdown() {
 		if leakErr := a.resources.VerifyShutdownClean(); leakErr != nil {
 			errs = append(errs, leakErr)
 		}
+	}
+	// Sync exactly once after all runtime producers, transport, and resource
+	// cleanups have completed.
+	if err := syncAppLogger(a.opLogger, nil); err != nil {
+		errs = append(errs, fmt.Errorf("logger: %w", err))
 	}
 	var shutdownErr error
 	if len(errs) > 0 {

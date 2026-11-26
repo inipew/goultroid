@@ -25,6 +25,8 @@ type Config struct {
 	OwnerID                         int64
 	SudoUsers                       []int64
 	LogLevel                        string
+	LogEnv                          string
+	LogFormat                       string
 	BotToken                        string
 	Mode                            string
 	TaskEngine                      taskengine.Config
@@ -106,6 +108,26 @@ func LoadFrom(lookup func(string) string) (*Config, error) {
 		logLevel = "info"
 	}
 
+	logEnv := strings.ToLower(strings.TrimSpace(lookup("LOG_ENV")))
+	if logEnv == "" {
+		logEnv = "production"
+	}
+	if logEnv != "production" && logEnv != "development" {
+		return nil, fmt.Errorf("invalid LOG_ENV: must be production or development")
+	}
+
+	logFormat := strings.ToLower(strings.TrimSpace(lookup("LOG_FORMAT")))
+	if logFormat == "" {
+		if logEnv == "development" {
+			logFormat = "console"
+		} else {
+			logFormat = "json"
+		}
+	}
+	if logFormat != "json" && logFormat != "console" {
+		return nil, fmt.Errorf("invalid LOG_FORMAT: must be json or console")
+	}
+
 	botToken := strings.TrimSpace(lookup("BOT_TOKEN"))
 	mode := strings.ToLower(strings.TrimSpace(lookup("MODE")))
 	if mode == "" {
@@ -137,6 +159,8 @@ func LoadFrom(lookup func(string) string) (*Config, error) {
 		OwnerID:                         ownerID,
 		SudoUsers:                       sudoUsers,
 		LogLevel:                        logLevel,
+		LogEnv:                          logEnv,
+		LogFormat:                       logFormat,
 		BotToken:                        botToken,
 		Mode:                            mode,
 		TaskEngine:                      taskEngine,

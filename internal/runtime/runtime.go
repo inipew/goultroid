@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/inipew/goultroid/internal/logging"
 )
 
 // AggregateHealth represents the operational health status aggregated across all runtime components.
@@ -62,12 +64,25 @@ type Runtime struct {
 	startTime    time.Time
 	stopTime     time.Time
 	lastShutdown ShutdownReport
+	logger       logging.Logger
+}
+
+// Option configures a Runtime instance.
+type Option func(*Runtime)
+
+// WithLogger attaches an operational logging.Logger to Runtime.
+func WithLogger(logger logging.Logger) Option {
+	return func(r *Runtime) {
+		if logger != nil {
+			r.logger = logger
+		}
+	}
 }
 
 // New creates a new Runtime instance in the StateCreated state.
-func New() *Runtime {
+func New(opts ...Option) *Runtime {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Runtime{
+	r := &Runtime{
 		stateMachine: NewStateMachine(),
 		graph:        NewDependencyGraph(),
 		failedComps:  make(map[string]error),
@@ -75,7 +90,17 @@ func New() *Runtime {
 		rootCancel:   cancel,
 		stopDone:     make(chan struct{}),
 		stopTimeout:  30 * time.Second,
+		logger:       logging.Nop(),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(r)
+		}
+	}
+	if r.logger == nil {
+		r.logger = logging.Nop()
+	}
+	return r
 }
 
 // Context returns the root runtime context which is cancelled on shutdown.
@@ -195,6 +220,13 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.stopTime = time.Time{}
 	r.mu.Unlock()
 
+	r.logger.Info("runtime starting",
+		logging.Component("runtime"),
+		logging.Operation("start"),
+		logging.Event("runtime_starting"),
+		logging.Int("components", len(order)),
+	)
+
 	var started []Component
 	for _, comp := range order {
 		if err := ctx.Err(); err != nil {
@@ -219,9 +251,28 @@ func (r *Runtime) Start(ctx context.Context) error {
 			r.failedComps[comp.Name()] = err
 			r.mu.Unlock()
 
+			cat, retryable := logging.ClassifyError(err)
 			if isCritical {
+				r.logger.Error("critical runtime component failed to start",
+					logging.Component("runtime"),
+					logging.Operation("start"),
+					logging.Event("component_start_failed"),
+					logging.String("target_component", comp.Name()),
+					logging.ErrorCategoryField(cat),
+					logging.Retryable(retryable),
+					logging.Error(err),
+				)
 				return r.failStartAndRollback(fmt.Errorf("component %q failed to start: %w", comp.Name(), err), started)
 			}
+			r.logger.Warn("optional runtime component failed to start",
+				logging.Component("runtime"),
+				logging.Operation("start"),
+				logging.Event("optional_component_start_failed"),
+				logging.String("target_component", comp.Name()),
+				logging.ErrorCategoryField(cat),
+				logging.Retryable(retryable),
+				logging.Error(err),
+			)
 		} else {
 			started = append(started, comp)
 			r.mu.Lock()
@@ -247,6 +298,12 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 	r.startTime = time.Now()
 	r.mu.Unlock()
+	r.logger.Info("runtime started",
+		logging.Component("runtime"),
+		logging.Operation("start"),
+		logging.Event("runtime_started"),
+		logging.Int("started_components", len(started)),
+	)
 	return nil
 }
 
@@ -521,6 +578,13 @@ func (r *Runtime) performStop(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 
+	r.logger.Info("runtime stopping",
+		logging.Component("runtime"),
+		logging.Operation("stop"),
+		logging.Event("runtime_stopping"),
+		logging.Int("components", len(stopOrder)),
+	)
+
 	var stopErrs []error
 	graceExhausted := false
 	for _, comp := range stopOrder {
@@ -595,9 +659,22 @@ func (r *Runtime) performStop(ctx context.Context) error {
 
 	if len(stopErrs) > 0 {
 		r.stateMachine.SetFailed()
+		r.logger.Error("runtime stopped with errors",
+			logging.Component("runtime"),
+			logging.Operation("stop"),
+			logging.Event("runtime_stop_failed"),
+			logging.Duration("duration", report.TotalDuration),
+			logging.Int("error_count", len(stopErrs)),
+		)
 		return fmt.Errorf("shutdown completed with errors: %w", errors.Join(stopErrs...))
 	}
 	_ = r.stateMachine.Transition(StateStopped)
+	r.logger.Info("runtime stopped",
+		logging.Component("runtime"),
+		logging.Operation("stop"),
+		logging.Event("runtime_stopped"),
+		logging.Duration("duration", report.TotalDuration),
+	)
 	return nil
 }
 
