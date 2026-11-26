@@ -995,22 +995,22 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 			e.retainLegacyClaim(stateCtx, job, definitionID, occ.ID)
 			e.logger.Error("failed to read unknown-effect review", zap.Int64("job_id", job.ID), zap.Error(quarantineErr))
 			return
-		} else if quarantined {
+		}
+		if quarantined {
 			e.failBlockedScheduledJob(stateCtx, job.ID, job.ClaimToken)
 			return
-		} else {
-			switch occ.State {
-			case jobs.OccurrenceReady, jobs.OccurrenceDispatched:
-				e.retainLegacyClaim(stateCtx, job, definitionID, occ.ID)
-				return
-			case jobs.OccurrenceCompleted, jobs.OccurrenceFailed, jobs.OccurrenceCancelled:
-				// Admission may fail after canonical materialization and then settle
-				// quickly (e.g. aborted-before-start + automatic recovery). Track the
-				// canonical terminal occurrence so row reconciliation records the real
-				// outcome instead of releasing the slot and creating another logical run.
-				e.trackClaim(job.ID, job.ClaimToken, definitionID, occ.ID)
-				return
-			}
+		}
+		switch occ.State {
+		case jobs.OccurrenceReady, jobs.OccurrenceDispatched:
+			e.retainLegacyClaim(stateCtx, job, definitionID, occ.ID)
+			return
+		case jobs.OccurrenceCompleted, jobs.OccurrenceFailed, jobs.OccurrenceCancelled:
+			// Admission may fail after canonical materialization and then settle
+			// quickly (e.g. aborted-before-start + automatic recovery). Track the
+			// canonical terminal occurrence so row reconciliation records the real
+			// outcome instead of releasing the slot and creating another logical run.
+			e.trackClaim(job.ID, job.ClaimToken, definitionID, occ.ID)
+			return
 		}
 	}
 	e.logger.Error("failed to admit scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(submitErr))

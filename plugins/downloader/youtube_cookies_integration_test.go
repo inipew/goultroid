@@ -601,7 +601,9 @@ func TestYouTubeCookiesProbeAndLifecycleCleanup(t *testing.T) {
 				if err := p.submitURLPipeline(context.Background(), urlDownloadRequest{
 					URL: "https://www.youtube.com/watch?v=abcdefghijk", Provider: "extractor",
 				}, urlPipelineHooks{
-					Delivery:               func(context.Context, presentation.Media) error { done <- nil; return nil },
+					TargetKind:             "message",
+					Delivery:               func(context.Context, presentation.Media) error { return nil },
+					Delivered:              func(context.Context) error { done <- nil; return nil },
 					DownloadFailureWithErr: func(_ context.Context, err error) error { done <- err; return nil },
 				}); err != nil {
 					errCh <- err

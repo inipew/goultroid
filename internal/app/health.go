@@ -125,9 +125,14 @@ func probeFilesystem(ctx context.Context, basePath string) (string, string) {
 
 	statFn := getFSProbeStatFn()
 	done := make(chan error, 1)
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { <-fsProbeSlot })
+	}
 	go func() {
-		defer func() { <-fsProbeSlot }()
+		defer release()
 		_, err := statFn(basePath)
+		release()
 		done <- err
 	}()
 

@@ -202,24 +202,6 @@ func (p *Plugin) logMaintenanceFinished(summary *MaintenanceRunSummary, outcomes
 	}
 }
 
-func shouldNotifyOwner(cfg TokenMaintenanceConfig, summary *MaintenanceRunSummary) bool {
-	if summary == nil {
-		return false
-	}
-	switch summary.Status {
-	case RunStatusCompleted:
-		return cfg.NotifyOnCompletion && summary.RefreshedCount > 0
-	case RunStatusPartialFailure, RunStatusFailed:
-		return cfg.NotifyOnFailure
-	default:
-		return false
-	}
-}
-
-func (p *Plugin) maybeNotifyOwner(cfg TokenMaintenanceConfig, summary *MaintenanceRunSummary, outcomes []AccountMaintenanceOutcome) {
-	p.maybeNotifyDestinations(context.Background(), cfg, summary, outcomes)
-}
-
 func (p *Plugin) maybeNotifyDestinations(parentCtx context.Context, cfg TokenMaintenanceConfig, summary *MaintenanceRunSummary, outcomes []AccountMaintenanceOutcome) {
 	if p == nil || summary == nil {
 		return

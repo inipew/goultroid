@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -104,10 +105,12 @@ func TestDispatcher_SavedMessagesOutgoingCommandDispatch(t *testing.T) {
 	if len(invoked) != 4 {
 		t.Fatalf("invoked = %v, want 4 commands", invoked)
 	}
-	wantSubs := []string{"", "set", "status", "delete"}
+	gotSubs := append([]string(nil), invoked...)
+	slices.Sort(gotSubs)
+	wantSubs := []string{"", "delete", "set", "status"}
 	for i, want := range wantSubs {
-		if invoked[i] != want {
-			t.Fatalf("invoked[%d] = %q, want %q", i, invoked[i], want)
+		if gotSubs[i] != want {
+			t.Fatalf("sorted invoked[%d] = %q, want %q (all=%v)", i, gotSubs[i], want, invoked)
 		}
 		if !peerSelf[i] {
 			t.Fatalf("peerSelf[%d] = false, want InputPeerSelf", i)

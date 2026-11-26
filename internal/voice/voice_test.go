@@ -148,12 +148,6 @@ func (m *mockFailingVoiceRepo) UpsertVoiceSession(ctx context.Context, rec *voic
 	return nil
 }
 
-func (m *mockFailingVoiceRepo) getUpsertCalls() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.upsertCalls
-}
-
 func (m *mockFailingVoiceRepo) GetVoiceQueue(ctx context.Context, chatID int64) ([]*voice.VoiceQueueRecord, error) {
 	if m.failGetQ {
 		return nil, errors.New("db get queue failed")

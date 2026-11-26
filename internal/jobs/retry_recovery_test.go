@@ -25,6 +25,11 @@ var errTestFailure = errors.New("test handler failure")
 // retry/recovery tests.
 func engineBackedManager(t *testing.T, handler jobs.Handler, policy jobs.JobRetryPolicy) (*jobs.Manager, *jobsqlite.Store, *database.DB) {
 	t.Helper()
+	return engineBackedManagerOption(t, handler, policy, true)
+}
+
+func engineBackedManagerOption(t *testing.T, handler jobs.Handler, policy jobs.JobRetryPolicy, autoStart bool) (*jobs.Manager, *jobsqlite.Store, *database.DB) {
+	t.Helper()
 	db, err := database.Open(":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -53,10 +58,12 @@ func engineBackedManager(t *testing.T, handler jobs.Handler, policy jobs.JobRetr
 	t.Cleanup(func() { _ = engine.Stop(context.Background()) })
 	store := jobsqlite.NewStore(db.DB)
 	manager := jobs.NewManagerWithPorts(engine, jobsqlite.Ports(store), pump)
-	if err := manager.Start(context.Background()); err != nil {
-		t.Fatal(err)
+	if autoStart {
+		if err := manager.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = manager.Stop(context.Background()) })
 	}
-	t.Cleanup(func() { _ = manager.Stop(context.Background()) })
 	if err := manager.RegisterHandler("h", handler); err != nil {
 		t.Fatal(err)
 	}
@@ -795,12 +802,13 @@ func TestRecoverFinalizesPersistedPermanentFailureWithoutRedrive(t *testing.T) {
 
 func TestAdmissionRejectionDoesNotExhaustRetryBudgetOrFinalizeOccurrence(t *testing.T) {
 	var handlerCalls atomic.Int32
-	manager, store, _ := engineBackedManager(t,
+	manager, store, _ := engineBackedManagerOption(t,
 		func(context.Context, jobs.JobDefinition) error {
 			handlerCalls.Add(1)
 			return nil
 		},
 		jobs.JobRetryPolicy{MaxAttempts: 1},
+		false,
 	)
 	ctx := context.Background()
 	occ := &jobs.JobOccurrence{

@@ -760,10 +760,8 @@ collectLoop:
 			if isCritical {
 				report.Status = HealthUnhealthy
 				report.Ready = false
-			} else {
-				if report.Status != HealthUnhealthy {
-					report.Status = HealthDegraded
-				}
+			} else if report.Status != HealthUnhealthy {
+				report.Status = HealthDegraded
 			}
 			if h.Details != "" {
 				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", compName, sanitizeHealthReason(h.Details)))
@@ -782,10 +780,8 @@ collectLoop:
 				if report.Status != HealthUnhealthy {
 					report.Status = HealthDegraded
 				}
-			} else {
-				if report.Status != HealthUnhealthy {
-					report.Status = HealthDegraded
-				}
+			} else if report.Status != HealthUnhealthy {
+				report.Status = HealthDegraded
 			}
 			if h.Details != "" {
 				report.Reasons = append(report.Reasons, fmt.Sprintf("%s:%s", compName, sanitizeHealthReason(h.Details)))

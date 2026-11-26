@@ -902,7 +902,7 @@ func TestYouTubeCookiesStatusDeleteReplaceAndSecurityAudit(t *testing.T) {
 	}
 
 	// 7b. Delete with dir sync failure reports deleted_dir_sync_unconfirmed (NOT delete_failed).
-	svc, err = runCmd(nil, dummyDocumentMedia(int64(len(validData)), "document"), validData)
+	_, err = runCmd(nil, dummyDocumentMedia(int64(len(validData)), "document"), validData)
 	if err != nil {
 		t.Fatalf("re-upload err = %v", err)
 	}
