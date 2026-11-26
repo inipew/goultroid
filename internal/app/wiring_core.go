@@ -73,7 +73,9 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	inlineEngine.SetTimeout(4 * time.Second)
 	inlineEngine.SetPermissions(perms)
 
-	taskEngine := taskengine.NewEngine(cfg.TaskEngine)
+	taskCfg := cfg.TaskEngine
+	taskCfg.Logger = zaplog.Wrap(logger).Named("taskengine")
+	taskEngine := taskengine.NewEngine(taskCfg)
 	durabilityConcurrency := cfg.TaskEngineDurabilityConcurrency
 	if durabilityConcurrency == 0 {
 		durabilityConcurrency = 4

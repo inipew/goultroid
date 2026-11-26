@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/admission"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -18,7 +19,18 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 	e.mu.Unlock()
 	if rootCtx == nil {
 		e.admissionRejections.Add(1)
-		return engineReply{}, tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+		err := tasks.NewAdmissionError(tasks.ReasonEngineQuiescing, tasks.ErrEngineQuiescing)
+		e.getLogger().Warn("task admission rejected",
+			logging.Component("taskengine"),
+			logging.Operation("submit"),
+			logging.Event("task_admission_rejected"),
+			logging.String("pool", string(spec.Pool)),
+			logging.ErrorCategoryField(logging.CategoryResource),
+			logging.Retryable(true),
+			logging.Correlation(logging.CorrelationID(ctx)),
+			logging.Error(err),
+		)
+		return engineReply{}, err
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -35,6 +47,16 @@ func (e *Engine) sendSubmitControl(ctx context.Context, spec tasks.WorkSpec) (en
 	if err := e.enqueueRequest(ctx, queued); err != nil {
 		e.admissionRejections.Add(1)
 		e.releaseRequest(queued)
+		e.getLogger().Warn("task admission rejected",
+			logging.Component("taskengine"),
+			logging.Operation("submit"),
+			logging.Event("task_admission_rejected"),
+			logging.String("pool", string(spec.Pool)),
+			logging.ErrorCategoryField(logging.CategoryResource),
+			logging.Retryable(true),
+			logging.Correlation(logging.CorrelationID(ctx)),
+			logging.Error(err),
+		)
 		return engineReply{}, err
 	}
 

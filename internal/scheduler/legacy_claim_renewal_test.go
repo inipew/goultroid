@@ -7,7 +7,6 @@ import (
 
 	"github.com/inipew/goultroid/internal/jobs"
 	jobsqlite "github.com/inipew/goultroid/internal/jobs/sqlite"
-	"go.uber.org/zap"
 )
 
 type memoryOccurrenceStore struct {
@@ -77,7 +76,7 @@ func TestLegacyClaimLeaseRenewedWhileAttemptRunning(t *testing.T) {
 		Occurrences: occStore,
 	}, nil)
 
-	engine := NewEngine(repo, zap.NewNop())
+	engine := NewEngine(repo, nil)
 	engine.SetJobsManager(jobsMgr)
 	engine.trackClaim(job.ID, claimToken, "job.def.1", occID)
 
@@ -144,7 +143,7 @@ func TestLegacyClaimRenewalStopsAfterOccurrenceSettles(t *testing.T) {
 		Occurrences: occStore,
 	}, nil)
 
-	engine := NewEngine(repo, zap.NewNop())
+	engine := NewEngine(repo, nil)
 	engine.SetJobsManager(jobsMgr)
 	engine.trackClaim(job.ID, claimToken, "job.def.1", occID)
 
@@ -211,7 +210,7 @@ func TestLegacyClaimRenewalStopsAfterClaimTokenChanges(t *testing.T) {
 		Occurrences: occStore,
 	}, nil)
 
-	engine := NewEngine(repo, zap.NewNop())
+	engine := NewEngine(repo, nil)
 	engine.SetJobsManager(jobsMgr)
 	engine.trackClaim(job.ID, oldToken, "job.def.1", occID)
 
@@ -283,7 +282,7 @@ func TestLegacyClaimRenewalDoesNotRenewBlockedOccurrence(t *testing.T) {
 		Occurrences: occStore,
 	}, nil)
 
-	engine := NewEngine(repo, zap.NewNop())
+	engine := NewEngine(repo, nil)
 	engine.SetJobsManager(jobsMgr)
 	engine.trackClaim(job.ID, claimToken, "job.def.1", occID)
 
@@ -411,7 +410,7 @@ func TestMultiEngineStaleOwnerCannotRenewOrSettleReclaimedClaim(t *testing.T) {
 		Recovery:    jobStore,
 	}, nil)
 
-	engine1 := NewEngine(repo, zap.NewNop())
+	engine1 := NewEngine(repo, nil)
 	engine1.SetJobsManager(jobsMgr1)
 	engine1.trackClaim(job.ID, token1, "job.multi", occ1.ID)
 

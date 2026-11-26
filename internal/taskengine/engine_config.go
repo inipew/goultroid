@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/admission"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -57,6 +58,9 @@ type Config struct {
 	MaxScopeTombstones int
 	// ResourceCapacities defines dispatch-time resource budgets by stable name.
 	ResourceCapacities map[string]int64
+	// Logger receives structured operational events for abnormal task outcomes.
+	// Nil defaults to logging.Nop().
+	Logger logging.Logger
 }
 
 func newDefaultConfig() Config {
@@ -277,8 +281,14 @@ func NewEngine(cfg Config) *Engine {
 		admPoolConfigs[poolID] = admission.PoolConfig{BacklogLimit: pcfg.BacklogLimit, PayloadBudget: pcfg.PayloadBudget}
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = logging.Nop()
+	}
+
 	return &Engine{
 		config:              cfg,
+		logger:              logger,
 		adm:                 admission.NewController(admPoolConfigs),
 		idleSlots:           idleSlots,
 		poolConcurrencies:   concurrencies,

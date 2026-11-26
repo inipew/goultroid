@@ -11,6 +11,7 @@ import (
 	"github.com/inipew/goultroid/internal/assistant/groupevents"
 	"github.com/inipew/goultroid/internal/config"
 	corepkg "github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/logging/zaplog"
 	"github.com/inipew/goultroid/internal/scheduler"
 	broadcastSvc "github.com/inipew/goultroid/internal/services/broadcast"
 	"github.com/inipew/goultroid/internal/services/download"
@@ -66,7 +67,7 @@ func buildDomainServices(cfg *config.Config, core *coreDependencies, tg *telegra
 	groupEvents := groupevents.New(groupState, core.eventBus)
 
 	schedRepo := scheduler.NewSQLiteRepository(core.db.DB)
-	schedEngine := scheduler.NewEngine(schedRepo, logger)
+	schedEngine := scheduler.NewEngine(schedRepo, zaplog.Wrap(logger).Named("scheduler"))
 	schedEngine.SetPrivilegedChecker(core.perms)
 	if core.jobsManager != nil {
 		actionHandler := scheduledActionHandler{

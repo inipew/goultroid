@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
-	"go.uber.org/zap"
 )
 
 // periodicCoordinator multiplexes all runtime periodic tasks onto an indexed
@@ -30,7 +30,7 @@ type periodicCoordinator struct {
 	running     bool
 	loopRunning bool
 	seq         uint64
-	logger      *zap.Logger
+	logger      logging.Logger
 	jobsMgr     *jobs.Manager
 	nowFn       func() time.Time
 }
@@ -77,9 +77,9 @@ const periodicHandlerType = "periodic.task"
 const periodicPruneWindow = time.Hour
 const periodicSettlementSafetyInterval = 30 * time.Second
 
-func newPeriodicCoordinator(logger *zap.Logger) *periodicCoordinator {
+func newPeriodicCoordinator(logger logging.Logger) *periodicCoordinator {
 	if logger == nil {
-		logger = zap.NewNop()
+		logger = logging.Nop()
 	}
 	return &periodicCoordinator{
 		entries: make(map[string]*periodicRegistration),
@@ -669,13 +669,31 @@ func (c *periodicCoordinator) submitExecution(jobsMgr *jobs.Manager, run periodi
 	occ, lookupErr := jobsMgr.OccurrenceByKey(stateCtx, occurrenceKey)
 	cancel()
 	if lookupErr == nil && occ != nil {
+		cat, retryable := logging.ClassifyError(err)
 		c.logger.Warn("periodic admission rejected after materialization; tracking canonical occurrence",
-			zap.String("task", run.name), zap.String("occurrence_id", occ.ID), zap.Error(err))
+			logging.Component("scheduler"),
+			logging.Operation("periodic_submit"),
+			logging.Event("periodic_admission_rejected_materialized"),
+			logging.String("task", run.name),
+			logging.String("occurrence_id", occ.ID),
+			logging.ErrorCategoryField(cat),
+			logging.Retryable(retryable),
+			logging.Error(err),
+		)
 		c.bindOccurrence(jobsMgr, run, occ.ID)
 		return
 	}
 
-	c.logger.Warn("periodic occurrence admission rejected", zap.String("task", run.name), zap.Error(err))
+	cat, retryable := logging.ClassifyError(err)
+	c.logger.Warn("periodic occurrence admission rejected",
+		logging.Component("scheduler"),
+		logging.Operation("periodic_submit"),
+		logging.Event("periodic_admission_rejected"),
+		logging.String("task", run.name),
+		logging.ErrorCategoryField(cat),
+		logging.Retryable(retryable),
+		logging.Error(err),
+	)
 	c.finishSubmission(run)
 }
 

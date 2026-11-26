@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -61,6 +62,47 @@ func (e *Engine) settleTerminal(rec *taskRecord) {
 	e.onTaskSettled(rec)
 }
 
+func (e *Engine) logAbnormalCompletion(spec tasks.WorkSpec, res tasks.TaskResult) {
+	durMs := float64(0)
+	if !res.StartedAt.IsZero() && !res.FinishedAt.IsZero() {
+		durMs = float64(res.FinishedAt.Sub(res.StartedAt).Milliseconds())
+	}
+	switch {
+	case res.Outcome == tasks.OutcomePanic:
+		e.getLogger().Error("task handler panic recovered",
+			logging.Component("taskengine"),
+			logging.Operation("execute"),
+			logging.Event("task_panic_recovered"),
+			logging.String("task_id", string(res.TaskID)),
+			logging.String("pool", string(spec.Pool)),
+			logging.ErrorCategoryField(logging.CategoryInternal),
+			logging.Float64("duration_ms", durMs),
+		)
+	case res.Outcome == tasks.OutcomeTimedOut:
+		e.getLogger().Warn("task execution timed out",
+			logging.Component("taskengine"),
+			logging.Operation("execute"),
+			logging.Event("task_timeout"),
+			logging.String("task_id", string(res.TaskID)),
+			logging.String("pool", string(spec.Pool)),
+			logging.ErrorCategoryField(logging.CategoryCancellation),
+			logging.Retryable(false),
+			logging.Float64("duration_ms", durMs),
+		)
+	case res.Disposition == execution.DispositionInternal:
+		e.getLogger().Error("task execution failed",
+			logging.Component("taskengine"),
+			logging.Operation("execute"),
+			logging.Event("task_execution_failed"),
+			logging.String("task_id", string(res.TaskID)),
+			logging.String("pool", string(spec.Pool)),
+			logging.ErrorCategoryField(logging.CategoryInternal),
+			logging.String("failure_code", res.Failure.Code),
+			logging.Float64("duration_ms", durMs),
+		)
+	}
+}
+
 // applyWorkerCompleted accepts completion only from the physical grant that
 // owns the current dispatch generation/epoch. This mirrors Started fencing and
 // prevents a late completion from an evicted/reused TaskID mutating a new task.
@@ -99,6 +141,7 @@ func (e *Engine) applyWorkerCompleted(res tasks.TaskResult, grant *permit) {
 	if rec.startedAt.IsZero() {
 		rec.startedAt = res.StartedAt
 	}
+	e.logAbnormalCompletion(spec, rec.result)
 	for pool := range e.config.Pools {
 		e.tryDispatch(pool)
 	}

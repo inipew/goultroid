@@ -12,6 +12,7 @@ import (
 	"github.com/gotd/td/tgerr"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/logging"
 )
 
 // RPCOperationKind specifies the safety and idempotency of an RPC method.
@@ -205,6 +206,7 @@ type RPCExecutor struct {
 	clock                       Clock
 	sleeper                     Sleeper
 	metrics                     RPCMetrics
+	logger                      logging.Logger
 	defaultPolicy               RetryPolicy
 	durableLimiterInlineWaitMax time.Duration
 	randMu                      sync.Mutex
@@ -217,6 +219,7 @@ type RPCExecutorConfig struct {
 	Clock         Clock
 	Sleeper       Sleeper
 	Metrics       RPCMetrics
+	Logger        logging.Logger
 	DefaultPolicy RetryPolicy
 	RandSource    *rand.Rand
 
@@ -255,6 +258,10 @@ func NewRPCExecutor(cfg RPCExecutorConfig) (*RPCExecutor, error) {
 	if metrics == nil {
 		metrics = NoopRPCMetrics{}
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = logging.Nop()
+	}
 	rSource := cfg.RandSource
 	if rSource == nil {
 		rSource = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -272,6 +279,7 @@ func NewRPCExecutor(cfg RPCExecutorConfig) (*RPCExecutor, error) {
 		clock:                       clock,
 		sleeper:                     sleeper,
 		metrics:                     metrics,
+		logger:                      logger,
 		defaultPolicy:               policy,
 		durableLimiterInlineWaitMax: durableInlineWaitMax,
 		randSource:                  rSource,
@@ -333,6 +341,7 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 	dimensions := dimensionBuf[:dimensionCount]
 
 	startTime := e.clock.Now()
+	cid := logging.CorrelationID(ctx)
 	var refreshedPeer bool
 	var durableLimiterInlineWait time.Duration
 
@@ -384,6 +393,14 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 			}
 			if durableYield {
 				e.metrics.ObserveFloodWait(meta.Method, reservation.RetryAfter, true)
+				e.logger.Debug("rpc rate limit yield",
+					logging.Component("rpc"),
+					logging.Operation("do"),
+					logging.Event("rpc_rate_limit_yield"),
+					logging.String("rpc_method", meta.Method),
+					logging.Duration("retry_after", reservation.RetryAfter),
+					logging.Correlation(cid),
+				)
 				return &RPCFailure{
 					Method:     meta.Method,
 					Class:      RPCFloodWait,
@@ -450,6 +467,15 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 
 		// Cancellation / deadline check
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || opCtx.Err() != nil {
+			e.logger.Debug("rpc cancelled",
+				logging.Component("rpc"),
+				logging.Operation("do"),
+				logging.Event("rpc_cancelled"),
+				logging.String("rpc_method", meta.Method),
+				logging.Int("attempt", attempt),
+				logging.ErrorCategoryField(logging.CategoryCancellation),
+				logging.Correlation(cid),
+			)
 			return &RPCFailure{
 				Method:   meta.Method,
 				Class:    class,
@@ -507,6 +533,18 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 			// bounded inline-wait behavior for short waits.
 			deferred := execution.CanDurablyYield(opCtx) || wait > policy.InlineFloodWaitMax
 			e.metrics.ObserveFloodWait(meta.Method, wait, deferred)
+			e.logger.Warn("rpc flood wait",
+				logging.Component("rpc"),
+				logging.Operation("do"),
+				logging.Event("rpc_flood_wait"),
+				logging.String("rpc_method", meta.Method),
+				logging.Duration("flood_wait", wait),
+				logging.Bool("will_yield", deferred),
+				logging.Int("attempt", attempt),
+				logging.ErrorCategoryField(logging.CategoryTelegramRPC),
+				logging.Retryable(true),
+				logging.Correlation(cid),
+			)
 
 			if deferred {
 				return &RPCFailure{
@@ -600,6 +638,17 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 			}
 
 			e.metrics.ObserveWait("transient", delay)
+			e.logger.Warn("rpc retry scheduled",
+				logging.Component("rpc"),
+				logging.Operation("do"),
+				logging.Event("rpc_retry_scheduled"),
+				logging.String("rpc_method", meta.Method),
+				logging.Int("attempt", attempt),
+				logging.Duration("backoff", delay),
+				logging.ErrorCategoryField(logging.CategoryNetwork),
+				logging.Retryable(true),
+				logging.Correlation(cid),
+			)
 			if sleepErr := e.sleeper.Sleep(opCtx, delay); sleepErr != nil {
 				return &RPCFailure{
 					Method:   meta.Method,
@@ -612,6 +661,20 @@ func (e *RPCExecutor) Do(ctx context.Context, meta RPCMeta, operation func(conte
 		}
 
 		// Permanent failure: no retry
+		cat, _ := logging.ClassifyError(err)
+		e.logger.Error("rpc failed",
+			logging.Component("rpc"),
+			logging.Operation("do"),
+			logging.Event("rpc_failed"),
+			logging.String("rpc_method", meta.Method),
+			logging.String("rpc_class", class.String()),
+			logging.Int("attempt", attempt),
+			logging.Float64("duration_ms", float64(e.clock.Now().Sub(startTime).Milliseconds())),
+			logging.ErrorCategoryField(cat),
+			logging.Retryable(false),
+			logging.Correlation(cid),
+			logging.Error(err),
+		)
 		return &RPCFailure{
 			Method:   meta.Method,
 			Class:    class,

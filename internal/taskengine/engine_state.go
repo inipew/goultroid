@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/admission"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
 )
@@ -242,6 +243,7 @@ type Engine struct {
 
 	config    Config
 	configErr error
+	logger    logging.Logger
 	adm       *admission.Controller
 
 	// ---- runLoop-owned execution state ----
@@ -309,4 +311,11 @@ type Engine struct {
 	runtimeRemaining    atomic.Int64
 	runtimeDone         chan struct{}
 	runtimeDoneOnce     sync.Once
+}
+
+func (e *Engine) getLogger() logging.Logger {
+	if e == nil || e.logger == nil {
+		return logging.Nop()
+	}
+	return e.logger
 }

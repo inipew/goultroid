@@ -13,9 +13,9 @@ import (
 
 	"github.com/inipew/goultroid/internal/execution"
 	"github.com/inipew/goultroid/internal/jobs"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
-	"go.uber.org/zap"
 )
 
 type MisfirePolicy int
@@ -44,7 +44,7 @@ type trackedClaim struct {
 
 type Engine struct {
 	db     Repository
-	logger *zap.Logger
+	logger logging.Logger
 	access privilegedChecker
 	// Prevent startup recovery from treating an in-flight registration as an
 	// abandoned prepared schedule in this Engine instance.
@@ -154,9 +154,9 @@ type PeriodicTaskOptions struct {
 
 var _ Service = (*Engine)(nil)
 
-func NewEngine(db Repository, logger *zap.Logger) *Engine {
+func NewEngine(db Repository, logger logging.Logger) *Engine {
 	if logger == nil {
-		logger = zap.NewNop()
+		logger = logging.Nop()
 	}
 	const defaultBatchSize = 4
 	engine := &Engine{
@@ -177,6 +177,40 @@ func (e *Engine) notifyWake() {
 	select {
 	case e.wakeChan <- struct{}{}:
 	default:
+	}
+}
+
+func (e *Engine) logWarn(op, event, msg string, err error, extra ...logging.Field) {
+	e.logWithLevel(false, op, event, msg, err, extra...)
+}
+
+func (e *Engine) logError(op, event, msg string, err error, extra ...logging.Field) {
+	e.logWithLevel(true, op, event, msg, err, extra...)
+}
+
+func (e *Engine) logWithLevel(isErr bool, op, event, msg string, err error, extra ...logging.Field) {
+	if e == nil || e.logger == nil {
+		return
+	}
+	fields := make([]logging.Field, 0, 6+len(extra))
+	fields = append(fields,
+		logging.Component("scheduler"),
+		logging.Operation(op),
+		logging.Event(event),
+	)
+	if err != nil {
+		cat, retryable := logging.ClassifyError(err)
+		fields = append(fields,
+			logging.ErrorCategoryField(cat),
+			logging.Retryable(retryable),
+			logging.Error(err),
+		)
+	}
+	fields = append(fields, extra...)
+	if isErr {
+		e.logger.Error(msg, fields...)
+	} else {
+		e.logger.Warn(msg, fields...)
 	}
 }
 
@@ -216,7 +250,7 @@ func (e *Engine) SetJobsManager(jobsMgr *jobs.Manager) {
 		}
 	})
 	if err := jobsMgr.RegisterHandler(periodicHandlerType, e.runPeriodicAction); err != nil {
-		e.logger.Warn("register periodic action handler", zap.Error(err))
+		e.logWarn("set_jobs_manager", "periodic_handler_register_failed", "register periodic action handler", err)
 	}
 	if e.periodic != nil {
 		e.periodic.SetJobsManager(jobsMgr)
@@ -287,7 +321,11 @@ func (e *Engine) Start(parentCtx context.Context) error {
 	e.running = true
 	e.runDone = make(chan struct{})
 	go e.runLoop(e.ctx, e.runDone)
-	e.logger.Info("scheduler engine started")
+	e.logger.Info("scheduler engine started",
+		logging.Component("scheduler"),
+		logging.Operation("start"),
+		logging.Event("scheduler_started"),
+	)
 	return nil
 }
 
@@ -399,10 +437,14 @@ func (e *Engine) StopContext(ctx context.Context) error {
 	}
 	select {
 	case <-done:
-		e.logger.Info("scheduler engine stopped gracefully")
+		e.logger.Info("scheduler engine stopped gracefully",
+			logging.Component("scheduler"),
+			logging.Operation("stop"),
+			logging.Event("scheduler_stopped"),
+		)
 		return nil
 	case <-ctx.Done():
-		e.logger.Warn("scheduler engine stop timed out waiting for jobs", zap.Error(ctx.Err()))
+		e.logWarn("stop", "scheduler_stop_timeout", "scheduler engine stop timed out waiting for jobs", ctx.Err())
 		return fmt.Errorf("scheduler engine stop timed out: %w", ctx.Err())
 	}
 }
@@ -741,7 +783,7 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 	}()
 
 	if err := e.recoverPreparedScheduleRegistrations(ctx); err != nil && !errors.Is(err, context.Canceled) && ctx.Err() == nil {
-		e.logger.Warn("recover prepared schedule registrations", zap.Error(err))
+		e.logWarn("recover", "registration_recovery_failed", "recover prepared schedule registrations", err)
 	}
 
 	for {
@@ -762,7 +804,7 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 			if errors.Is(modeErr, context.Canceled) || ctx.Err() != nil {
 				return
 			}
-			e.logger.Error("read scheduler cutover mode", zap.Error(modeErr))
+			e.logError("process", "cutover_mode_read_failed", "read scheduler cutover mode", modeErr)
 		}
 		var earliest time.Time
 		var found bool
@@ -776,7 +818,7 @@ func (e *Engine) runLoop(ctx context.Context, done chan struct{}) {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return
 			}
-			e.logger.Error("failed to query earliest due scheduled job", zap.Error(err))
+			e.logError("process", "earliest_due_query_failed", "failed to query earliest due scheduled job", err)
 			nextDelay = time.Second
 			hasDeadline = true
 			wakeKind = "retry"
@@ -868,7 +910,7 @@ func (e *Engine) processRedesignedSchedules(ctx context.Context, now time.Time) 
 	}
 	processed, err := e.jobsMgr.ProcessDueSchedules(ctx, now, limit)
 	if err != nil {
-		e.logger.Error("process redesigned schedules", zap.Error(err))
+		e.logError("process", "redesigned_schedules_failed", "process redesigned schedules", err)
 		return 0
 	}
 	return processed
@@ -890,13 +932,13 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 		claimBatch = 10
 	}
 	if e.jobsMgr == nil {
-		e.logger.Error("scheduler jobs manager is not configured")
+		e.logError("process", "jobs_manager_unconfigured", "scheduler jobs manager is not configured", nil)
 		return 0
 	}
 
 	claimedJobs, err := e.db.ClaimDueScheduledJobs(ctx, now, claimBatch, schedulerClaimLease)
 	if err != nil {
-		e.logger.Error("failed to claim due scheduled jobs", zap.Error(err))
+		e.logError("process", "claim_due_jobs_failed", "failed to claim due scheduled jobs", err)
 		return 0
 	}
 
@@ -922,12 +964,13 @@ func (e *Engine) processDueJobs(ctx context.Context, now time.Time) int {
 			}
 			// Misfire is a WHEN policy. Resolve it before materializing any
 			// JobOccurrence/JobAttempt so a skipped slot consumes no budget.
-			e.logger.Warn("recurring scheduled job misfired: skipping execution", zap.Int64("job_id", j.ID), zap.Time("next_run_at", j.NextRunAt))
+			e.logWarn("process", "schedule_misfire_skipped", "recurring scheduled job misfired: skipping execution", nil,
+				logging.Int64("job_id", j.ID), logging.Time("next_run_at", j.NextRunAt))
 			stateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			cerr := e.db.CompleteScheduledJob(stateCtx, j.ID, j.ClaimToken, 0, time.Now().UTC())
 			cancel()
 			if cerr != nil && !errors.Is(cerr, ErrJobLeaseLost) {
-				e.logger.Warn("failed to advance skipped recurring job", zap.Int64("job_id", j.ID), zap.Error(cerr))
+				e.logWarn("process", "advance_skipped_job_failed", "failed to advance skipped recurring job", cerr, logging.Int64("job_id", j.ID))
 			}
 			e.notifyWake()
 			continue
@@ -986,14 +1029,14 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 		// this legacy slot claimed until its state can be read; retrying by moving
 		// NextRunAt could create a second logical occurrence.
 		e.retainLegacyClaim(stateCtx, job, definitionID, "")
-		e.logger.Error("failed to inspect scheduled occurrence after admission rejection", zap.Int64("job_id", job.ID), zap.Error(oerr))
+		e.logError("dispatch", "inspect_occurrence_failed", "failed to inspect scheduled occurrence after admission rejection", oerr, logging.Int64("job_id", job.ID))
 		return
 	}
 	if occ != nil {
 		quarantined, quarantineErr := e.occurrenceNeedsUnknownEffectQuarantine(stateCtx, occ)
 		if quarantineErr != nil {
 			e.retainLegacyClaim(stateCtx, job, definitionID, occ.ID)
-			e.logger.Error("failed to read unknown-effect review", zap.Int64("job_id", job.ID), zap.Error(quarantineErr))
+			e.logError("dispatch", "unknown_effect_review_failed", "failed to read unknown-effect review", quarantineErr, logging.Int64("job_id", job.ID))
 			return
 		}
 		if quarantined {
@@ -1013,17 +1056,17 @@ func (e *Engine) onSubmitRejected(ctx context.Context, job ScheduledJob, occurre
 			return
 		}
 	}
-	e.logger.Error("failed to admit scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(submitErr))
+	e.logError("dispatch", "admit_occurrence_failed", "failed to admit scheduled occurrence", submitErr, logging.Int64("job_id", job.ID))
 	retryDelay, permanent := schedulerSubmissionFailurePolicy(submitErr)
 	if failErr := e.db.FailScheduledJob(stateCtx, job.ID, job.ClaimToken, submitErr.Error(), 0, retryDelay, permanent, time.Now().UTC()); failErr != nil && !errors.Is(failErr, ErrJobLeaseLost) {
-		e.logger.Error("failed to release rejected scheduled claim", zap.Int64("job_id", job.ID), zap.Error(failErr))
+		e.logError("dispatch", "release_claim_failed", "failed to release rejected scheduled claim", failErr, logging.Int64("job_id", job.ID))
 	}
 }
 
 func (e *Engine) retainLegacyClaim(ctx context.Context, job ScheduledJob, definitionID, occurrenceID string) {
 	if err := e.db.RenewJobLease(ctx, job.ID, job.ClaimToken, schedulerClaimLease, time.Now().UTC()); err != nil {
 		if !errors.Is(err, ErrJobLeaseLost) {
-			e.logger.Error("failed to renew lease for unresolved scheduled occurrence", zap.Int64("job_id", job.ID), zap.Error(err))
+			e.logError("dispatch", "renew_lease_failed", "failed to renew lease for unresolved scheduled occurrence", err, logging.Int64("job_id", job.ID))
 		}
 		return
 	}
@@ -1044,7 +1087,7 @@ func (e *Engine) occurrenceNeedsUnknownEffectQuarantine(ctx context.Context, occ
 
 func (e *Engine) failBlockedScheduledJob(ctx context.Context, jobID int64, claimToken string) bool {
 	if err := e.db.FailScheduledJob(ctx, jobID, claimToken, blockedOccurrenceReason, 0, 0, true, time.Now().UTC()); err != nil && !errors.Is(err, ErrJobLeaseLost) {
-		e.logger.Error("failed to quarantine blocked scheduled job", zap.Int64("job_id", jobID), zap.Error(err))
+		e.logError("quarantine", "quarantine_job_failed", "failed to quarantine blocked scheduled job", err, logging.Int64("job_id", jobID))
 		return false
 	}
 	return true
@@ -1099,7 +1142,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 	row, err := e.db.GetScheduledJob(stateCtx, c.jobID)
 	e.scheduledReads.Add(1)
 	if err != nil {
-		e.logger.Warn("failed to read scheduled job during claim reconciliation", zap.Int64("job_id", c.jobID), zap.Error(err))
+		e.logWarn("reconcile", "read_job_failed", "failed to read scheduled job during claim reconciliation", err, logging.Int64("job_id", c.jobID))
 		return
 	}
 	if row == nil {
@@ -1117,7 +1160,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 	}
 	quarantined, err := e.occurrenceNeedsUnknownEffectQuarantine(stateCtx, occ)
 	if err != nil {
-		e.logger.Warn("failed to read unknown-effect review during claim reconciliation", zap.Int64("job_id", c.jobID), zap.Error(err))
+		e.logWarn("reconcile", "unknown_effect_review_failed", "failed to read unknown-effect review during claim reconciliation", err, logging.Int64("job_id", c.jobID))
 		return
 	}
 	if quarantined {
@@ -1131,7 +1174,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 	switch occ.State {
 	case jobs.OccurrenceCompleted:
 		if cerr := e.db.CompleteScheduledJob(stateCtx, c.jobID, c.claimToken, occurrenceDurationMs(stateCtx, e.jobsMgr, c.occurrenceID), now); cerr != nil && !errors.Is(cerr, ErrJobLeaseLost) {
-			e.logger.Error("failed to complete scheduled job", zap.Int64("job_id", c.jobID), zap.Error(cerr))
+			e.logError("reconcile", "complete_job_failed", "failed to complete scheduled job", cerr, logging.Int64("job_id", c.jobID))
 			return
 		}
 		e.pruneSettledOccurrences(ctx, c.definitionID)
@@ -1139,7 +1182,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 		e.notifyWake()
 	case jobs.OccurrenceFailed:
 		if ferr := e.db.FailScheduledJob(stateCtx, c.jobID, c.claimToken, occurrenceError(stateCtx, e.jobsMgr, c.occurrenceID), 0, 0, true, now); ferr != nil && !errors.Is(ferr, ErrJobLeaseLost) {
-			e.logger.Error("failed to record scheduled job failure", zap.Int64("job_id", c.jobID), zap.Error(ferr))
+			e.logError("reconcile", "record_failure_failed", "failed to record scheduled job failure", ferr, logging.Int64("job_id", c.jobID))
 			return
 		}
 		e.pruneSettledOccurrences(ctx, c.definitionID)
@@ -1147,7 +1190,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 		e.notifyWake()
 	case jobs.OccurrenceCancelled:
 		if cerr := e.db.CompleteScheduledJob(stateCtx, c.jobID, c.claimToken, 0, now); cerr != nil && !errors.Is(cerr, ErrJobLeaseLost) {
-			e.logger.Error("failed to advance cancelled scheduled job", zap.Int64("job_id", c.jobID), zap.Error(cerr))
+			e.logError("reconcile", "advance_cancelled_failed", "failed to advance cancelled scheduled job", cerr, logging.Int64("job_id", c.jobID))
 			return
 		}
 		e.pruneSettledOccurrences(ctx, c.definitionID)
@@ -1162,7 +1205,7 @@ func (e *Engine) reconcileClaim(ctx context.Context, c *trackedClaim) {
 					e.untrackClaim(c.jobID)
 					e.notifyWake()
 				} else {
-					e.logger.Warn("failed to renew lease for active scheduled occurrence", zap.Int64("job_id", c.jobID), zap.Error(err))
+					e.logWarn("reconcile", "renew_lease_failed", "failed to renew lease for active scheduled occurrence", err, logging.Int64("job_id", c.jobID))
 				}
 				return
 			}

@@ -21,6 +21,7 @@ import (
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/database"
+	"github.com/inipew/goultroid/internal/logging/zaplog"
 	presentationselfinline "github.com/inipew/goultroid/internal/presentation/selfinline"
 	presentationtelegram "github.com/inipew/goultroid/internal/presentation/telegram"
 	"go.uber.org/zap"
@@ -191,6 +192,7 @@ func NewClient(cfg *config.Config, dispatcher *Dispatcher, db *database.DB, logg
 		Limiter:       limiter,
 		DefaultPolicy: defaultExecutorPolicy(),
 		Metrics:       NewInMemoryRPCMetrics(),
+		Logger:        zaplog.Wrap(logger).Named("rpc"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize rpc executor: %w", err)
