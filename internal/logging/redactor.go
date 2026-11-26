@@ -261,10 +261,16 @@ func isValueDelimiter(c byte) bool {
 }
 
 // RedactError returns a bounded, redacted error summary.
-func RedactError(err error) string {
+// If err.Error() panics, it recovers safely and returns a placeholder.
+func RedactError(err error) (out string) {
 	if err == nil {
 		return ""
 	}
+	defer func() {
+		if recover() != nil {
+			out = "[redacted:error-panic]"
+		}
+	}()
 	return RedactString(err.Error())
 }
 

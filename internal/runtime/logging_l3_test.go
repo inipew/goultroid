@@ -123,3 +123,40 @@ func TestSupervisor_LogsRestartsAndRedactsPanic(t *testing.T) {
 		t.Fatalf("expected panic/restart/exhaustion logs, got %d", len(rec.entries))
 	}
 }
+
+func TestSupervisor_SinglePanicProducesSingleOperationalEvent(t *testing.T) {
+	rec := &recordingLogger{}
+	sup := NewSupervisor(WithSupervisorLogger(rec))
+	_ = sup.Register(WorkerSpec{
+		Name:    "single-panic",
+		Restart: NeverRestart,
+		Run: func(context.Context) error {
+			panic("boom")
+		},
+	})
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if snaps := sup.Snapshot(); len(snaps) == 1 && snaps[0].State == WorkerStateFailed {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = sup.Stop(context.Background())
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	panicEvents := 0
+	for _, entry := range rec.entries {
+		for _, f := range entry.fields {
+			if f.Key == "event" && f.Str == "worker_panic_recovered" {
+				panicEvents++
+			}
+		}
+	}
+	if panicEvents != 1 {
+		t.Fatalf("expected exactly 1 worker_panic_recovered event, got %d", panicEvents)
+	}
+}

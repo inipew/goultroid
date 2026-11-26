@@ -92,3 +92,19 @@ func TestAdapter_UnknownFieldKindFailClosed(t *testing.T) {
 		}
 	}
 }
+
+type panickingZapErr struct{}
+
+func (panickingZapErr) Error() string { panic("boom in Error()") }
+
+func TestAdapter_WithAndErrorDoNotPanic(t *testing.T) {
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := Wrap(zap.New(core))
+
+	child := logger.With(logging.Error(panickingZapErr{}))
+	child.Error("still alive", logging.Error(panickingZapErr{}))
+
+	if logs.Len() != 1 {
+		t.Fatalf("expected 1 log entry despite panicking Error(), got %d", logs.Len())
+	}
+}

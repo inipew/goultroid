@@ -39,20 +39,30 @@ func (a *Adapter) Error(msg string, fields ...logging.Field) {
 	a.log(zapcore.ErrorLevel, msg, fields)
 }
 
-func (a *Adapter) With(fields ...logging.Field) logging.Logger {
+func (a *Adapter) With(fields ...logging.Field) (res logging.Logger) {
 	if a == nil || a.z == nil {
 		return logging.Nop()
 	}
+	defer func() {
+		if recover() != nil {
+			res = a
+		}
+	}()
 	return &Adapter{z: a.z.With(toZapFields(fields)...)}
 }
 
-func (a *Adapter) Named(name string) logging.Logger {
+func (a *Adapter) Named(name string) (res logging.Logger) {
 	if a == nil || a.z == nil {
 		return logging.Nop()
 	}
 	if name == "" {
 		return a
 	}
+	defer func() {
+		if recover() != nil {
+			res = a
+		}
+	}()
 	return &Adapter{z: a.z.Named(name)}
 }
 

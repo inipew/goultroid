@@ -14,7 +14,6 @@ import (
 	"github.com/inipew/goultroid/internal/core"
 	"github.com/inipew/goultroid/internal/logging/zaplog"
 	"github.com/inipew/goultroid/internal/resource"
-	"github.com/inipew/goultroid/internal/runtime"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -113,18 +112,9 @@ func TestSafePanicReporters_RedactSecrets(t *testing.T) {
 		At:        time.Now().UTC(),
 	})
 
-	rtRep := safeRuntimePanicReporter{logger: adapter.Named("supervisor.panic")}
-	rtRep.ReportPanic(runtime.PanicReport{
-		Owner:     "supervisor",
-		Component: "worker",
-		Value:     errors.New("Bearer super-secret-jwt"),
-		Stack:     []byte("goroutine 2:\n/root/private.go:9\n"),
-		At:        time.Now().UTC(),
-	})
-
 	entries := logs.All()
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 panic log entries, got %d", len(entries))
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 panic log entry, got %d", len(entries))
 	}
 	for _, entry := range entries {
 		for k, v := range entry.ContextMap() {

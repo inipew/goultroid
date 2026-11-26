@@ -168,12 +168,47 @@ func TestCorrelationContextAndClassifier(t *testing.T) {
 	}
 
 	cat, retryable := ClassifyError(context.DeadlineExceeded)
-	if cat != CategoryCancellation || !retryable {
+	if cat != CategoryCancellation || retryable {
 		t.Fatalf("unexpected classification for DeadlineExceeded: %s %v", cat, retryable)
 	}
 	cat, retryable = ClassifyError(errors.New("FLOOD_WAIT_30"))
 	if cat != CategoryTelegramRPC || !retryable {
 		t.Fatalf("unexpected classification for FLOOD_WAIT: %s %v", cat, retryable)
+	}
+}
+
+type typedProviderErr struct {
+	cat       ErrorCategory
+	retryable bool
+}
+
+func (e typedProviderErr) Error() string                          { return "typed" }
+func (e typedProviderErr) LoggingCategory() (ErrorCategory, bool) { return e.cat, e.retryable }
+
+type panickingErr struct{}
+
+func (panickingErr) Error() string { panic("error formatting panic") }
+
+func TestClassifyError_TypedAndSentinel(t *testing.T) {
+	cat, retry := ClassifyError(typedProviderErr{cat: CategoryPersistence, retryable: true})
+	if cat != CategoryPersistence || !retry {
+		t.Fatalf("expected persistence/true, got %s/%v", cat, retry)
+	}
+	cat, retry = ClassifyError(context.Canceled)
+	if cat != CategoryCancellation || retry {
+		t.Fatalf("expected cancellation/false, got %s/%v", cat, retry)
+	}
+	// Plain error containing "timeout" without net.Error must not blindly classify as retryable network.
+	cat, retry = ClassifyError(errors.New("arbitrary timeout message"))
+	if cat != CategoryInternal || retry {
+		t.Fatalf("expected internal/false for untyped string, got %s/%v", cat, retry)
+	}
+}
+
+func TestRedactError_PanickingErrorIsolated(t *testing.T) {
+	got := RedactError(panickingErr{})
+	if got != "[redacted:error-panic]" {
+		t.Fatalf("expected [redacted:error-panic], got %q", got)
 	}
 }
 

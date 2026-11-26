@@ -473,7 +473,6 @@ func New(cfg *config.Config) (_ *App, retErr error) {
 	supervisor := runtime.NewSupervisor(
 		runtime.WithSupervisorName("lifecycle-supervisor"),
 		runtime.WithSupervisorLogger(opLogger.Named("supervisor")),
-		runtime.WithPanicReporter(safeRuntimePanicReporter{logger: opLogger.Named("supervisor.panic")}),
 	)
 	if tgRuntime.client != nil {
 		if err := supervisor.Register(runtime.WorkerSpec{
@@ -672,25 +671,6 @@ func (r safeCorePanicReporter) ReportPanic(report core.PanicReport) {
 	}
 	r.logger.Error("recovered panic",
 		logging.Component("plugin"),
-		logging.Operation("panic_recovery"),
-		logging.Event("panic_recovered"),
-		logging.String("owner", report.Owner),
-		logging.String("target_component", report.Component),
-		logging.Panic(report.Value, report.Stack),
-		logging.Time("at", report.At),
-	)
-}
-
-type safeRuntimePanicReporter struct {
-	logger logging.Logger
-}
-
-func (r safeRuntimePanicReporter) ReportPanic(report runtime.PanicReport) {
-	if r.logger == nil {
-		return
-	}
-	r.logger.Error("recovered panic",
-		logging.Component("runtime"),
 		logging.Operation("panic_recovery"),
 		logging.Event("panic_recovered"),
 		logging.String("owner", report.Owner),
