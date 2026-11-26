@@ -212,6 +212,40 @@ func TestRedactError_PanickingErrorIsolated(t *testing.T) {
 	}
 }
 
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("entropy unavailable") }
+
+func TestCorrelationID_ValidationAndEntropyFallback(t *testing.T) {
+	// Valid ID preserved
+	ctx := WithCorrelationID(context.Background(), "req-123_abc.1")
+	if got := CorrelationID(ctx); got != "req-123_abc.1" {
+		t.Fatalf("expected valid ID preserved, got %q", got)
+	}
+
+	// Invalid IDs (newlines, control chars, spaces, too long) replaced with fresh cid-
+	for _, bad := range []string{"", "bad\nid", "bad\x00id", "has space", strings.Repeat("a", MaxCorrelationIDLen+1)} {
+		c := WithCorrelationID(context.Background(), bad)
+		got := CorrelationID(c)
+		if !IsValidCorrelationID(got) || got == bad {
+			t.Fatalf("expected invalid correlation ID %q replaced, got %q", bad, got)
+		}
+	}
+
+	// Invalid causation ID ignored
+	c2 := WithCausationID(context.Background(), "bad\ncause")
+	if got := CausationID(c2); got != "" {
+		t.Fatalf("expected invalid causation ID ignored, got %q", got)
+	}
+
+	// Entropy failure falls back to monotonic sequence
+	id1 := newCorrelationIDFrom(failingReader{})
+	id2 := newCorrelationIDFrom(failingReader{})
+	if !IsValidCorrelationID(id1) || !IsValidCorrelationID(id2) || id1 == id2 {
+		t.Fatalf("expected distinct valid fallback IDs, got %q and %q", id1, id2)
+	}
+}
+
 func TestRedactField_UnknownKindFailClosed(t *testing.T) {
 	cases := []Field{
 		{Key: "diagnostic", Kind: KindUnknown, Str: "token=super-secret"},

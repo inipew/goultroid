@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -12,8 +13,10 @@ import (
 
 	"github.com/inipew/goultroid/internal/config"
 	"github.com/inipew/goultroid/internal/core"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/logging/zaplog"
 	"github.com/inipew/goultroid/internal/resource"
+	"github.com/inipew/goultroid/internal/runtime"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -183,5 +186,102 @@ func TestApp_ShutdownSyncsOnceAfterResourceCleanup(t *testing.T) {
 	}
 	if fc.syncCalled != 1 {
 		t.Fatalf("expected Sync called exactly once, got %d", fc.syncCalled)
+	}
+}
+
+func TestShutdown_TransportTimeoutReportsActiveProducerFallback(t *testing.T) {
+	a := &App{
+		opLogger:     zaplog.Wrap(zap.NewNop()),
+		shutdownDone: make(chan struct{}),
+	}
+	a.lifecycleState.Store(uint32(lifecycleRunning))
+
+	// Transport never closes transportDone within join budget.
+	neverDone := make(chan struct{})
+	a.transportDone = neverDone
+
+	var stderr bytes.Buffer
+	if a.beginQuiesce() {
+		a.performShutdownWith(500*time.Millisecond, 25*time.Millisecond, &stderr)
+	}
+
+	err := a.Shutdown(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "telegram transport did not stop before join deadline") {
+		t.Fatalf("expected transport timeout error, got %v", err)
+	}
+	if !strings.Contains(stderr.String(), "emergency shutdown proceeding while producers remain active") {
+		t.Fatalf("expected sanitized active-producer stderr warning, got %q", stderr.String())
+	}
+}
+
+func TestShutdown_UncooperativeSupervisorWorkerReportsTimeout(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+
+	sup := runtime.NewSupervisor()
+	_ = sup.Register(runtime.WorkerSpec{
+		Name:    "stuck-worker",
+		Restart: runtime.NeverRestart,
+		Run: func(context.Context) error {
+			<-release
+			return nil
+		},
+	})
+	rt := runtime.New()
+	_ = rt.Register(sup)
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("rt.Start: %v", err)
+	}
+
+	a := &App{
+		runtime:      rt,
+		opLogger:     zaplog.Wrap(zap.NewNop()),
+		shutdownDone: make(chan struct{}),
+	}
+	a.lifecycleState.Store(uint32(lifecycleRunning))
+
+	var stderr bytes.Buffer
+	if a.beginQuiesce() {
+		a.performShutdownWith(150*time.Millisecond, 20*time.Millisecond, &stderr)
+	}
+	err := a.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("expected shutdown error for uncooperative supervisor worker")
+	}
+	if !strings.Contains(stderr.String(), "emergency shutdown proceeding while producers remain active") {
+		t.Fatalf("expected active-producer stderr warning, got %q", stderr.String())
+	}
+}
+
+func TestInitAppLogger_ActualJSONEncoderOutput(t *testing.T) {
+	var buf bytes.Buffer
+	adapter, _, lvl := initAppLoggerWith(&config.Config{
+		LogLevel:  "info",
+		LogEnv:    "production",
+		LogFormat: "json",
+	}, &buf, func(zc zap.Config, opts ...zap.Option) (*zap.Logger, error) {
+		enc := zapcore.NewJSONEncoder(zc.EncoderConfig)
+		core := zapcore.NewCore(enc, zapcore.AddSync(&buf), zc.Level)
+		return zap.New(core, opts...), nil
+	})
+	adapter.Debug("filtered out")
+	adapter.Info("hello json", logging.Component("app"))
+	if buf.Len() == 0 {
+		t.Fatal("expected JSON log line")
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("expected valid JSON output, got %q: %v", buf.String(), err)
+	}
+	if parsed["msg"] != "hello json" || parsed["component"] != "app" {
+		t.Fatalf("unexpected JSON payload: %+v", parsed)
+	}
+
+	// Verify live level reload enables debug emission.
+	lvl.SetLevel(zapcore.DebugLevel)
+	buf.Reset()
+	adapter.Debug("now visible")
+	if !strings.Contains(buf.String(), "now visible") {
+		t.Fatalf("expected debug log after live level reload, got %q", buf.String())
 	}
 }

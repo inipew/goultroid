@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/inipew/goultroid/internal/config"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/logging/zaplog"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -80,7 +81,7 @@ func initAppLoggerWith(cfg *config.Config, errOut io.Writer, build zapBuilderFun
 
 	z, err := build(zapCfg, zap.AddStacktrace(zapcore.ErrorLevel))
 	if err != nil {
-		_, _ = fmt.Fprintf(errOut, "logger initialization failed (%v); falling back to stderr logger\n", err)
+		_, _ = fmt.Fprintf(errOut, "logger initialization failed (%s); falling back to stderr logger\n", logging.RedactError(err))
 		z = newFallbackStderrLogger(errOut, atomicLevel)
 	}
 	return zaplog.Wrap(z), z, atomicLevel
@@ -108,10 +109,17 @@ func syncAppLogger(adapter *zaplog.Adapter, errOut io.Writer) error {
 		errOut = os.Stderr
 	}
 	if err := adapter.Sync(); err != nil {
-		_, _ = fmt.Fprintf(errOut, "logger sync failed: %v\n", err)
+		_, _ = fmt.Fprintf(errOut, "logger sync failed: %s\n", logging.RedactError(err))
 		return err
 	}
 	return nil
+}
+
+func reportShutdownFallback(errOut io.Writer, msg string) {
+	if errOut == nil {
+		errOut = os.Stderr
+	}
+	_, _ = fmt.Fprintf(errOut, "shutdown warning: %s\n", logging.RedactString(msg))
 }
 
 // initLogger is a test-compatibility helper delegating to initAppLogger.

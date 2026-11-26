@@ -4,10 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 )
 
 const appShutdownTimeout = 30 * time.Second
+
+type producerStopState uint8
+
+const (
+	producersStoppedCleanly producerStopState = iota
+	producersTimedOutActive
+)
 
 func (a *App) Shutdown(ctx context.Context) error {
 	if ctx == nil {
@@ -31,9 +39,19 @@ func (a *App) Shutdown(ctx context.Context) error {
 }
 
 func (a *App) performShutdown() {
+	a.performShutdownWith(appShutdownTimeout, transportJoinTimeout, nil)
+}
+
+func (a *App) performShutdownWith(shutdownBudget, joinBudget time.Duration, errOut io.Writer) {
 	// One App-owned deadline governs every teardown phase. External Shutdown
 	// caller contexts only bound their own wait and never shorten this budget.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), appShutdownTimeout)
+	if shutdownBudget <= 0 {
+		shutdownBudget = appShutdownTimeout
+	}
+	if joinBudget <= 0 {
+		joinBudget = transportJoinTimeout
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer shutdownCancel()
 
 	a.markStopping()
@@ -42,8 +60,11 @@ func (a *App) performShutdown() {
 	}
 
 	var errs []error
+	producerState := producersStoppedCleanly
+
 	if a.runtime != nil {
 		if err := a.runtime.StopWithin(shutdownCtx); err != nil {
+			producerState = producersTimedOutActive
 			errs = append(errs, fmt.Errorf("runtime: %w", err))
 		}
 	}
@@ -60,7 +81,7 @@ func (a *App) performShutdown() {
 		transportCancel()
 	}
 	if transportDone != nil {
-		timer := time.NewTimer(transportJoinTimeout)
+		timer := time.NewTimer(joinBudget)
 		select {
 		case <-transportDone:
 			if !timer.Stop() {
@@ -70,6 +91,7 @@ func (a *App) performShutdown() {
 				}
 			}
 		case <-timer.C:
+			producerState = producersTimedOutActive
 			errs = append(errs, errors.New("telegram transport did not stop before join deadline"))
 		case <-shutdownCtx.Done():
 			if !timer.Stop() {
@@ -78,6 +100,7 @@ func (a *App) performShutdown() {
 				default:
 				}
 			}
+			producerState = producersTimedOutActive
 			errs = append(errs, fmt.Errorf("telegram transport join exceeded global shutdown deadline: %w", shutdownCtx.Err()))
 		}
 	}
@@ -92,11 +115,16 @@ func (a *App) performShutdown() {
 			errs = append(errs, leakErr)
 		}
 	}
-	// Sync exactly once after all runtime producers, transport, and resource
-	// cleanups have completed.
-	if err := syncAppLogger(a.opLogger, nil); err != nil {
+
+	// Flush buffered logs once. When producers timed out and may still be active,
+	// report the emergency-shutdown state explicitly via sanitized stderr fallback.
+	if producerState == producersTimedOutActive {
+		reportShutdownFallback(errOut, "emergency shutdown proceeding while producers remain active")
+	}
+	if err := syncAppLogger(a.opLogger, errOut); err != nil {
 		errs = append(errs, fmt.Errorf("logger: %w", err))
 	}
+
 	var shutdownErr error
 	if len(errs) > 0 {
 		shutdownErr = fmt.Errorf("shutdown completed with errors: %w", errors.Join(errs...))

@@ -63,3 +63,30 @@ func TestUserLog_RedactsSecretsInPMMentionAndActions(t *testing.T) {
 		}
 	}
 }
+
+func TestUserLog_PreservesNormalProseAndEscapesHTML(t *testing.T) {
+	repo := &r2MockRepo{
+		settings: map[string]string{
+			SettingLogDestination: `{"id":12345,"type":"chat"}`,
+		},
+	}
+	sender := &r2MockSender{}
+	svc := NewService(repo, sender, zap.NewNop())
+
+	prose := "please check the token guide & password policy <script>alert(1)</script> for key details"
+	if err := svc.LogPM(context.Background(), "Alice", 10, prose); err != nil {
+		t.Fatalf("LogPM: %v", err)
+	}
+	if len(sender.sent) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(sender.sent))
+	}
+	out := sender.sent[0]
+	for _, keep := range []string{"token guide", "password policy", "key details"} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("normal prose %q was falsely redacted in %q", keep, out)
+		}
+	}
+	if strings.Contains(out, "<script>") {
+		t.Errorf("raw HTML tag was not escaped in %q", out)
+	}
+}
