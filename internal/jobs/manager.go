@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/runtime"
 	"github.com/inipew/goultroid/internal/tasks"
-	"go.uber.org/zap"
 )
 
 // Handler resolves a versioned job definition at execution time. It receives a
@@ -60,7 +60,7 @@ type Manager struct {
 	occurrenceGatesMu sync.Mutex
 	occurrenceGates   map[string]*occurrenceGate
 
-	logger              *zap.Logger
+	logger              logging.Logger
 	recoveryMu          sync.RWMutex
 	recoveryDiagnostics RecoveryDiagnostics
 }
@@ -73,10 +73,11 @@ type retryItem struct {
 
 // trackedOccurrence remembers the latest attempt driver of an occurrence.
 type trackedOccurrence struct {
-	def         JobDefinition
-	handler     Handler
-	taskID      tasks.TaskID
-	timingOwned bool
+	def           JobDefinition
+	handler       Handler
+	taskID        tasks.TaskID
+	timingOwned   bool
+	correlationID string
 }
 
 const (
@@ -707,7 +708,7 @@ func (m *Manager) SubmitOccurrence(ctx context.Context, jobID string, occurrence
 	}
 	taskID := tasks.TaskID(attempt.TaskID)
 	copyDef := cloneDefinition(definition)
-	m.track(occurrence.ID, copyDef, handler, taskID, timingOwnedOccurrence(occurrence))
+	m.track(occurrence.ID, copyDef, handler, taskID, timingOwnedOccurrence(occurrence), logging.CorrelationID(ctx))
 	ticket, err := client.Submit(ctx, tasks.WorkSpec{
 		ID:               taskID,
 		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},
@@ -781,14 +782,14 @@ func (m *Manager) PruneOccurrences(ctx context.Context, jobID string, before tim
 	return m.stores.Occurrences.DeleteTerminalOccurrences(ctx, jobID, before, limit)
 }
 
-func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID, timingOwned bool) {
+func (m *Manager) track(occurrenceID string, def JobDefinition, handler Handler, taskID tasks.TaskID, timingOwned bool, correlationID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.tracked == nil {
 		m.tracked = make(map[string]*trackedOccurrence)
 	}
 	m.tracked[occurrenceID] = &trackedOccurrence{
-		def: cloneDefinition(def), handler: handler, taskID: taskID, timingOwned: timingOwned,
+		def: cloneDefinition(def), handler: handler, taskID: taskID, timingOwned: timingOwned, correlationID: correlationID,
 	}
 }
 
@@ -799,10 +800,28 @@ func (m *Manager) Definition(id string) (JobDefinition, bool) {
 	return cloneDefinition(def), ok
 }
 
-func (m *Manager) SetLogger(logger *zap.Logger) {
+// SetLogger configures the operational logger for JobsManager.
+// Passing nil resets to logging.Nop().
+func (m *Manager) SetLogger(logger logging.Logger) {
+	if logger == nil {
+		logger = logging.Nop()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.logger = logger
+}
+
+func (m *Manager) getLogger() logging.Logger {
+	if m == nil {
+		return logging.Nop()
+	}
+	m.mu.RLock()
+	l := m.logger
+	m.mu.RUnlock()
+	if l == nil {
+		return logging.Nop()
+	}
+	return l
 }
 
 func (m *Manager) RecoveryDiagnostics() RecoveryDiagnostics {

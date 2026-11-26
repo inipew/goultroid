@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/inipew/goultroid/internal/logging/zaplog"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
@@ -55,7 +56,7 @@ func TestRecoveryFailureIsObservable(t *testing.T) {
 		Recovery:           recStore,
 	}, nil)
 	manager.accepting = true
-	manager.SetLogger(logger)
+	manager.SetLogger(zaplog.Wrap(logger))
 
 	manager.runRecoveryPass(context.Background())
 
@@ -111,7 +112,7 @@ func TestRecoveryCancellationIsNotReportedAsFailure(t *testing.T) {
 		Recovery:           recStore,
 	}, nil)
 	manager.accepting = true
-	manager.SetLogger(logger)
+	manager.SetLogger(zaplog.Wrap(logger))
 
 	// Pre-cancelled context simulates shutdown
 	cancelledCtx, cancel := context.WithCancel(context.Background())
@@ -146,7 +147,7 @@ func TestRecoveryInternalTimeoutIsReportedAsFailure(t *testing.T) {
 		Recovery:           recStore,
 	}, nil)
 	manager.accepting = true
-	manager.SetLogger(logger)
+	manager.SetLogger(zaplog.Wrap(logger))
 
 	// baseCtx is ACTIVE (e.g. context.Background())
 	activeBaseCtx := context.Background()
@@ -187,7 +188,7 @@ func TestSuccessfulEmptyRecoveryPassIsDistinctFromFailure(t *testing.T) {
 		Recovery:           recStore,
 	}, nil)
 	manager.accepting = true
-	manager.SetLogger(logger)
+	manager.SetLogger(zaplog.Wrap(logger))
 
 	manager.runRecoveryPass(context.Background())
 
@@ -267,7 +268,7 @@ func TestRecoveryLoggingDoesNotExposeSensitivePayloads(t *testing.T) {
 		Recovery:           recStore,
 	}, nil)
 	manager.accepting = true
-	manager.SetLogger(logger)
+	manager.SetLogger(zaplog.Wrap(logger))
 	manager.definitions["job:secret"] = JobDefinition{
 		ID:          "job:secret",
 		HandlerType: "secret.handler",

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/inipew/goultroid/internal/execution"
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -182,7 +183,7 @@ func (m *Manager) driveAttempt(ctx context.Context, occurrenceID string, def Job
 	commit := func(commitCtx context.Context, res tasks.TaskResult) error {
 		return m.commitAttemptResult(commitCtx, attempt, res)
 	}
-	m.track(occurrenceID, copyDef, handler, nextTaskID, timingOwned)
+	m.track(occurrenceID, copyDef, handler, nextTaskID, timingOwned, logging.CorrelationID(ctx))
 	ticket, err := m.client.Submit(ctx, tasks.WorkSpec{
 		ID:               nextTaskID,
 		Scope:            tasks.ScopeIdentity{Owner: copyDef.ScopeOwner, Generation: uint64(copyDef.Version)},

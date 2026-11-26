@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/tasks"
 )
 
@@ -251,6 +252,15 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	}
 	if res.Cause == tasks.CauseRateLimited {
 		if summary.Deferrals >= maxDeferrals(tr.def.RetryPolicy) {
+			m.getLogger().Error("job occurrence exhausted deferral budget",
+				logging.Component("jobs"),
+				logging.Operation("retry_monitor"),
+				logging.Event("attempt_exhausted"),
+				logging.String("job_id", tr.def.ID),
+				logging.String("occurrence_id", item.occurrenceID),
+				logging.Int("deferrals", summary.Deferrals),
+				logging.Correlation(tr.correlationID),
+			)
 			finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 			err := m.stores.Occurrences.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
 			finalizeCancel()
@@ -261,6 +271,17 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 			m.untrack(item.occurrenceID)
 			return
 		}
+		m.getLogger().Warn("job attempt deferred due to rate limit",
+			logging.Component("jobs"),
+			logging.Operation("retry_monitor"),
+			logging.Event("attempt_deferred"),
+			logging.String("job_id", tr.def.ID),
+			logging.String("occurrence_id", item.occurrenceID),
+			logging.Duration("retry_after", res.RetryAfter),
+			logging.ErrorCategoryField(logging.CategoryTelegramRPC),
+			logging.Retryable(true),
+			logging.Correlation(tr.correlationID),
+		)
 		m.untrack(item.occurrenceID)
 		m.signalRecovery()
 		return
@@ -268,6 +289,15 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 
 	retryUses := summary.RetryBudgetUses
 	if retryUses >= maxAttempts(tr.def.RetryPolicy) {
+		m.getLogger().Error("job occurrence exhausted retry budget",
+			logging.Component("jobs"),
+			logging.Operation("retry_monitor"),
+			logging.Event("attempt_exhausted"),
+			logging.String("job_id", tr.def.ID),
+			logging.String("occurrence_id", item.occurrenceID),
+			logging.Int("attempts", retryUses),
+			logging.Correlation(tr.correlationID),
+		)
 		finalizeCtx, finalizeCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 		err := m.stores.Occurrences.FinalizeOccurrence(finalizeCtx, item.occurrenceID, OccurrenceFailed)
 		finalizeCancel()
@@ -281,6 +311,17 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 
 	delay := retryDelay(tr.def.RetryPolicy, retryUses)
 	if delay > 0 {
+		m.getLogger().Warn("job attempt backoff scheduled",
+			logging.Component("jobs"),
+			logging.Operation("retry_monitor"),
+			logging.Event("attempt_deferred"),
+			logging.String("job_id", tr.def.ID),
+			logging.String("occurrence_id", item.occurrenceID),
+			logging.Int("attempt_no", retryUses+1),
+			logging.Duration("delay", delay),
+			logging.Retryable(true),
+			logging.Correlation(tr.correlationID),
+		)
 		deferUntil := time.Now().UTC().Add(delay)
 		deferCtx, deferCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
 		err := m.stores.Occurrences.DeferOccurrence(deferCtx, item.occurrenceID, deferUntil)
@@ -307,7 +348,20 @@ func (m *Manager) watchAttempt(baseCtx context.Context, item retryItem) {
 	if !accepting {
 		return
 	}
+	m.getLogger().Warn("job attempt retry scheduled",
+		logging.Component("jobs"),
+		logging.Operation("retry_monitor"),
+		logging.Event("attempt_retry_scheduled"),
+		logging.String("job_id", tr.def.ID),
+		logging.String("occurrence_id", item.occurrenceID),
+		logging.Int("attempt_no", retryUses+1),
+		logging.Retryable(true),
+		logging.Correlation(tr.correlationID),
+	)
 	driveCtx, driveCancel := context.WithTimeout(m.rootContext(), 10*time.Second)
+	if tr.correlationID != "" {
+		driveCtx = logging.WithCorrelationID(driveCtx, tr.correlationID)
+	}
 	err = m.driveAttempt(driveCtx, item.occurrenceID, tr.def, tr.handler, tr.timingOwned)
 	driveCancel()
 	if err != nil {

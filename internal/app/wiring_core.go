@@ -103,7 +103,7 @@ func buildCore(cfg *config.Config, logger *zap.Logger) (*coreDependencies, error
 	taskEngine.SetCommitPump(persistencePump)
 	jobStore := jobsqlite.NewResourceStore(db.DB)
 	jobsManager := jobs.NewManagerWithPorts(taskEngine, jobsqlite.ResourcePorts(jobStore), persistencePump)
-	jobsManager.SetLogger(logger.Named("jobs"))
+	jobsManager.SetLogger(zaplog.Wrap(logger).Named("jobs"))
 	jobsManager.SetOutboxSink(func(ctx context.Context, event jobs.OutboxEvent) error {
 		return eventBus.PublishDurable(ctx, &core.JobLifecycleEvent{
 			MetaData: core.EventMeta{ID: event.ID}, At: event.CommittedAt,

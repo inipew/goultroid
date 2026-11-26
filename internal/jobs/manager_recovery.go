@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"go.uber.org/zap"
+	"github.com/inipew/goultroid/internal/logging"
 )
 
 // signalRecovery coalesces arbitrarily many recovery hints into one bounded wake.
@@ -144,16 +144,16 @@ func (m *Manager) runRecoveryPass(baseCtx context.Context) {
 		m.recoveryDiagnostics.LastFailureMessage = errMsg
 		m.recoveryMu.Unlock()
 
-		m.mu.RLock()
-		logger := m.logger
-		m.mu.RUnlock()
-		if logger != nil {
-			logger.Warn("job recovery pass failed",
-				zap.String("operation", "recover"),
-				zap.Int("scan_limit", recoveryScanLimit),
-				zap.Error(err),
-			)
-		}
+		cat, retryable := logging.ClassifyError(err)
+		m.getLogger().Warn("job recovery pass failed",
+			logging.Component("jobs"),
+			logging.Operation("recover"),
+			logging.Event("job_recovery_failed"),
+			logging.Int("scan_limit", recoveryScanLimit),
+			logging.ErrorCategoryField(cat),
+			logging.Retryable(retryable),
+			logging.Error(err),
+		)
 		return
 	}
 
