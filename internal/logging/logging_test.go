@@ -176,3 +176,113 @@ func TestCorrelationContextAndClassifier(t *testing.T) {
 		t.Fatalf("unexpected classification for FLOOD_WAIT: %s %v", cat, retryable)
 	}
 }
+
+func TestRedactField_UnknownKindFailClosed(t *testing.T) {
+	cases := []Field{
+		{Key: "diagnostic", Kind: KindUnknown, Str: "token=super-secret"},
+		{Key: "diagnostic", Kind: FieldKind(99), Str: "raw-secret-payload", Any: secretStruct{Token: "abc"}},
+	}
+	for _, tc := range cases {
+		got := RedactField(tc)
+		if got.Kind != KindString || got.Str != UnknownKindPlaceholder {
+			t.Fatalf("expected fail-closed %q, got %+v", UnknownKindPlaceholder, got)
+		}
+		if strings.Contains(got.Str, "super-secret") || strings.Contains(got.Str, "raw-secret-payload") {
+			t.Fatalf("unknown FieldKind leaked raw Str: %+v", got)
+		}
+	}
+}
+
+func TestRedactString_AdversarialSecrets(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		forbidden []string
+	}{
+		{"camelCase accessToken", "accessToken=abc123", []string{"abc123"}},
+		{"camelCase refreshToken", "refreshToken=def456", []string{"def456"}},
+		{"hyphenated x-api-key", "x-api-key=ghi789", []string{"ghi789"}},
+		{"compound auth_token", "auth_token=jkl012", []string{"jkl012"}},
+		{"uppercase URL", "failed HTTPS://Example.COM/p?token=secret99", []string{"secret99", "/p"}},
+		{"quoted password with spaces", `password="my secret" ok`, []string{"my", "secret"}},
+		{"single-quoted password", `password='my secret' ok`, []string{"my", "secret"}},
+		{"unclosed quoted password", `password="my secret tail`, []string{"my", "secret", "tail"}},
+		{"apikey header", "ApiKey my-header-key", []string{"my-header-key"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RedactString(tc.input)
+			for _, bad := range tc.forbidden {
+				if strings.Contains(got, bad) {
+					t.Errorf("RedactString(%q) = %q, leaked %q", tc.input, got, bad)
+				}
+			}
+		})
+	}
+}
+
+func TestSanitizeURL_IPv6ZoneAndEncodedPath(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		policy    URLPolicy
+		want      string
+		forbidden []string
+	}{
+		{
+			name:      "uppercase scheme",
+			raw:       "HTTPS://User:Pass@Example.COM/path?token=xyz#frag",
+			want:      "https://example.com/[redacted]",
+			forbidden: []string{"User", "Pass", "path", "xyz", "frag"},
+		},
+		{
+			name:      "ipv6 zone id",
+			raw:       "http://[fe80::1%25eth0]:8080/admin?token=123",
+			want:      "http://[internal-host]/[redacted]",
+			forbidden: []string{"fe80", "eth0", "admin", "123"},
+		},
+		{
+			name:      "ipv6 loopback",
+			raw:       "http://[::1]:8080/admin",
+			want:      "http://[internal-host]/[redacted]",
+			forbidden: []string{"::1", "admin"},
+		},
+		{
+			name:      "percent-encoded path default policy",
+			raw:       "https://example.com/%73ecret%2Dtoken",
+			want:      "https://example.com/[redacted]",
+			forbidden: []string{"73ecret", "secret", "token"},
+		},
+		{
+			name:      "percent-encoded secret segment with AllowPath",
+			raw:       "https://example.com/v1/%73ecret%2Dtoken",
+			policy:    URLPolicy{AllowPath: true},
+			want:      "https://example.com/v1/[redacted]",
+			forbidden: []string{"73ecret", "secret", "token"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := SanitizeURLWithPolicy(tc.raw, tc.policy)
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			for _, bad := range tc.forbidden {
+				if strings.Contains(got, bad) {
+					t.Errorf("leaked %q in %q", bad, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRedactPanic_DoesNotTrustRawStringOrError(t *testing.T) {
+	pType, summary, _ := RedactPanic("user submitted private recovery phrase", nil)
+	if pType != "string" || strings.Contains(summary, "recovery phrase") {
+		t.Fatalf("raw panic string leaked: type=%q summary=%q", pType, summary)
+	}
+	pType2, summary2, _ := RedactPanic(errors.New("sensitive panic phrase"), nil)
+	if !strings.Contains(pType2, "errorString") || strings.Contains(summary2, "sensitive panic phrase") {
+		t.Fatalf("raw panic error leaked: type=%q summary=%q", pType2, summary2)
+	}
+}

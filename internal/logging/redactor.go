@@ -13,6 +13,8 @@ const (
 	RedactedValue = "[REDACTED]"
 	// InternalHostPlaceholder replaces private, loopback, or internal hostnames.
 	InternalHostPlaceholder = "[internal-host]"
+	// UnknownKindPlaceholder is emitted when a Field has an unknown or invalid FieldKind.
+	UnknownKindPlaceholder = "[redacted:unknown-kind]"
 	// maxRedactedStringLen bounds error and string log payloads.
 	maxRedactedStringLen = 512
 	// maxStackLines caps panic stack trace lines.
@@ -28,9 +30,8 @@ type URLPolicy struct {
 }
 
 var (
-	inlineURLPattern   = regexp.MustCompile(`https?://[^\s"'<>]+`)
-	authHeaderPattern  = regexp.MustCompile(`(?i)\b(bearer|basic|bot)\s+[A-Za-z0-9\-._~+/]+=*`)
-	kvSecretPattern    = regexp.MustCompile(`(?i)\b(token|access_token|refresh_token|api_key|apikey|secret|password|passwd|pwd|otp|cookie|session|msisdn|access_hash)\s*([=:])\s*([^\s,&;]+)`)
+	inlineURLPattern   = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
+	authHeaderPattern  = regexp.MustCompile(`(?i)\b(bearer|basic|bot|apikey)\s+([A-Za-z0-9\-._~+/]+=*)`)
 	homePathPattern    = regexp.MustCompile(`/(?:home|root)/[^\s/:]+`)
 	sensitiveKeyTokens = []string{
 		"token", "secret", "password", "passwd", "pwd", "otp", "pin",
@@ -42,12 +43,13 @@ var (
 
 // IsSensitiveKey reports whether a field or metadata key may carry credentials or PII.
 func IsSensitiveKey(key string) bool {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	if lower == "" {
+	normalized := strings.ToLower(strings.TrimSpace(key))
+	if normalized == "" {
 		return false
 	}
+	normalized = strings.ReplaceAll(normalized, "-", "_")
 	for _, tok := range sensitiveKeyTokens {
-		if strings.Contains(lower, tok) {
+		if strings.Contains(normalized, tok) {
 			return true
 		}
 	}
@@ -80,7 +82,7 @@ func SanitizeURLWithPolicy(rawURL string, policy URLPolicy) string {
 		host = net.JoinHostPort(host, port)
 	}
 
-	hasPath := u.Path != "" && u.Path != "/"
+	hasPath := (u.Path != "" && u.Path != "/") || (u.RawPath != "" && u.RawPath != "/")
 	hasSensitiveTail := u.RawQuery != "" || u.Fragment != "" || u.User != nil
 
 	if !policy.AllowPath {
@@ -108,6 +110,10 @@ func sanitizeHost(host string) string {
 	if lower == "localhost" || strings.HasSuffix(lower, ".local") || strings.HasSuffix(lower, ".internal") || strings.HasSuffix(lower, ".localhost") {
 		return InternalHostPlaceholder
 	}
+	// Strip IPv6 zone identifier before parsing IP; any zoned address is link/interface-local.
+	if zoneIdx := strings.IndexByte(lower, '%'); zoneIdx != -1 {
+		return InternalHostPlaceholder
+	}
 	if ip := net.ParseIP(lower); ip != nil {
 		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
 			return InternalHostPlaceholder
@@ -125,29 +131,133 @@ func sanitizeURLPath(p string) string {
 		if seg == "" {
 			continue
 		}
-		lower := strings.ToLower(seg)
-		if IsSensitiveKey(lower) || len(seg) >= 24 {
+		decoded := seg
+		if unescaped, err := url.PathUnescape(seg); err == nil {
+			decoded = unescaped
+		}
+		lower := strings.ToLower(decoded)
+		if IsSensitiveKey(lower) || len(decoded) >= 24 {
 			parts[i] = "[redacted]"
 		}
 	}
 	return strings.Join(parts, "/")
 }
 
-// RedactString scrubs URLs, bearer tokens, sensitive key=value pairs, and home paths.
+// RedactString scrubs URLs, authorization headers, sensitive key-value pairs, and home paths.
 func RedactString(s string) string {
 	if s == "" {
 		return ""
 	}
-	out := inlineURLPattern.ReplaceAllStringFunc(s, func(match string) string {
-		return SanitizeURL(match)
-	})
-	out = authHeaderPattern.ReplaceAllString(out, "$1 "+RedactedValue)
-	out = kvSecretPattern.ReplaceAllString(out, "$1$2"+RedactedValue)
+	out := redactURLsInString(s)
+	out = redactAuthHeaders(out)
+	out = redactKeyValueSecrets(out)
 	out = homePathPattern.ReplaceAllString(out, "/[redacted-home]")
 	if len(out) > maxRedactedStringLen {
 		return out[:maxRedactedStringLen] + "...[truncated]"
 	}
 	return out
+}
+
+func redactURLsInString(s string) string {
+	return inlineURLPattern.ReplaceAllStringFunc(s, func(match string) string {
+		return SanitizeURL(match)
+	})
+}
+
+func redactAuthHeaders(s string) string {
+	return authHeaderPattern.ReplaceAllString(s, "$1 "+RedactedValue)
+}
+
+// redactKeyValueSecrets parses key=value and key:value pairs (including quoted values
+// with spaces, camelCase keys, snake_case keys, and hyphenated keys) and redacts
+// values whose key matches IsSensitiveKey.
+func redactKeyValueSecrets(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if !isIdentStart(s[i]) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		keyStart := i
+		for i < len(s) && isIdentChar(s[i]) {
+			i++
+		}
+		key := s[keyStart:i]
+
+		// Optional whitespace before '=' or ':' (excluding "://")
+		sepPos := i
+		for sepPos < len(s) && (s[sepPos] == ' ' || s[sepPos] == '\t') {
+			sepPos++
+		}
+		if sepPos >= len(s) || (s[sepPos] != '=' && s[sepPos] != ':') {
+			b.WriteString(key)
+			continue
+		}
+		if s[sepPos] == ':' && sepPos+2 < len(s) && s[sepPos+1] == '/' && s[sepPos+2] == '/' {
+			b.WriteString(key)
+			continue
+		}
+		if !IsSensitiveKey(key) {
+			b.WriteString(key)
+			continue
+		}
+
+		// Write key and separator + any whitespace between key and sep/value.
+		b.WriteString(s[keyStart : sepPos+1])
+		valStart := sepPos + 1
+		for valStart < len(s) && (s[valStart] == ' ' || s[valStart] == '\t') {
+			b.WriteByte(s[valStart])
+			valStart++
+		}
+		if valStart >= len(s) {
+			i = valStart
+			continue
+		}
+
+		if s[valStart] == '"' || s[valStart] == '\'' {
+			quote := s[valStart]
+			b.WriteByte(quote)
+			b.WriteString(RedactedValue)
+			j := valStart + 1
+			for j < len(s) {
+				if s[j] == '\\' && j+1 < len(s) {
+					j += 2
+					continue
+				}
+				if s[j] == quote {
+					b.WriteByte(quote)
+					j++
+					break
+				}
+				j++
+			}
+			i = j
+			continue
+		}
+
+		j := valStart
+		for j < len(s) && !isValueDelimiter(s[j]) {
+			j++
+		}
+		b.WriteString(RedactedValue)
+		i = j
+	}
+	return b.String()
+}
+
+func isIdentStart(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+}
+
+func isIdentChar(c byte) bool {
+	return isIdentStart(c) || (c >= '0' && c <= '9') || c == '-'
+}
+
+func isValueDelimiter(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == ',' || c == '&' || c == ';'
 }
 
 // RedactError returns a bounded, redacted error summary.
@@ -158,17 +268,11 @@ func RedactError(err error) string {
 	return RedactString(err.Error())
 }
 
-// RedactPanic returns a safe panic type, bounded redacted summary, and bounded stack.
+// RedactPanic returns a safe panic type, redacted placeholder summary, and bounded sanitized stack.
+// Raw panic strings or error payloads are never emitted directly by default.
 func RedactPanic(recoverVal any, stack []byte) (panicType string, summary string, safeStack string) {
 	panicType = fmt.Sprintf("%T", recoverVal)
-	switch v := recoverVal.(type) {
-	case nil:
-		summary = ""
-	case string:
-		summary = RedactString(v)
-	case error:
-		summary = RedactError(v)
-	default:
+	if recoverVal != nil {
 		summary = fmt.Sprintf("[redacted:%s]", panicType)
 	}
 
@@ -218,7 +322,7 @@ func RedactMetadata(meta map[string]string, allowedKeys []string) map[string]str
 	return out
 }
 
-// RedactField enforces redaction and unknown-field safety on a Field before sink encoding.
+// RedactField enforces fail-closed redaction and unknown-field safety before sink encoding.
 func RedactField(f Field) Field {
 	if f.Key == "" {
 		return f
@@ -230,6 +334,8 @@ func RedactField(f Field) Field {
 	switch f.Kind {
 	case KindString:
 		f.Str = RedactString(f.Str)
+		return f
+	case KindInt64, KindUint64, KindFloat64, KindBool, KindDuration, KindTime:
 		return f
 	case KindURL:
 		policy, _ := f.Any.(URLPolicy)
@@ -256,7 +362,8 @@ func RedactField(f Field) Field {
 	case KindAny:
 		return redactUnknownField(f)
 	default:
-		return f
+		// Fail-closed: unknown or invalid FieldKind must never pass raw Str or Any through.
+		return Field{Key: f.Key, Kind: KindString, Str: UnknownKindPlaceholder}
 	}
 }
 

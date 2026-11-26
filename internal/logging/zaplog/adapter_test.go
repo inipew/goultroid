@@ -67,3 +67,28 @@ func TestAdapter_NilSafetyAndSync(t *testing.T) {
 		t.Fatalf("Wrap(nil).Sync() returned error: %v", err)
 	}
 }
+
+func TestAdapter_UnknownFieldKindFailClosed(t *testing.T) {
+	core, logs := observer.New(zapcore.InfoLevel)
+	logger := Wrap(zap.New(core))
+
+	logger.Info("unknown kind test",
+		logging.Field{Key: "diagnostic", Kind: logging.KindUnknown, Str: "token=super-secret"},
+		logging.Field{Key: "bad_enum", Kind: logging.FieldKind(250), Str: "raw-leak"},
+	)
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	fields := entries[0].ContextMap()
+	for k, v := range fields {
+		s, _ := v.(string)
+		if s != logging.UnknownKindPlaceholder {
+			t.Errorf("expected %q for %s, got %q", logging.UnknownKindPlaceholder, k, s)
+		}
+		if strings.Contains(s, "super-secret") || strings.Contains(s, "raw-leak") {
+			t.Errorf("field %s leaked raw string: %q", k, s)
+		}
+	}
+}

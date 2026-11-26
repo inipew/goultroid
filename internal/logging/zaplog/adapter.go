@@ -121,7 +121,7 @@ func toZapFields(fields []logging.Field) []zap.Field {
 				out = append(out, zap.Dict(f.Key, metadataFields(meta)...))
 			}
 		default:
-			out = append(out, zap.String(f.Key, f.Str))
+			out = append(out, zap.String(f.Key, logging.UnknownKindPlaceholder))
 		}
 	}
 	return out
