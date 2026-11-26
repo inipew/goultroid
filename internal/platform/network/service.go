@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/inipew/goultroid/internal/logging"
 	"github.com/inipew/goultroid/internal/resource"
 )
 
@@ -148,7 +149,7 @@ func (s *Service) Do(ctx context.Context, owner string, req *http.Request) (*htt
 			Type:      resource.TypeHTTPSession,
 			CreatedAt: time.Now().UTC(),
 			Metadata: map[string]string{
-				"url":    req.URL.String(),
+				"url":    logging.SanitizeURL(req.URL.String()),
 				"method": req.Method,
 			},
 		})
